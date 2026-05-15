@@ -17,8 +17,10 @@ Clipboard Archive is local-first.
 - Periodic pruning is available through the CLI. Pruning redacts older archive
   content, removes older body files, records deletion markers, and rebuilds the
   local SQLite search index.
-- Permanent archive tracking can be turned off from the Settings window. When
-  it is off, new clipboard changes are not written to durable history.
+- Storage mode can be set to remember 10 items, remember 50 items, or keep a
+  full archive. Recent-only modes automatically prune older content.
+- Capture can be turned off from the Settings window. When it is off, new
+  clipboard changes are not written to durable history.
 - Archive and index locations are controlled by environment variables in the
   LaunchAgent:
   - `CLIPBOARD_ARCHIVE_ARCHIVE_ROOT`

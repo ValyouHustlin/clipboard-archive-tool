@@ -20,7 +20,7 @@ for copying to another Mac.
 Validate a staged release before handoff:
 
 ```bash
-./scripts/validate-release.sh releases/ClipboardArchive-0.1.1-macos-arm64
+./scripts/validate-release.sh releases/ClipboardArchive-0.1.2-macos-arm64
 ```
 
 Release builds are ad hoc signed after the `.app` bundle is assembled. This

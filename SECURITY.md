@@ -36,6 +36,10 @@ reliably detectable through normal pasteboard polling.
 Prefer copying passwords from a password manager app that can be excluded by
 bundle identifier rather than from arbitrary browser pages.
 
+If you do not want an indefinite plaintext archive, set storage mode to
+`Remember 10 Items` or `Remember 50 Items`. Those modes keep the app useful for
+day-to-day clipboard recall while automatically pruning older stored content.
+
 ## Pruning
 
 Manual delete/redact removes stored content for selected items while retaining

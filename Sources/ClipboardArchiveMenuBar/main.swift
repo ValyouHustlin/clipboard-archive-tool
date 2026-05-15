@@ -99,6 +99,7 @@ final class ClipboardMenuBarApp: NSObject, NSApplicationDelegate, ClipboardSetti
             case .stored:
                 capturedCount += 1
                 lastStatus = "Captured \(shortDate(Date()))"
+                applyRetentionLimitIfNeeded()
             case .blocked:
                 blockedCount += 1
                 lastStatus = "Blocked sensitive item \(shortDate(Date()))"
@@ -231,6 +232,21 @@ final class ClipboardMenuBarApp: NSObject, NSApplicationDelegate, ClipboardSetti
         rebuildMenu()
     }
 
+    private func applyRetentionLimitIfNeeded() {
+        guard let limit = settings.retentionMode.retainedItemLimit else {
+            return
+        }
+        do {
+            let result = try ClipboardArchivePruner(archiveRoot: archiveRoot)
+                .pruneContent(keepingMostRecent: limit, reason: "retention-\(settings.retentionMode.rawValue)")
+            if result.prunedEvents > 0 {
+                lastStatus = "Kept latest \(limit), pruned \(result.prunedEvents)"
+            }
+        } catch {
+            lastStatus = "Retention prune failed"
+        }
+    }
+
     @objc private func showArchiveHealth() {
         do {
             let health = try ClipboardArchiveHealthReporter(archiveRoot: archiveRoot).health()
@@ -291,7 +307,7 @@ final class ClipboardMenuBarApp: NSObject, NSApplicationDelegate, ClipboardSetti
         if isPaused {
             statusTitle = "Capture Paused\(pauseLine)"
         } else if settings.archiveEnabled {
-            statusTitle = "Archive Active"
+            statusTitle = settings.retentionMode.storesLongTermHistory ? "Full Archive Active" : "\(settings.retentionMode.displayName) Active"
         } else {
             statusTitle = "Archive Tracking Off"
         }
@@ -324,6 +340,7 @@ final class ClipboardMenuBarApp: NSObject, NSApplicationDelegate, ClipboardSetti
         menu.addItem(NSMenuItem(title: "Open Clipboard Window", action: #selector(openClipboardWindow), keyEquivalent: "o"))
         menu.addItem(NSMenuItem(title: "Search Last 7 Days...", action: #selector(searchRecent), keyEquivalent: "f"))
         menu.addItem(NSMenuItem(title: isPaused ? "Resume Capture" : "Pause Capture", action: #selector(togglePause), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: settings.retentionMode.storesLongTermHistory ? "Turn Off Full Archive" : "Turn On Full Archive", action: #selector(toggleFullArchive), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Settings...", action: #selector(showPreferences), keyEquivalent: ","))
         menu.addItem(NSMenuItem.separator())
 
@@ -368,6 +385,21 @@ final class ClipboardMenuBarApp: NSObject, NSApplicationDelegate, ClipboardSetti
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu
+    }
+
+    @objc private func toggleFullArchive() {
+        if settings.retentionMode.storesLongTermHistory {
+            settings.retentionMode = .recent50
+            settings.recentItemLimit = 50
+            lastStatus = "Full archive off, keeping 50"
+            applyRetentionLimitIfNeeded()
+        } else {
+            settings.retentionMode = .unlimited
+            lastStatus = "Full archive on"
+        }
+        settings.archiveEnabled = true
+        try? settingsStore.save(settings)
+        rebuildMenu()
     }
 
     private func quickCopyMenuItem(for event: StoredClipboardEvent) -> NSMenuItem {

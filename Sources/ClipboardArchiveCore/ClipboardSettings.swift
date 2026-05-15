@@ -1,5 +1,37 @@
 import Foundation
 
+public enum ClipboardRetentionMode: String, Codable, CaseIterable, Sendable {
+    case recent10 = "recent-10"
+    case recent50 = "recent-50"
+    case unlimited = "unlimited"
+
+    public var displayName: String {
+        switch self {
+        case .recent10:
+            return "Remember 10 Items"
+        case .recent50:
+            return "Remember 50 Items"
+        case .unlimited:
+            return "Full Archive"
+        }
+    }
+
+    public var retainedItemLimit: Int? {
+        switch self {
+        case .recent10:
+            return 10
+        case .recent50:
+            return 50
+        case .unlimited:
+            return nil
+        }
+    }
+
+    public var storesLongTermHistory: Bool {
+        self == .unlimited
+    }
+}
+
 public struct ClipboardSettings: Codable, Equatable, Sendable {
     public static let minimumRecentItemLimit = 5
     public static let maximumRecentItemLimit = 10_000
@@ -10,6 +42,7 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
     public var pollIntervalSeconds: TimeInterval
     public var archiveEnabled: Bool
     public var recentItemLimit: Int
+    public var retentionMode: ClipboardRetentionMode
 
     private enum CodingKeys: String, CodingKey {
         case excludedBundleIdentifiers
@@ -18,6 +51,7 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         case pollIntervalSeconds
         case archiveEnabled
         case recentItemLimit
+        case retentionMode
     }
 
     public init(
@@ -26,7 +60,8 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         pauseUntil: Date? = nil,
         pollIntervalSeconds: TimeInterval = 0.2,
         archiveEnabled: Bool = true,
-        recentItemLimit: Int = 50
+        recentItemLimit: Int = 50,
+        retentionMode: ClipboardRetentionMode = .unlimited
     ) {
         self.excludedBundleIdentifiers = excludedBundleIdentifiers
         self.excludedAppNameFragments = excludedAppNameFragments
@@ -34,6 +69,7 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         self.pollIntervalSeconds = pollIntervalSeconds
         self.archiveEnabled = archiveEnabled
         self.recentItemLimit = Self.clampRecentItemLimit(recentItemLimit)
+        self.retentionMode = retentionMode
     }
 
     public var isTemporarilyPaused: Bool {
@@ -52,6 +88,7 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         archiveEnabled = try container.decodeIfPresent(Bool.self, forKey: .archiveEnabled) ?? true
         let decodedLimit = try container.decodeIfPresent(Int.self, forKey: .recentItemLimit) ?? 50
         recentItemLimit = Self.clampRecentItemLimit(decodedLimit)
+        retentionMode = try container.decodeIfPresent(ClipboardRetentionMode.self, forKey: .retentionMode) ?? (archiveEnabled ? .unlimited : .recent50)
     }
 
     public static func clampRecentItemLimit(_ value: Int) -> Int {

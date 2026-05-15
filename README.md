@@ -15,13 +15,14 @@ It has two jobs:
 - Continuous local text clipboard capture.
 - Search, recent items, copy-back, manual delete/redact, pause/resume, and app
   exclusions.
-- Settings window for permanent archive tracking, visible item count, poll
+- Settings window for capture on/off, storage mode, visible item count, poll
   interval, excluded apps, and storage paths.
 - Password-manager and credential-like content blocking.
 - Append-oriented NDJSON archive with metadata.
 - Large clipboard bodies stored as separate local files.
 - Rebuildable SQLite FTS search index.
 - CLI pruning for older archive content.
+- Storage modes: remember 10 items, remember 50 items, or keep a full archive.
 - Daily manifests and health reports.
 - Install/update scripts for copying releases to other Macs.
 - No network sync, telemetry, analytics, crash reporting, or in-app update
@@ -68,7 +69,7 @@ From the repository root:
 
 ```bash
 ./scripts/package-release.sh
-./scripts/validate-release.sh releases/ClipboardArchive-0.1.1-macos-arm64
+./scripts/validate-release.sh releases/ClipboardArchive-0.1.2-macos-arm64
 ```
 
 Outputs:
@@ -145,8 +146,8 @@ Clipboard Archive is intentionally transparent and controllable:
   search rows. Timeline metadata remains with a deletion marker.
 - Prune can periodically redact older content and rebuild local search.
 - Pause and exclusion controls are available in the menu bar UI.
-- Permanent archive tracking can be turned off in Settings. When it is off,
-  clipboard changes are not written to the durable archive.
+- Long-term storage can be switched off from the menu or Settings. Recent-only
+  modes automatically prune older content while keeping the app useful.
 
 See [PRIVACY.md](PRIVACY.md) and [SECURITY.md](SECURITY.md).
 

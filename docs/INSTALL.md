@@ -76,7 +76,8 @@ Open the menu bar icon and choose `Settings...`.
 
 Current controls:
 
-- Permanent archive tracking on/off.
+- Capture on/off.
+- Storage mode: remember 10 items, remember 50 items, or full archive.
 - Number of items shown in the app.
 - Poll interval.
 - Excluded app bundle identifiers.

@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${CLIPBOARD_ARCHIVE_VERSION:-0.1.1}"
-BUILD_NUMBER="${CLIPBOARD_ARCHIVE_BUILD:-3}"
+VERSION="${CLIPBOARD_ARCHIVE_VERSION:-0.1.2}"
+BUILD_NUMBER="${CLIPBOARD_ARCHIVE_BUILD:-4}"
 ARCH="$(uname -m)"
 NAME="ClipboardArchive-${VERSION}-macos-${ARCH}"
 RELEASE_ROOT="$ROOT/releases"

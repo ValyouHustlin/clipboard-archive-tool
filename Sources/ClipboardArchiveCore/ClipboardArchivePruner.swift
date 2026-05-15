@@ -36,6 +36,27 @@ public struct ClipboardArchivePruner: Sendable {
 
     @discardableResult
     public func pruneContent(before cutoff: Date, dryRun: Bool = false, reason: String = "manual-prune") throws -> ClipboardPruneResult {
+        try pruneContent(dryRun: dryRun, reason: reason) { event in
+            event.capturedAt < cutoff
+        }
+    }
+
+    @discardableResult
+    public func pruneContent(keepingMostRecent retainedItemLimit: Int, dryRun: Bool = false, reason: String = "retention-limit") throws -> ClipboardPruneResult {
+        guard retainedItemLimit >= 0 else {
+            return ClipboardPruneResult(scannedEvents: 0, prunedEvents: 0, deletedBodyFiles: 0, changedFiles: 0, dryRun: dryRun)
+        }
+        let retainedIDs = try mostRecentRetainedIDs(limit: retainedItemLimit)
+        return try pruneContent(dryRun: dryRun, reason: reason) { event in
+            !retainedIDs.contains(event.id)
+        }
+    }
+
+    private func pruneContent(
+        dryRun: Bool,
+        reason: String,
+        shouldPrune: (StoredClipboardEvent) -> Bool
+    ) throws -> ClipboardPruneResult {
         let reader = ClipboardArchiveReader(archiveRoot: archiveRoot)
         let deleted = try ClipboardDeletionLedger(archiveRoot: archiveRoot).deletedIDs()
         let decoder = JSONDecoder()
@@ -68,8 +89,8 @@ public struct ClipboardArchivePruner: Sendable {
                 }
 
                 scannedEvents += 1
-                guard event.capturedAt < cutoff,
-                      event.privacyLabel != .doNotIndex,
+                guard event.privacyLabel != .doNotIndex,
+                      shouldPrune(event),
                       !deleted.contains(event.id) else {
                     rewrittenLines.append(line)
                     continue
@@ -131,5 +152,34 @@ public struct ClipboardArchivePruner: Sendable {
             changedFiles: changedFiles,
             dryRun: dryRun
         )
+    }
+
+    private func mostRecentRetainedIDs(limit: Int) throws -> Set<String> {
+        guard limit > 0 else {
+            return []
+        }
+        let reader = ClipboardArchiveReader(archiveRoot: archiveRoot)
+        let deleted = try ClipboardDeletionLedger(archiveRoot: archiveRoot).deletedIDs()
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        var events: [StoredClipboardEvent] = []
+
+        for eventFile in try reader.eventFiles() {
+            let lines = try String(contentsOf: eventFile).split(separator: "\n", omittingEmptySubsequences: true)
+            for line in lines {
+                guard let data = String(line).data(using: .utf8),
+                      let event = try? decoder.decode(StoredClipboardEvent.self, from: data),
+                      event.privacyLabel != .doNotIndex,
+                      !deleted.contains(event.id) else {
+                    continue
+                }
+                events.append(event)
+            }
+        }
+
+        return Set(events
+            .sorted { $0.capturedAt > $1.capturedAt }
+            .prefix(limit)
+            .map(\.id))
     }
 }

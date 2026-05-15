@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.2 - 2026-05-15
+
+- Added storage modes for remembering 10 items, 50 items, or a full archive.
+- Added a menu-bar toggle for turning full archive mode on/off.
+
 ## 0.1.1 - 2026-05-15
 
 - Added `clipboard-archive prune` for periodic content cleanup.

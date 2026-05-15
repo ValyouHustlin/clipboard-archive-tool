@@ -15,7 +15,8 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
     private let archiveRoot: URL
     private var settings: ClipboardSettings
 
-    private let archiveEnabledButton = NSButton(checkboxWithTitle: "Archive clipboard history permanently", target: nil, action: nil)
+    private let archiveEnabledButton = NSButton(checkboxWithTitle: "Capture clipboard history", target: nil, action: nil)
+    private let retentionModePopup = NSPopUpButton()
     private let recentLimitField = NSTextField()
     private let recentLimitStepper = NSStepper()
     private let pollIntervalField = NSTextField()
@@ -77,6 +78,14 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         archiveEnabledButton.target = self
         archiveEnabledButton.action = #selector(toggleArchiveEnabled)
         captureGroup.addArrangedSubview(archiveEnabledButton)
+
+        for mode in ClipboardRetentionMode.allCases {
+            retentionModePopup.addItem(withTitle: mode.displayName)
+            retentionModePopup.lastItem?.representedObject = mode.rawValue
+        }
+        retentionModePopup.target = self
+        retentionModePopup.action = #selector(retentionModeChanged)
+        captureGroup.addArrangedSubview(formRow(label: "Storage mode", control: retentionModePopup))
 
         let visibleGroup = addGroup("Visible History", to: root)
         let recentRow = formRow(label: "Items shown in clipboard window", control: recentLimitField)
@@ -151,17 +160,27 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
 
     private func loadSettingsIntoControls() {
         archiveEnabledButton.state = settings.archiveEnabled ? .on : .off
+        selectRetentionMode(settings.retentionMode)
         recentLimitField.integerValue = settings.recentItemLimit
         recentLimitStepper.integerValue = settings.recentItemLimit
         pollIntervalField.doubleValue = settings.pollIntervalSeconds
         excludedBundleIdentifiers = settings.excludedBundleIdentifiers.sorted()
         excludedBundleField.stringValue = ""
         excludedBundlesList.reloadData()
-        statusLabel.stringValue = settings.archiveEnabled ? "Permanent archive is on" : "Permanent archive is off"
+        updateRetentionStatus()
     }
 
     @objc private func toggleArchiveEnabled() {
-        statusLabel.stringValue = archiveEnabledButton.state == .on ? "Permanent archive will be on" : "Permanent archive will be off"
+        updateRetentionStatus()
+    }
+
+    @objc private func retentionModeChanged() {
+        let mode = selectedRetentionMode()
+        if let limit = mode.retainedItemLimit {
+            recentLimitField.integerValue = limit
+            recentLimitStepper.integerValue = limit
+        }
+        updateRetentionStatus()
     }
 
     @objc private func recentStepperChanged() {
@@ -204,8 +223,10 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
 
     @objc private func save() {
         let poll = max(0.1, min(5.0, pollIntervalField.doubleValue))
-        let limit = ClipboardSettings.clampRecentItemLimit(recentLimitField.integerValue)
+        let mode = selectedRetentionMode()
+        let limit = mode.retainedItemLimit ?? ClipboardSettings.clampRecentItemLimit(recentLimitField.integerValue)
         settings.archiveEnabled = archiveEnabledButton.state == .on
+        settings.retentionMode = mode
         settings.recentItemLimit = limit
         settings.pollIntervalSeconds = poll
         settings.excludedBundleIdentifiers = Array(Set(excludedBundleIdentifiers)).sorted()
@@ -254,11 +275,36 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         text.alignment = .right
         text.textColor = .secondaryLabelColor
         text.widthAnchor.constraint(equalToConstant: 170).isActive = true
-        control.widthAnchor.constraint(equalToConstant: 92).isActive = true
+        control.widthAnchor.constraint(equalToConstant: control is NSPopUpButton ? 180 : 92).isActive = true
         row.addArrangedSubview(text)
         row.addArrangedSubview(control)
         row.addArrangedSubview(NSView())
         return row
+    }
+
+    private func selectedRetentionMode() -> ClipboardRetentionMode {
+        guard let rawValue = retentionModePopup.selectedItem?.representedObject as? String,
+              let mode = ClipboardRetentionMode(rawValue: rawValue) else {
+            return .unlimited
+        }
+        return mode
+    }
+
+    private func selectRetentionMode(_ mode: ClipboardRetentionMode) {
+        for item in retentionModePopup.itemArray where item.representedObject as? String == mode.rawValue {
+            retentionModePopup.select(item)
+            return
+        }
+        retentionModePopup.selectItem(at: ClipboardRetentionMode.allCases.firstIndex(of: .unlimited) ?? 0)
+    }
+
+    private func updateRetentionStatus() {
+        guard archiveEnabledButton.state == .on else {
+            statusLabel.stringValue = "Capture will be off"
+            return
+        }
+        let mode = selectedRetentionMode()
+        statusLabel.stringValue = mode.storesLongTermHistory ? "Full long-term archive will be on" : "\(mode.displayName) will prune older content"
     }
 
     private func pathRow(_ label: String, _ path: String) -> NSStackView {

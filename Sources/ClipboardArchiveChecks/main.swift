@@ -295,6 +295,18 @@ do {
         let settings = try JSONDecoder().decode(ClipboardSettings.self, from: data)
         try expect(settings.archiveEnabled, "older settings should default archive tracking on")
         try expect(settings.recentItemLimit == 50, "older settings should default visible item count")
+        try expect(settings.retentionMode == .unlimited, "older archive-enabled settings should default to full archive")
+    }
+
+    try run("settings decode archive-off files as recent-only") {
+        let data = """
+        {
+          "archiveEnabled": false,
+          "recentItemLimit": 50
+        }
+        """.data(using: .utf8)!
+        let settings = try JSONDecoder().decode(ClipboardSettings.self, from: data)
+        try expect(settings.retentionMode == .recent50, "older archive-off settings should default to recent-only mode")
     }
 
     try run("derived sqlite index rebuilds and searches") {
@@ -384,6 +396,28 @@ do {
         if let oldLargeBodyPath {
             try expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(oldLargeBodyPath).path), "old large body file should be deleted")
         }
+    }
+
+    try run("prune can keep only most recent items") {
+        let root = temporaryDirectory()
+        let writer = ClipboardArchiveWriter(archiveRoot: root)
+        for i in 0..<5 {
+            _ = try writer.archiveAllowedCapture(ClipboardCapture(
+                capturedAt: Date(timeIntervalSince1970: TimeInterval(1_800_000_000 + i)),
+                content: "rolling retention item \(i)",
+                sourceApp: ClipboardSourceApp(name: "Notes")
+            ))
+        }
+
+        let result = try ClipboardArchivePruner(archiveRoot: root)
+            .pruneContent(keepingMostRecent: 2)
+        let searcher = ClipboardArchiveSearcher(archiveRoot: root)
+        let oldResults = try searcher.search(ClipboardSearchOptions(query: "rolling retention item 0"))
+        let newResults = try searcher.search(ClipboardSearchOptions(query: "rolling retention item 4"))
+
+        try expect(result.prunedEvents == 3, "expected three old rolling items to be pruned")
+        try expect(oldResults.isEmpty, "old rolling item should be pruned")
+        try expect(!newResults.isEmpty, "new rolling item should remain")
     }
 
     print("all checks passed")
