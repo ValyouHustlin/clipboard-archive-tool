@@ -64,6 +64,8 @@ Use it for local checks:
 ```bash
 clipboard-archive health
 clipboard-archive search "example" --limit 10
+clipboard-archive prune --until 2026-01-01 --dry-run
+clipboard-archive prune --until 2026-01-01
 clipboard-archive repair-index
 clipboard-archive write-manifest
 ```

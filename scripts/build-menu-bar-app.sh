@@ -3,8 +3,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="ClipboardArchive"
-VERSION="${CLIPBOARD_ARCHIVE_VERSION:-0.1.0}"
-BUILD_NUMBER="${CLIPBOARD_ARCHIVE_BUILD:-1}"
+VERSION="${CLIPBOARD_ARCHIVE_VERSION:-0.1.1}"
+BUILD_NUMBER="${CLIPBOARD_ARCHIVE_BUILD:-3}"
 APP_DIR="$ROOT/dist/${APP_NAME}.app"
 CONTENTS="$APP_DIR/Contents"
 MACOS="$CONTENTS/MacOS"
@@ -46,5 +46,9 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+
+if command -v codesign >/dev/null 2>&1; then
+  codesign --force --sign - "$APP_DIR" >/dev/null
+fi
 
 echo "$APP_DIR"

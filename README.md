@@ -21,6 +21,7 @@ It has two jobs:
 - Append-oriented NDJSON archive with metadata.
 - Large clipboard bodies stored as separate local files.
 - Rebuildable SQLite FTS search index.
+- CLI pruning for older archive content.
 - Daily manifests and health reports.
 - Install/update scripts for copying releases to other Macs.
 - No network sync, telemetry, analytics, crash reporting, or in-app update
@@ -67,7 +68,7 @@ From the repository root:
 
 ```bash
 ./scripts/package-release.sh
-./scripts/validate-release.sh releases/ClipboardArchive-0.1.0-macos-arm64
+./scripts/validate-release.sh releases/ClipboardArchive-0.1.1-macos-arm64
 ```
 
 Outputs:
@@ -99,6 +100,9 @@ swift run clipboard-archive-checks
 swift run clipboard-archive self-test
 swift run clipboard-archive monitor --duration 30
 swift run clipboard-archive search "example" --limit 10
+swift run clipboard-archive redact EVENT_ID
+swift run clipboard-archive prune --until 2026-01-01 --dry-run
+swift run clipboard-archive prune --until 2026-01-01
 swift run clipboard-archive repair-index
 swift run clipboard-archive index-search "example" --limit 10
 swift run clipboard-archive health
@@ -139,11 +143,12 @@ Clipboard Archive is intentionally transparent and controllable:
 - Blocked sensitive events do not store raw content.
 - Delete/redact removes inline content, large body files, and derived SQLite
   search rows. Timeline metadata remains with a deletion marker.
+- Prune can periodically redact older content and rebuild local search.
 - Pause and exclusion controls are available in the menu bar UI.
 - Permanent archive tracking can be turned off in Settings. When it is off,
   clipboard changes are not written to the durable archive.
 
-See [PRIVACY.md](PRIVACY.md).
+See [PRIVACY.md](PRIVACY.md) and [SECURITY.md](SECURITY.md).
 
 ## Capture Limits
 

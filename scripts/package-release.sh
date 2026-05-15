@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${CLIPBOARD_ARCHIVE_VERSION:-0.1.0}"
-BUILD_NUMBER="${CLIPBOARD_ARCHIVE_BUILD:-1}"
+VERSION="${CLIPBOARD_ARCHIVE_VERSION:-0.1.1}"
+BUILD_NUMBER="${CLIPBOARD_ARCHIVE_BUILD:-3}"
 ARCH="$(uname -m)"
 NAME="ClipboardArchive-${VERSION}-macos-${ARCH}"
 RELEASE_ROOT="$ROOT/releases"
@@ -25,6 +25,7 @@ cp "$ROOT/scripts/uninstall-release.sh" "$STAGE/uninstall.sh"
 cp "$ROOT/README.md" "$STAGE/README.md"
 cp "$ROOT/LICENSE" "$STAGE/LICENSE"
 cp "$ROOT/PRIVACY.md" "$STAGE/PRIVACY.md"
+cp "$ROOT/SECURITY.md" "$STAGE/SECURITY.md"
 cp "$ROOT/CHANGELOG.md" "$STAGE/CHANGELOG.md"
 cp "$ROOT/docs/INSTALL.md" "$STAGE/docs/INSTALL.md"
 cp "$ROOT/docs/DISTRIBUTION.md" "$STAGE/docs/DISTRIBUTION.md"

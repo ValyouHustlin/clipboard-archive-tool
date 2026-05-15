@@ -14,6 +14,9 @@ Clipboard Archive is local-first.
   records a deletion marker, and purges the item from the local SQLite search
   index. Non-content timeline metadata remains so the archive can show that an
   item existed without retaining the copied text.
+- Periodic pruning is available through the CLI. Pruning redacts older archive
+  content, removes older body files, records deletion markers, and rebuilds the
+  local SQLite search index.
 - Permanent archive tracking can be turned off from the Settings window. When
   it is off, new clipboard changes are not written to durable history.
 - Archive and index locations are controlled by environment variables in the
@@ -29,3 +32,7 @@ Known limits:
 - Browser password fields are not reliably detectable without deeper
   Accessibility inspection.
 - Unsigned local builds may require macOS Gatekeeper approval on first launch.
+- Accepted clipboard content and the derived SQLite index are plaintext local
+  files. CryptoKit is used for hashing, not archive encryption.
+- Deletion and pruning affect this app's live archive and derived search index,
+  not external backups or filesystem snapshots that already captured files.

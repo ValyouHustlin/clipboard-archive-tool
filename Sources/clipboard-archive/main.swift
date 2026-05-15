@@ -14,6 +14,7 @@ struct CLIOptions {
     var until: Date?
     var verbose: Bool
     var json: Bool
+    var dryRun: Bool
 
     static func parse(_ arguments: [String]) throws -> CLIOptions {
         var args = Array(arguments.dropFirst())
@@ -32,6 +33,7 @@ struct CLIOptions {
         var until: Date?
         var verbose = false
         var json = false
+        var dryRun = false
 
         var index = 0
         while index < args.count {
@@ -81,6 +83,8 @@ struct CLIOptions {
                 verbose = true
             case "--json":
                 json = true
+            case "--dry-run":
+                dryRun = true
             default:
                 if arg.hasPrefix("--") {
                     throw CLIError.unknownArgument(arg)
@@ -101,11 +105,12 @@ struct CLIOptions {
             since: since,
             until: until,
             verbose: verbose,
-            json: json
+            json: json,
+            dryRun: dryRun
         )
     }
 
-    private static func parseDate(_ value: String) -> Date? {
+    static func parseDate(_ value: String) -> Date? {
         if let date = ISO8601DateFormatter().date(from: value) {
             return date
         }
@@ -274,6 +279,25 @@ case "redact":
         print("deleted body: \(deletedBodyFile)")
     }
 
+case "prune":
+    guard let before = options.until ?? options.since ?? options.positional.first.flatMap(CLIOptions.parseDate) else {
+        throw CLIError.missingValue("prune cutoff date; use --until YYYY-MM-DD")
+    }
+    let result = try ClipboardArchivePruner(archiveRoot: options.archiveRoot)
+        .pruneContent(before: before, dryRun: options.dryRun)
+    if options.json {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        print(String(data: try encoder.encode(result), encoding: .utf8) ?? "{}")
+    } else {
+        print(options.dryRun ? "prune dry run" : "prune complete")
+        print("cutoff: \(ISO8601DateFormatter().string(from: before))")
+        print("scanned: \(result.scannedEvents)")
+        print("pruned: \(result.prunedEvents)")
+        print("deleted_body_files: \(result.deletedBodyFiles)")
+        print("changed_files: \(result.changedFiles)")
+    }
+
 case "repair-index":
     let index = ClipboardDerivedIndex(archiveRoot: options.archiveRoot)
     let count = try index.rebuild()
@@ -327,6 +351,7 @@ default:
       monitor      Manually poll NSPasteboard and archive accepted text changes.
       search QUERY Search the local archive.
       redact ID    Redact archived content for one clipboard event.
+      prune        Redact stored content before a cutoff date.
       repair-index Rebuild the derived SQLite FTS search index.
       index-search QUERY Search the derived SQLite FTS index.
       health       Report archive/index health.
@@ -339,7 +364,8 @@ default:
       --inline-limit-bytes BYTES    Default: 65536. Larger content uses body files.
       --limit N                     Search result limit. Default: 25.
       --since YYYY-MM-DD            Search lower date bound.
-      --until YYYY-MM-DD            Search upper date bound.
+      --until YYYY-MM-DD            Search upper date bound, or prune cutoff.
+      --dry-run                     Report prune impact without changing files.
       --verbose                     Print ignored non-text changes.
       --json                        JSON output for supported commands.
 

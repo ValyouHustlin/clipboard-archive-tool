@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1 - 2026-05-15
+
+- Added `clipboard-archive prune` for periodic content cleanup.
+- Added `SECURITY.md` with plaintext storage, best-effort filtering, signing,
+  and pruning guidance.
+- Re-signed the assembled app bundle during local release builds so `Info.plist`
+  and the resource seal are bound to the ad hoc signature.
+
 ## 0.1.0 - 2026-05-15
 
 - Added native macOS menu bar clipboard capture.

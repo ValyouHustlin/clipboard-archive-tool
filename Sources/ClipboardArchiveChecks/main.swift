@@ -336,6 +336,56 @@ do {
         try expect(output.isEmpty, "redacted content should be purged from derived index")
     }
 
+    try run("prune redacts old content and rebuilds derived index") {
+        let root = temporaryDirectory()
+        let indexURL = temporaryDirectory().appendingPathComponent("clipboard-search.sqlite")
+        let writer = ClipboardArchiveWriter(archiveRoot: root, inlineContentLimitBytes: 16)
+        _ = try writer.archiveAllowedCapture(ClipboardCapture(
+            capturedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            content: "old prune searchable phrase",
+            sourceApp: ClipboardSourceApp(name: "Notes")
+        ))
+        let oldLargeEvent = try writer.archiveAllowedCapture(ClipboardCapture(
+            capturedAt: Date(timeIntervalSince1970: 1_700_000_010),
+            content: String(repeating: "old large prune searchable phrase\n", count: 20),
+            sourceApp: ClipboardSourceApp(name: "Cursor")
+        ))
+        _ = try writer.archiveAllowedCapture(ClipboardCapture(
+            capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+            content: "new keep searchable phrase",
+            sourceApp: ClipboardSourceApp(name: "Notes")
+        ))
+        let oldLargeBodyPath = oldLargeEvent.rawContentPath
+        let index = ClipboardDerivedIndex(archiveRoot: root, indexURL: indexURL)
+        _ = try index.rebuild()
+
+        let dryRun = try ClipboardArchivePruner(archiveRoot: root, indexURL: indexURL)
+            .pruneContent(before: Date(timeIntervalSince1970: 1_750_000_000), dryRun: true)
+        let dryRunSearch = try ClipboardArchiveSearcher(archiveRoot: root)
+            .search(ClipboardSearchOptions(query: "old prune searchable phrase"))
+        try expect(dryRun.prunedEvents == 2, "expected dry run to count two old events")
+        try expect(!dryRunSearch.isEmpty, "dry run should not delete old event")
+
+        let result = try ClipboardArchivePruner(archiveRoot: root, indexURL: indexURL)
+            .pruneContent(before: Date(timeIntervalSince1970: 1_750_000_000))
+
+        try expect(result.scannedEvents == 3, "expected three scanned prune events")
+        try expect(result.prunedEvents == 2, "expected two pruned events")
+        try expect(result.deletedBodyFiles == 2, "expected two pruned body files")
+        let searcher = ClipboardArchiveSearcher(archiveRoot: root)
+        let oldInlineResults = try searcher.search(ClipboardSearchOptions(query: "old prune searchable phrase"))
+        let oldLargeResults = try searcher.search(ClipboardSearchOptions(query: "old large prune searchable phrase"))
+        let oldIndexResults = try index.search("old prune searchable phrase", limit: 1)
+        let newIndexResults = try index.search("new keep searchable phrase", limit: 1)
+        try expect(oldInlineResults.isEmpty, "old inline content should be pruned from archive search")
+        try expect(oldLargeResults.isEmpty, "old large content should be pruned from archive search")
+        try expect(oldIndexResults.isEmpty, "old inline content should be pruned from derived index")
+        try expect(newIndexResults.contains("new keep"), "new content should remain indexed")
+        if let oldLargeBodyPath {
+            try expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(oldLargeBodyPath).path), "old large body file should be deleted")
+        }
+    }
+
     print("all checks passed")
 } catch {
     FileHandle.standardError.write(Data("check failed: \(error)\n".utf8))
