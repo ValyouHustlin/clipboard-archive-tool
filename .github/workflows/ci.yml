@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  macos:
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Build CLI
+        run: swift build --product clipboard-archive
+
+      - name: Build menu bar app target
+        run: swift build --product ClipboardArchiveMenuBar
+
+      - name: Run core checks
+        run: swift run --quiet clipboard-archive-checks
+
+      - name: Package release
+        run: ./scripts/package-release.sh
+
+      - name: Validate release
+        run: ./scripts/validate-release.sh releases/ClipboardArchive-0.1.0-macos-arm64
+
+      - name: Check local-only boundary
+        run: ./scripts/check-local-only.sh releases/ClipboardArchive-0.1.0-macos-arm64

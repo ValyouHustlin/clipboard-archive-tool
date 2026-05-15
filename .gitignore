@@ -1,0 +1,14 @@
+.build/
+.swiftpm/
+AGENTS.md
+DerivedData/
+dist/
+releases/
+docs/AI_HUB_LOCAL.md
+docs/architecture.md
+docs/production-readiness-review.md
+scripts/full-pipeline-check.sh
+scripts/install-login-agent.sh
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+.DS_Store
