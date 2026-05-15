@@ -14,6 +14,11 @@ jobs:
       - name: Check out
         uses: actions/checkout@v4
 
+      - name: Install SQLite with FTS5
+        run: |
+          brew install sqlite
+          echo "$(brew --prefix sqlite)/bin" >> "$GITHUB_PATH"
+
       - name: Build CLI
         run: swift build --product clipboard-archive
 
