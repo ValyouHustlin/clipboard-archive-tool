@@ -78,6 +78,16 @@ if [ -z "$asset_url" ]; then
   exit 1
 fi
 
+release_tag="$(
+  awk '
+    /"tag_name":/ {
+      gsub(/[",]/, "", $2)
+      print $2
+      exit
+    }
+  ' "$release_json"
+)"
+
 zip_path="$TMP_ROOT/ClipboardArchive.zip"
 unpack_dir="$TMP_ROOT/unpacked"
 mkdir -p "$unpack_dir"
@@ -116,4 +126,8 @@ fi
   ./install.sh
 )
 
+if [ -n "$release_tag" ]; then
+  echo "installed_version: $release_tag"
+fi
 echo "update complete"
+echo "verify: ~/.local/bin/clipboard-archive health"

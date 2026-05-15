@@ -1,9 +1,34 @@
 # Updates
 
-Clipboard Archive updates are file handoffs by default.
+Clipboard Archive updates are explicit user-run installs. The installed app
+does not check the internet for updates.
 
-The installed app does not check the internet for updates. To update another
-Mac, build or download a newer release folder, copy it to that Mac, and run:
+## One-Command GitHub Update
+
+On the target Mac, run:
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ValyouHustlin/clipboard-archive-tool/main/scripts/install-latest-github-release.sh)"
+```
+
+This downloads the latest GitHub Release, verifies `SHA256SUMS`, installs the
+app and CLI, and reloads the login item.
+
+To install a specific version:
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ValyouHustlin/clipboard-archive-tool/main/scripts/install-latest-github-release.sh)" -- ValyouHustlin/clipboard-archive-tool v0.1.2
+```
+
+Verify afterward:
+
+```bash
+~/.local/bin/clipboard-archive health
+```
+
+## File Handoff Update
+
+Build or download a newer release folder, copy it to that Mac, and run:
 
 ```bash
 ./install.sh

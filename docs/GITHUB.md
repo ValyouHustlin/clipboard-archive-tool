@@ -51,6 +51,10 @@ GitHub-hosted update:
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ValyouHustlin/clipboard-archive-tool/main/scripts/install-latest-github-release.sh)"
 ```
 
+This is the recommended command for another Mac. It downloads the latest
+release zip, verifies `SHA256SUMS`, installs the app and CLI, preserves local
+history/settings, and reloads the login item.
+
 Pinned version:
 
 ```bash

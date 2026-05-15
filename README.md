@@ -39,6 +39,29 @@ Install or update from the latest GitHub Release:
 That command downloads the release zip, verifies `SHA256SUMS`, installs the
 menu bar app and CLI, and registers the LaunchAgent login item.
 
+## Update Another Mac
+
+Run the same command any time you want another Mac to pull the newest release:
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ValyouHustlin/clipboard-archive-tool/main/scripts/install-latest-github-release.sh)"
+```
+
+The update preserves local clipboard history, settings, and indexes on that
+Mac. It replaces only the app bundle, CLI, and LaunchAgent definition.
+
+To pin a specific version:
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ValyouHustlin/clipboard-archive-tool/main/scripts/install-latest-github-release.sh)" -- ValyouHustlin/clipboard-archive-tool v0.1.2
+```
+
+After install/update:
+
+```bash
+~/.local/bin/clipboard-archive health
+```
+
 Manual file handoff also works. Download or copy a release folder, then run:
 
 ```bash

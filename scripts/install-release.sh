@@ -96,3 +96,7 @@ echo "installed_cli: $BIN_DIR/clipboard-archive"
 echo "launch_agent: $PLIST"
 echo "archive_root: $ARCHIVE_ROOT"
 echo "index_path: $INDEX_PATH"
+if [ -f "$HERE/VERSION" ]; then
+  echo "installed_version: $(cat "$HERE/VERSION")"
+fi
+echo "verify: $BIN_DIR/clipboard-archive health"
