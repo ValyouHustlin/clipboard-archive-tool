@@ -1,0 +1,151 @@
+# Clipboard Archive Architecture
+
+Last verified against source: 2026-07-28
+
+## Product Boundary
+
+Clipboard Archive is a native Swift macOS menu bar app plus a local CLI. The
+installed app captures text from `NSPasteboard`, filters it before storage, and
+writes accepted events to a user-selected local archive. It has no app-runtime
+network client, account, cloud sync, telemetry, or remote service.
+
+GitHub is used only by separate, user-run install/update scripts.
+
+## Runtime Components
+
+```text
+NSPasteboard
+  -> menu bar polling loop
+  -> ClipboardPrivacyFilter
+       -> blocked-event metadata only
+       -> accepted StoredClipboardEvent
+  -> append-oriented NDJSON archive
+       -> inline text, or a same-day large-body file
+  -> recent menu/window reader
+  -> optional derived SQLite FTS index
+
+CLI
+  -> search / redact / prune / health / manifest / index repair
+  -> the same core library and archive format
+```
+
+`ClipboardArchiveCore` owns the data model, filtering, archive reader/writer,
+redaction, pruning, health reporting, settings, and the derived index.
+
+`ClipboardArchiveMenuBar` owns pasteboard polling, source-app attribution,
+pause/storage controls, recent-history UI, settings, and the single-instance
+file lock.
+
+`clipboard-archive` exposes local maintenance and retrieval commands.
+
+`clipboard-archive-checks` is a synthetic smoke-check executable. As of this
+verification, the repository's `Tests/` directory is empty and `Package.swift`
+has no test target, so `swift test` reports `error: no tests found`.
+
+## Default Paths
+
+Portable installs use:
+
+```text
+~/Library/Application Support/ClipboardArchive/Archive/clipboard-history
+~/Library/Application Support/ClipboardArchive/Indexes/clipboard-search.sqlite
+~/Library/Application Support/ClipboardArchive/settings.json
+~/Library/Application Support/ClipboardArchive/ClipboardArchive.lock
+```
+
+The archive and index can be overridden with:
+
+```text
+CLIPBOARD_ARCHIVE_ARCHIVE_ROOT
+CLIPBOARD_ARCHIVE_INDEX_PATH
+```
+
+Aaron's current LaunchAgent pins those two values to:
+
+```text
+/Users/legacy/Development/AI-Hub-Archive/clipboard-history
+/Users/legacy/Development/AI/data/clipboard-history/indexes/clipboard-search.sqlite
+```
+
+The settings and instance-lock paths are not currently configurable.
+
+## Archive Format
+
+Accepted events are appended as JSON lines under:
+
+```text
+raw/YYYY/MM/YYYY-MM-DD_clipboard-events.ndjson
+```
+
+Text larger than the configured inline threshold is stored separately under:
+
+```text
+raw/YYYY/MM/YYYY-MM-DD_large-items/
+```
+
+The event record holds a relative body path, content hash, preview, source-app
+metadata, size counts, privacy label, allowed local uses, and the seven-day UI
+visibility timestamp.
+
+Blocked events retain timestamp, source-app metadata, and a machine-readable
+reason. They do not include clipboard text.
+
+Deletion rewrites matching event content to a tombstone, removes any referenced
+large-body file, appends a deletion-ledger record, and deletes the matching row
+from the derived index. It does not erase backups or filesystem snapshots that
+already captured the data.
+
+## Search And Retention
+
+The menu and clipboard window load recent records from the last seven days. The
+window filters the loaded event preview/source/type metadata; it does not search
+the full archive or large-body contents.
+
+The CLI's archive search scans NDJSON plus referenced body files. The separate
+SQLite FTS index is rebuildable derived data and stores searchable content in
+plaintext. Index rebuild currently invokes the system `sqlite3` executable.
+
+The seven-day window is a display boundary, not a deletion policy. Storage
+modes can retain 10 items, 50 items, or the full archive. The limited modes
+physically prune older content after accepted captures.
+
+## Privacy And Trust Boundaries
+
+Filtering happens before archive writes. The current filter blocks a hard-coded
+set of password-manager/keychain apps, user-configured exclusions, and
+credential-like text recognized by `SecretDetector`.
+
+This is risk reduction, not a guarantee. Browser password fields, unknown
+credential formats, incorrect source attribution, and clipboard changes
+overwritten between polling intervals remain outside the app's reliable
+visibility.
+
+Accepted archive and index content are plaintext and readable by processes with
+the same macOS user permissions. CryptoKit is used for hashing, not encryption.
+
+## Current Startup Behavior
+
+The app acquires an exclusive file lock before creating its menu-bar UI. A
+second executable exits without starting another polling loop.
+
+On a new profile with no settings file, capture and full-archive retention
+currently default to on. There is no first-run disclosure or consent screen.
+That is a production-readiness gap for a product whose core trust promise is
+privacy.
+
+## Permission Gates
+
+Starting live capture, installing or changing login behavior, replacing the
+running app, or changing Aaron's source-retention policy requires explicit
+approval and the AI Hub archive workflow.
+
+Safe package-level development uses:
+
+```bash
+/usr/bin/xcrun swift build
+/usr/bin/xcrun swift run clipboard-archive-checks
+/usr/bin/xcrun swift run clipboard-archive self-test
+```
+
+Do not run the manual monitor or replace `dist/ClipboardArchive.app` while the
+installed live instance is in use without an explicit operational plan.
