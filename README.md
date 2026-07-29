@@ -86,6 +86,14 @@ capture, search, archive storage, health checks, or updates by file handoff.
 
 See [docs/INSTALL.md](docs/INSTALL.md).
 
+## Product And Business Context
+
+Current positioning and market analysis live in
+[docs/market-positioning-and-business-analysis.md](docs/market-positioning-and-business-analysis.md).
+
+For a short restart guide for the next agent session, see
+[docs/NEXT_SESSION_HANDOFF.md](docs/NEXT_SESSION_HANDOFF.md).
+
 ## Build A Shareable Package
 
 From the repository root:
