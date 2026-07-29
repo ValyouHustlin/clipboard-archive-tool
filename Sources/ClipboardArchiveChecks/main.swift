@@ -23,12 +23,22 @@ func run(_ name: String, _ body: () throws -> Void) rethrows {
     print("ok - \(name)")
 }
 
+nonisolated(unsafe) var temporaryDirectories: [URL] = []
+
 func temporaryDirectory() -> URL {
-    URL(fileURLWithPath: NSTemporaryDirectory())
+    let url = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("clipboard-archive-checks-\(UUID().uuidString)")
+    temporaryDirectories.append(url)
+    return url
 }
 
 do {
+    defer {
+        for directory in temporaryDirectories {
+            try? FileManager.default.removeItem(at: directory)
+        }
+    }
+
     try run("detects private key") {
         let privateKeyHeader = "-----BEGIN " + "PRIVATE KEY-----"
         let privateKeyFooter = "-----END " + "PRIVATE KEY-----"

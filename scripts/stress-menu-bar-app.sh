@@ -1,24 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARCHIVE_ROOT="${1:-/tmp/clipboard-archive-app-stress-archive}"
-LABEL="app.clipboardarchive"
-LOGIN_AGENT_WAS_LOADED=0
+APP_SUPPORT_ROOT="${ARCHIVE_ROOT}-app-support"
+APP_PATH="$ROOT/.build/clipboard-archive-app-stress/ClipboardArchive.app"
+
+if /usr/bin/pgrep -x ClipboardArchive >/dev/null 2>&1 &&
+   [ "${CLIPBOARD_ARCHIVE_ALLOW_LIVE_CLIPBOARD_STRESS:-0}" != "1" ]; then
+  echo "app stress refused: ClipboardArchive is running and would capture synthetic test clipboard values" >&2
+  echo "stop it explicitly or set CLIPBOARD_ARCHIVE_ALLOW_LIVE_CLIPBOARD_STRESS=1 after reviewing the impact" >&2
+  exit 2
+fi
+
 rm -rf "$ARCHIVE_ROOT"
 mkdir -p "$ARCHIVE_ROOT"
 
 cd "$ROOT"
-./scripts/build-menu-bar-app.sh >/dev/null
+CLIPBOARD_ARCHIVE_APP_OUTPUT="$APP_PATH" ./scripts/build-menu-bar-app.sh >/dev/null
 
-if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
-  LOGIN_AGENT_WAS_LOADED=1
-fi
-pkill -x ClipboardArchive >/dev/null 2>&1 || true
-pkill -x ClipboardArchive >/dev/null 2>&1 || true
-sleep 1
-
-CLIPBOARD_ARCHIVE_ARCHIVE_ROOT="$ARCHIVE_ROOT" "$ROOT/dist/ClipboardArchive.app/Contents/MacOS/ClipboardArchive" &
+CLIPBOARD_ARCHIVE_ARCHIVE_ROOT="$ARCHIVE_ROOT" \
+CLIPBOARD_ARCHIVE_INDEX_PATH="$ARCHIVE_ROOT/index.sqlite" \
+CLIPBOARD_ARCHIVE_APPLICATION_SUPPORT_ROOT="$APP_SUPPORT_ROOT" \
+  "$APP_PATH/Contents/MacOS/ClipboardArchive" &
 APP_PID=$!
 
 cleanup() {
@@ -26,9 +31,6 @@ cleanup() {
   if kill -0 "$APP_PID" 2>/dev/null; then
     kill "$APP_PID" 2>/dev/null || true
     wait "$APP_PID" 2>/dev/null || true
-  fi
-  if [ "$LOGIN_AGENT_WAS_LOADED" = "1" ]; then
-    launchctl kickstart -k "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT

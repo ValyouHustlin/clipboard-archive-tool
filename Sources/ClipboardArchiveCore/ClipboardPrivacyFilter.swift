@@ -52,6 +52,15 @@ public struct ClipboardPrivacyFilter: Sendable {
         "com.dashlane.dashlane",
         "com.1password.1password",
         "com.1password.1password7",
+        "com.bitwarden.desktop",
+        "com.lastpass.lastpass",
+        "org.keepassxc.keepassxc",
+        "com.protonpass.macos",
+        "com.enpass.desktop",
+        "com.callasign.keeper",
+        "com.nordpass.macos",
+        "com.siber.roboform",
+        "com.strongbox",
         "com.apple.passwords",
         "com.apple.keychainaccess"
     ]
@@ -60,6 +69,15 @@ public struct ClipboardPrivacyFilter: Sendable {
         "dashlane",
         "1password",
         "onepassword",
+        "bitwarden",
+        "lastpass",
+        "keepass",
+        "proton pass",
+        "enpass",
+        "keeper",
+        "nordpass",
+        "roboform",
+        "strongbox",
         "passwords",
         "keychain access"
     ]

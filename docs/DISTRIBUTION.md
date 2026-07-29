@@ -23,9 +23,17 @@ Validate a staged release before handoff:
 ./scripts/validate-release.sh releases/ClipboardArchive-0.1.2-macos-arm64
 ```
 
+Packaging builds into `.build/clipboard-archive-package/ClipboardArchive.app`;
+it does not replace the repository's `dist/ClipboardArchive.app` or a running
+installation.
+
 Release builds are ad hoc signed after the `.app` bundle is assembled. This
 binds the app's `Info.plist` and resource seal, but it is not Apple Developer
 ID signing or notarization.
+
+`SHA256SUMS` is validated by the release validator and installer. It detects
+corruption or mismatched files inside an extracted release, but because it
+ships beside the artifact it does not establish publisher identity.
 
 ## Versioning
 
@@ -42,6 +50,8 @@ Copy the release folder, tarball, or zip to the target Mac. Then run:
 ```
 
 Running `install.sh` again with a newer release updates the app in place.
+The installer stages the replacement and retains the prior app/LaunchAgent
+until the new executable has remained running.
 
 See [UPDATES.md](UPDATES.md) and [GITHUB.md](GITHUB.md) for the recommended
 GitHub/file-handoff update flow.

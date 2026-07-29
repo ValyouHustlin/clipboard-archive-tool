@@ -10,6 +10,10 @@ Clipboard Archive is local-first.
   internet connection.
 - Password managers and credential-like content are blocked by default.
 - Blocked sensitive events are recorded without raw content.
+- New profiles start with capture off. First run explains plaintext storage and
+  filter limits before offering no capture, last-50, or full-archive storage.
+- App-created archive directories and files are restricted to the owning user
+  (`0700` directories and `0600` files).
 - Manual delete/redact removes inline content, removes large body files,
   records a deletion marker, and purges the item from the local SQLite search
   index. Non-content timeline metadata remains so the archive can show that an
@@ -26,6 +30,9 @@ Clipboard Archive is local-first.
   - `CLIPBOARD_ARCHIVE_ARCHIVE_ROOT`
   - `CLIPBOARD_ARCHIVE_INDEX_PATH`
 
+`CLIPBOARD_ARCHIVE_APPLICATION_SUPPORT_ROOT` exists for isolated development
+profiles and changes the settings and instance-lock root.
+
 Known limits:
 
 - macOS exposes clipboard changes as a pasteboard change count, not a queue.
@@ -36,5 +43,7 @@ Known limits:
 - Unsigned local builds may require macOS Gatekeeper approval on first launch.
 - Accepted clipboard content and the derived SQLite index are plaintext local
   files. CryptoKit is used for hashing, not archive encryption.
+- Owner-only file permissions reduce accidental disclosure but do not protect
+  against processes running as the same macOS user.
 - Deletion and pruning affect this app's live archive and derived search index,
   not external backups or filesystem snapshots that already captured files.

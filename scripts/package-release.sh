@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="${CLIPBOARD_ARCHIVE_VERSION:-0.1.2}"
@@ -10,15 +11,19 @@ RELEASE_ROOT="$ROOT/releases"
 STAGE="$RELEASE_ROOT/$NAME"
 ARCHIVE="$RELEASE_ROOT/$NAME.tar.gz"
 ZIP="$RELEASE_ROOT/$NAME.zip"
+PACKAGE_APP="$ROOT/.build/clipboard-archive-package/ClipboardArchive.app"
 
 cd "$ROOT"
-CLIPBOARD_ARCHIVE_VERSION="$VERSION" CLIPBOARD_ARCHIVE_BUILD="$BUILD_NUMBER" ./scripts/build-menu-bar-app.sh >/dev/null
-swift build -c release --product clipboard-archive >/dev/null
+CLIPBOARD_ARCHIVE_VERSION="$VERSION" \
+CLIPBOARD_ARCHIVE_BUILD="$BUILD_NUMBER" \
+CLIPBOARD_ARCHIVE_APP_OUTPUT="$PACKAGE_APP" \
+  ./scripts/build-menu-bar-app.sh >/dev/null
+/usr/bin/xcrun swift build -c release --product clipboard-archive >/dev/null
 
 rm -rf "$STAGE" "$ARCHIVE" "$ZIP"
 mkdir -p "$STAGE/docs" "$STAGE/bin"
 
-cp -R "$ROOT/dist/ClipboardArchive.app" "$STAGE/ClipboardArchive.app"
+cp -R "$PACKAGE_APP" "$STAGE/ClipboardArchive.app"
 cp "$ROOT/.build/release/clipboard-archive" "$STAGE/bin/clipboard-archive"
 cp "$ROOT/scripts/install-release.sh" "$STAGE/install.sh"
 cp "$ROOT/scripts/uninstall-release.sh" "$STAGE/uninstall.sh"

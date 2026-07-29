@@ -32,10 +32,11 @@ public struct ClipboardArchiveWriter: Sendable {
                 .appendingPathComponent(yearString(capture.capturedAt))
                 .appendingPathComponent(monthString(capture.capturedAt))
                 .appendingPathComponent("\(day)_large-items")
-            try FileManager.default.createDirectory(at: largeDirectory, withIntermediateDirectories: true)
+            try ClipboardPrivateFileSystem.createDirectory(largeDirectory, archiveRoot: archiveRoot)
             let fileExtension = inferContentType(capture.content) == .code ? "code" : "txt"
             let bodyURL = largeDirectory.appendingPathComponent("\(id).\(fileExtension)")
             try contentData.write(to: bodyURL, options: [.atomic])
+            try ClipboardPrivateFileSystem.secureFile(bodyURL)
             rawContentPath = relativePath(from: archiveRoot, to: bodyURL)
         } else {
             inlineContent = capture.content
@@ -82,7 +83,10 @@ public struct ClipboardArchiveWriter: Sendable {
     }
 
     private func appendJSONLine<T: Encodable>(_ value: T, to url: URL) throws {
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try ClipboardPrivateFileSystem.createDirectory(
+            url.deletingLastPathComponent(),
+            archiveRoot: archiveRoot
+        )
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -97,6 +101,7 @@ public struct ClipboardArchiveWriter: Sendable {
         } else {
             try data.write(to: url, options: [.atomic])
         }
+        try ClipboardPrivateFileSystem.secureFile(url)
     }
 
     private func sha256(_ data: Data) -> String {

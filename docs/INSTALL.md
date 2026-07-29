@@ -18,6 +18,12 @@ docs/
 ./install.sh
 ```
 
+The installer validates the release folder's bundled checksums before stopping
+an existing app. It stages the new bundle, verifies that it remains running,
+and restores the previous app and LaunchAgent definition on failure. Checksums
+detect corruption or mismatched files, not publisher identity; public builds
+still require Developer ID signing and notarization.
+
 The default install is per-user:
 
 ```text
@@ -46,7 +52,8 @@ Install a newer release folder the same way:
 
 The installer stops the running app, replaces the app bundle, updates the CLI,
 rewrites the LaunchAgent, and starts the new app. Existing archive data remains
-in place.
+in place. If the new app does not remain running, the prior app and LaunchAgent
+are restored.
 
 Updates are file handoffs. The installed app does not check the internet for
 new versions.
@@ -73,6 +80,10 @@ clipboard-archive write-manifest
 ## Settings
 
 Open the menu bar icon and choose `Settings...`.
+
+On a new profile, capture begins off. The first-run window explains plaintext
+storage and filtering limits, then offers no capture, last 50 items
+(recommended), or a full archive.
 
 Current controls:
 

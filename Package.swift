@@ -12,6 +12,12 @@ let package = Package(
         .executable(name: "clipboard-archive-checks", targets: ["ClipboardArchiveChecks"]),
         .executable(name: "ClipboardArchiveMenuBar", targets: ["ClipboardArchiveMenuBar"])
     ],
+    dependencies: [
+        .package(
+            url: "https://github.com/swiftlang/swift-testing.git",
+            revision: "swift-6.2.3-RELEASE"
+        )
+    ],
     targets: [
         .target(
             name: "ClipboardArchiveCore"
@@ -27,6 +33,13 @@ let package = Package(
         .executableTarget(
             name: "ClipboardArchiveMenuBar",
             dependencies: ["ClipboardArchiveCore"]
+        ),
+        .testTarget(
+            name: "ClipboardArchiveCoreTests",
+            dependencies: [
+                "ClipboardArchiveCore",
+                .product(name: "Testing", package: "swift-testing")
+            ]
         )
     ]
 )

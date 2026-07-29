@@ -24,7 +24,10 @@ public struct ClipboardDeletionLedger: Sendable {
     public func recordDeletion(eventID: String, reason: String = "manual-delete") throws {
         let event = ClipboardDeletionEvent(clipboardEventID: eventID, reason: reason)
         let url = ledgerURL(for: event.deletedAt)
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try ClipboardPrivateFileSystem.createDirectory(
+            url.deletingLastPathComponent(),
+            archiveRoot: archiveRoot
+        )
 
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -40,6 +43,7 @@ public struct ClipboardDeletionLedger: Sendable {
         } else {
             try data.write(to: url, options: [.atomic])
         }
+        try ClipboardPrivateFileSystem.secureFile(url)
     }
 
     public func deletedIDs() throws -> Set<String> {
@@ -53,11 +57,15 @@ public struct ClipboardDeletionLedger: Sendable {
         var ids = Set<String>()
         let urls = FileManager.default.enumerator(
             at: root,
-            includingPropertiesForKeys: [.isRegularFileKey],
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
             options: [.skipsHiddenFiles]
         )?.compactMap { $0 as? URL } ?? []
 
         for url in urls where url.pathExtension == "ndjson" {
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true else {
+                continue
+            }
             let lines = try String(contentsOf: url).split(separator: "\n", omittingEmptySubsequences: true)
             for line in lines {
                 guard let data = String(line).data(using: .utf8),
@@ -83,4 +91,3 @@ public struct ClipboardDeletionLedger: Sendable {
             .appendingPathComponent("\(day)_deletions.ndjson")
     }
 }
-

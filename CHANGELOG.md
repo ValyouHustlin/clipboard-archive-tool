@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased - 2026-07-28
+
+- Added first-run privacy disclosure and explicit capture/retention choice;
+  new profiles start with capture off and last-50 as the recommended option.
+- Added 19 synthetic Swift Testing tests for filtering, blocked-content
+  non-retention, traversal and symlink containment, redaction boundaries,
+  permissions, health windows, daily manifests, settings migration, and
+  failure-safe SQLite rebuilds.
+- Expanded credential and password-manager detection coverage.
+- Restricted app-created directories and files to owner-only permissions.
+- Rejected unsafe archive body paths across read, search, redact, prune,
+  health, and index operations.
+- Corrected future-date health counts and day-scoped manifest counts.
+- Made SQLite index replacement atomic and failure-preserving.
+- Added isolated settings/lock roots for safe development and UI fixtures.
+- Clarified the seven-day UI search boundary.
+- Hardened packaging, checksum verification, update rollback, and live-instance
+  guards without changing the installed instance.
+
 ## 0.1.2 - 2026-05-15
 
 - Added storage modes for remembering 10 items, 50 items, or a full archive.

@@ -18,6 +18,8 @@ managed enterprise distribution without additional controls.
 
 Accepted clipboard items are stored in local plaintext NDJSON/body files under
 the configured archive root. The derived SQLite FTS index is also plaintext.
+App-created directories use owner-only mode `0700`; files use owner-only mode
+`0600`.
 
 This is intentional for the current version because the app's main job is local
 searchability and durable machine-readable history. Treat the archive as
@@ -25,6 +27,11 @@ sensitive data. Anyone or anything with read access to your user account may be
 able to read it.
 
 CryptoKit is linked for hashing clipboard contents, not for archive encryption.
+Processes running as the same macOS user can still read those files.
+
+Archive-relative body paths are rejected if they are absolute, contain
+traversal components, or escape through a symlink. Derived-index rebuilds are
+created and checked at a temporary sibling path before atomic replacement.
 
 ## Sensitive Work
 
@@ -65,6 +72,11 @@ notarization.
 
 For wider distribution, use a Developer ID certificate, hardened runtime, and
 Apple notarization.
+
+Bundled `SHA256SUMS` detect corruption or mismatched extracted files. Because
+the checksum file ships beside the artifact, it does not authenticate the
+publisher; Developer ID signing and notarization remain the public trust
+boundary.
 
 ## Reporting Issues
 

@@ -99,10 +99,13 @@ public struct ClipboardArchivePruner: Sendable {
                 prunedEvents += 1
                 prunedIDs.append(event.id)
                 if let rawContentPath = event.rawContentPath {
-                    deletedBodyFiles += 1
-                    if !dryRun {
-                        let bodyURL = archiveRoot.appendingPathComponent(rawContentPath)
-                        if FileManager.default.fileExists(atPath: bodyURL.path) {
+                    if let bodyURL = try? ClipboardArchivePath.containedURL(
+                        relativePath: rawContentPath,
+                        archiveRoot: archiveRoot
+                    ) {
+                        deletedBodyFiles += 1
+                        if !dryRun,
+                           FileManager.default.fileExists(atPath: bodyURL.path) {
                             try FileManager.default.removeItem(at: bodyURL)
                         }
                     }
@@ -133,6 +136,7 @@ public struct ClipboardArchivePruner: Sendable {
                     .appendingPathComponent(".\(eventFile.lastPathComponent).tmp-\(UUID().uuidString)")
                 try payload.write(to: tempURL, atomically: true, encoding: .utf8)
                 _ = try FileManager.default.replaceItemAt(eventFile, withItemAt: tempURL)
+                try ClipboardPrivateFileSystem.secureFile(eventFile)
                 changedFiles += 1
             }
         }

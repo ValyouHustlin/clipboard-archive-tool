@@ -4,6 +4,8 @@ public enum ClipboardDefaults {
     public static let appSupportFolderName = "ClipboardArchive"
     public static let archiveEnvironmentKey = "CLIPBOARD_ARCHIVE_ARCHIVE_ROOT"
     public static let indexEnvironmentKey = "CLIPBOARD_ARCHIVE_INDEX_PATH"
+    public static let applicationSupportEnvironmentKey = "CLIPBOARD_ARCHIVE_APPLICATION_SUPPORT_ROOT"
+    public static let isolatedUserDefaultsSuiteName = "app.clipboardarchive.isolated-development"
 
     public static func archiveRoot(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
         if let path = environment[archiveEnvironmentKey], !path.isEmpty {
@@ -23,17 +25,31 @@ public enum ClipboardDefaults {
             .appendingPathComponent("clipboard-search.sqlite")
     }
 
-    public static func settingsURL() -> URL {
-        applicationSupportRoot().appendingPathComponent("settings.json")
+    public static func settingsURL(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
+        applicationSupportRoot(environment: environment).appendingPathComponent("settings.json")
     }
 
-    public static func lockURL() -> URL {
-        applicationSupportRoot().appendingPathComponent("ClipboardArchive.lock")
+    public static func lockURL(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
+        applicationSupportRoot(environment: environment).appendingPathComponent("ClipboardArchive.lock")
     }
 
-    public static func applicationSupportRoot() -> URL {
-        FileManager.default
+    public static func applicationSupportRoot(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        if let path = environment[applicationSupportEnvironmentKey], !path.isEmpty {
+            return URL(fileURLWithPath: path, isDirectory: true)
+        }
+        return FileManager.default
             .homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/\(appSupportFolderName)", isDirectory: true)
+    }
+
+    public static func userDefaultsSuiteName(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String? {
+        guard let path = environment[applicationSupportEnvironmentKey], !path.isEmpty else {
+            return nil
+        }
+        return isolatedUserDefaultsSuiteName
     }
 }

@@ -68,7 +68,7 @@ final class ClipboardPanelController: NSWindowController, NSTableViewDataSource,
             root.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
         ])
 
-        searchField.placeholderString = "Search loaded clipboard items"
+        searchField.placeholderString = "Filter loaded items from the last 7 days"
         searchField.delegate = self
         root.addArrangedSubview(searchField)
 

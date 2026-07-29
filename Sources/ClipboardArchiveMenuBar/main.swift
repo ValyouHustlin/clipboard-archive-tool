@@ -5,8 +5,13 @@ import Foundation
 private let archiveRoot = ClipboardDefaults.archiveRoot()
 
 @MainActor
-final class ClipboardMenuBarApp: NSObject, NSApplicationDelegate, ClipboardSettingsWindowControllerDelegate {
-    private let userDefaults = UserDefaults.standard
+final class ClipboardMenuBarApp: NSObject,
+    NSApplicationDelegate,
+    ClipboardOnboardingWindowControllerDelegate,
+    ClipboardSettingsWindowControllerDelegate {
+    private let userDefaults = ClipboardDefaults.userDefaultsSuiteName()
+        .flatMap(UserDefaults.init(suiteName:))
+        ?? UserDefaults.standard
     private let settingsStore = ClipboardSettingsStore()
     private var settings = ClipboardSettings()
     private var statusItem: NSStatusItem!
@@ -28,6 +33,7 @@ final class ClipboardMenuBarApp: NSObject, NSApplicationDelegate, ClipboardSetti
     private var lastNonSelfApp = ClipboardSourceApp(name: "Unknown", bundleIdentifier: nil)
     private var panelController: ClipboardPanelController?
     private var settingsWindowController: ClipboardSettingsWindowController?
+    private var onboardingWindowController: ClipboardOnboardingWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         isPaused = userDefaults.bool(forKey: "capturePaused")
@@ -44,6 +50,11 @@ final class ClipboardMenuBarApp: NSObject, NSApplicationDelegate, ClipboardSetti
         )
         rebuildMenu()
         restartTimer()
+        if !settings.hasCompletedOnboarding {
+            lastStatus = "Choose privacy settings to begin"
+            rebuildMenu()
+            showOnboarding()
+        }
     }
 
     private func pollPasteboard() {
@@ -178,8 +189,8 @@ final class ClipboardMenuBarApp: NSObject, NSApplicationDelegate, ClipboardSetti
 
     @objc private func searchRecent() {
         let alert = NSAlert()
-        alert.messageText = "Search Clipboard Archive"
-        alert.informativeText = "Searches local archive content. Results exclude deleted items."
+        alert.messageText = "Search Last 7 Days"
+        alert.informativeText = "Searches stored content from the last 7 days. Results exclude deleted items."
         alert.addButton(withTitle: "Search")
         alert.addButton(withTitle: "Cancel")
 
@@ -232,6 +243,48 @@ final class ClipboardMenuBarApp: NSObject, NSApplicationDelegate, ClipboardSetti
         rebuildMenu()
     }
 
+    private func showOnboarding() {
+        if onboardingWindowController == nil {
+            let controller = ClipboardOnboardingWindowController(archiveRoot: archiveRoot)
+            controller.delegate = self
+            onboardingWindowController = controller
+        }
+        onboardingWindowController?.show()
+#if DEBUG
+        if let path = ProcessInfo.processInfo.environment["CLIPBOARD_ARCHIVE_UI_SNAPSHOT_PATH"],
+           !path.isEmpty {
+            let controller = onboardingWindowController
+            DispatchQueue.main.async {
+                try? controller?.writeSnapshot(to: URL(fileURLWithPath: path))
+            }
+        }
+        if let choice = ProcessInfo.processInfo.environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_CHOICE"],
+           !choice.isEmpty {
+            let controller = onboardingWindowController
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                controller?.performAutomationChoice(choice)
+            }
+        }
+#endif
+    }
+
+    func clipboardOnboardingWindow(
+        _ controller: ClipboardOnboardingWindowController,
+        didChooseArchiveEnabled archiveEnabled: Bool,
+        retentionMode: ClipboardRetentionMode
+    ) {
+        settings.archiveEnabled = archiveEnabled
+        settings.retentionMode = retentionMode
+        settings.recentItemLimit = retentionMode.retainedItemLimit ?? settings.recentItemLimit
+        settings.hasCompletedOnboarding = true
+        isPaused = false
+        saveSettingsAndRefresh(
+            archiveEnabled
+                ? "\(retentionMode.displayName) capture enabled"
+                : "Capture remains off"
+        )
+    }
+
     private func applyRetentionLimitIfNeeded() {
         guard let limit = settings.retentionMode.retainedItemLimit else {
             return
@@ -260,6 +313,8 @@ final class ClipboardMenuBarApp: NSObject, NSApplicationDelegate, ClipboardSetti
             Last 7 days: \(health.lastSevenDaysStoredEvents)
             Large bodies: \(health.largeBodyFiles)
             Missing bodies: \(health.missingBodyFiles)
+            Unsafe body paths: \(health.unsafeBodyPaths)
+            Files with broad permissions: \(health.insecureFiles)
             Invalid JSON: \(health.invalidJSONLines)
             Archive size: \(formatBytes(health.archiveBytes))
             Index size: \(formatBytes(health.indexBytes))
@@ -398,6 +453,7 @@ final class ClipboardMenuBarApp: NSObject, NSApplicationDelegate, ClipboardSetti
             lastStatus = "Full archive on"
         }
         settings.archiveEnabled = true
+        settings.hasCompletedOnboarding = true
         try? settingsStore.save(settings)
         rebuildMenu()
     }

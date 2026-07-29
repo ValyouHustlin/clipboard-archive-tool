@@ -38,9 +38,10 @@ file lock.
 
 `clipboard-archive` exposes local maintenance and retrieval commands.
 
-`clipboard-archive-checks` is a synthetic smoke-check executable. As of this
-verification, the repository's `Tests/` directory is empty and `Package.swift`
-has no test target, so `swift test` reports `error: no tests found`.
+`clipboard-archive-checks` is a synthetic compatibility-check executable.
+`Tests/AIHubClipboardCoreTests` is a Swift Testing suite covering the
+load-bearing privacy, path-containment, settings-migration, health, manifest,
+redaction, and derived-index behaviors.
 
 ## Default Paths
 
@@ -58,6 +59,7 @@ The archive and index can be overridden with:
 ```text
 CLIPBOARD_ARCHIVE_ARCHIVE_ROOT
 CLIPBOARD_ARCHIVE_INDEX_PATH
+CLIPBOARD_ARCHIVE_APPLICATION_SUPPORT_ROOT
 ```
 
 Aaron's current LaunchAgent pins those two values to:
@@ -67,7 +69,9 @@ Aaron's current LaunchAgent pins those two values to:
 /Users/legacy/Development/AI/data/clipboard-history/indexes/clipboard-search.sqlite
 ```
 
-The settings and instance-lock paths are not currently configurable.
+The Application Support override isolates settings, the instance lock, and the
+`UserDefaults` suite for development fixtures; release LaunchAgents normally
+use the default paths and preference domain.
 
 ## Archive Format
 
@@ -95,15 +99,22 @@ large-body file, appends a deletion-ledger record, and deletes the matching row
 from the derived index. It does not erase backups or filesystem snapshots that
 already captured the data.
 
+Every event-provided body path is resolved component by component beneath the
+archive root. Absolute paths, traversal components, and symlink escapes are
+rejected before read or deletion. App-created directories use mode `0700` and
+files use mode `0600`.
+
 ## Search And Retention
 
 The menu and clipboard window load recent records from the last seven days. The
 window filters the loaded event preview/source/type metadata; it does not search
 the full archive or large-body contents.
 
-The CLI's archive search scans NDJSON plus referenced body files. The separate
+The CLI's archive search scans NDJSON plus contained body files. The separate
 SQLite FTS index is rebuildable derived data and stores searchable content in
-plaintext. Index rebuild currently invokes the system `sqlite3` executable.
+plaintext. Index rebuild invokes `/usr/bin/sqlite3`, validates a sibling
+temporary database with `quick_check`, and atomically replaces the prior index
+only after success.
 
 The seven-day window is a display boundary, not a deletion policy. Storage
 modes can retain 10 items, 50 items, or the full archive. The limited modes
@@ -128,10 +139,11 @@ the same macOS user permissions. CryptoKit is used for hashing, not encryption.
 The app acquires an exclusive file lock before creating its menu-bar UI. A
 second executable exits without starting another polling loop.
 
-On a new profile with no settings file, capture and full-archive retention
-currently default to on. There is no first-run disclosure or consent screen.
-That is a production-readiness gap for a product whose core trust promise is
-privacy.
+On a new profile with no settings file, capture defaults off. A first-run
+window discloses plaintext storage and filter limits, shows the archive path,
+and requires the user to choose no capture, a last-50 archive (recommended), or
+the full archive. Existing settings migrate as already-onboarded without
+changing their capture or retention behavior.
 
 ## Permission Gates
 
@@ -143,6 +155,7 @@ Safe package-level development uses:
 
 ```bash
 /usr/bin/xcrun swift build
+/usr/bin/xcrun swift test
 /usr/bin/xcrun swift run clipboard-archive-checks
 /usr/bin/xcrun swift run clipboard-archive self-test
 ```

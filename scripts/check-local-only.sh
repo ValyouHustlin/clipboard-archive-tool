@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RELEASE_DIR="${1:-}"
@@ -11,7 +12,9 @@ production_source_matches="$(
     "$ROOT/Sources/ClipboardArchiveMenuBar" \
     "$ROOT/Sources/clipboard-archive" \
     "$ROOT/Package.swift" \
-    2>/dev/null || true
+    2>/dev/null \
+    | rg -v 'github\.com/swiftlang/swift-testing\.git' \
+    || true
 )"
 
 if [ -n "$production_source_matches" ]; then

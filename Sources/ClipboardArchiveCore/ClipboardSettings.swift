@@ -43,6 +43,7 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
     public var archiveEnabled: Bool
     public var recentItemLimit: Int
     public var retentionMode: ClipboardRetentionMode
+    public var hasCompletedOnboarding: Bool
 
     private enum CodingKeys: String, CodingKey {
         case excludedBundleIdentifiers
@@ -52,6 +53,7 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         case archiveEnabled
         case recentItemLimit
         case retentionMode
+        case hasCompletedOnboarding
     }
 
     public init(
@@ -59,9 +61,10 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         excludedAppNameFragments: [String] = [],
         pauseUntil: Date? = nil,
         pollIntervalSeconds: TimeInterval = 0.2,
-        archiveEnabled: Bool = true,
+        archiveEnabled: Bool = false,
         recentItemLimit: Int = 50,
-        retentionMode: ClipboardRetentionMode = .unlimited
+        retentionMode: ClipboardRetentionMode = .recent50,
+        hasCompletedOnboarding: Bool = false
     ) {
         self.excludedBundleIdentifiers = excludedBundleIdentifiers
         self.excludedAppNameFragments = excludedAppNameFragments
@@ -70,6 +73,7 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         self.archiveEnabled = archiveEnabled
         self.recentItemLimit = Self.clampRecentItemLimit(recentItemLimit)
         self.retentionMode = retentionMode
+        self.hasCompletedOnboarding = hasCompletedOnboarding
     }
 
     public var isTemporarilyPaused: Bool {
@@ -89,6 +93,7 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         let decodedLimit = try container.decodeIfPresent(Int.self, forKey: .recentItemLimit) ?? 50
         recentItemLimit = Self.clampRecentItemLimit(decodedLimit)
         retentionMode = try container.decodeIfPresent(ClipboardRetentionMode.self, forKey: .retentionMode) ?? (archiveEnabled ? .unlimited : .recent50)
+        hasCompletedOnboarding = try container.decodeIfPresent(Bool.self, forKey: .hasCompletedOnboarding) ?? true
     }
 
     public static func clampRecentItemLimit(_ value: Int) -> Int {
@@ -112,12 +117,14 @@ public struct ClipboardSettingsStore: Sendable {
     }
 
     public func save(_ settings: ClipboardSettings) throws {
-        try FileManager.default.createDirectory(at: settingsURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let directory = settingsURL.deletingLastPathComponent()
+        try ClipboardPrivateFileSystem.createDirectory(directory, archiveRoot: directory)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         let data = try encoder.encode(settings)
         try data.write(to: settingsURL, options: [.atomic])
+        try ClipboardPrivateFileSystem.secureFile(settingsURL)
     }
 
     public static func defaultSettingsURL() -> URL {

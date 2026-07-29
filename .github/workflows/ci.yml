@@ -14,16 +14,14 @@ jobs:
       - name: Check out
         uses: actions/checkout@v5
 
-      - name: Install SQLite with FTS5
-        run: |
-          brew install sqlite
-          echo "$(brew --prefix sqlite)/bin" >> "$GITHUB_PATH"
-
       - name: Build CLI
         run: swift build --product clipboard-archive
 
       - name: Build menu bar app target
         run: swift build --product ClipboardArchiveMenuBar
+
+      - name: Run test suite
+        run: swift test
 
       - name: Run core checks
         run: swift run --quiet clipboard-archive-checks
@@ -32,7 +30,10 @@ jobs:
         run: ./scripts/package-release.sh
 
       - name: Validate release
-        run: ./scripts/validate-release.sh releases/ClipboardArchive-0.1.2-macos-arm64
+        run: ./scripts/validate-release.sh "releases/ClipboardArchive-0.1.2-macos-$(uname -m)"
 
       - name: Check local-only boundary
-        run: ./scripts/check-local-only.sh releases/ClipboardArchive-0.1.2-macos-arm64
+        run: ./scripts/check-local-only.sh "releases/ClipboardArchive-0.1.2-macos-$(uname -m)"
+
+      - name: Test failed-update rollback
+        run: ./scripts/test-install-rollback.sh "releases/ClipboardArchive-0.1.2-macos-$(uname -m)"

@@ -5,12 +5,20 @@ public struct ClipboardRedactionResult: Equatable, Sendable {
     public var redactedEventFile: String
     public var deletedBodyFile: String?
     public var deletedFromIndex: Bool
+    public var skippedUnsafeBodyPath: Bool
 
-    public init(eventID: String, redactedEventFile: String, deletedBodyFile: String?, deletedFromIndex: Bool) {
+    public init(
+        eventID: String,
+        redactedEventFile: String,
+        deletedBodyFile: String?,
+        deletedFromIndex: Bool,
+        skippedUnsafeBodyPath: Bool = false
+    ) {
         self.eventID = eventID
         self.redactedEventFile = redactedEventFile
         self.deletedBodyFile = deletedBodyFile
         self.deletedFromIndex = deletedFromIndex
+        self.skippedUnsafeBodyPath = skippedUnsafeBodyPath
     }
 }
 
@@ -38,6 +46,7 @@ public struct ClipboardArchiveRedactor: Sendable {
                 .map(String.init)
             var changed = false
             var deletedBodyFile: String?
+            var skippedUnsafeBodyPath = false
             var rewrittenLines: [String] = []
 
             for line in originalLines {
@@ -52,11 +61,17 @@ public struct ClipboardArchiveRedactor: Sendable {
                 }
 
                 if let rawContentPath = event.rawContentPath {
-                    let bodyURL = archiveRoot.appendingPathComponent(rawContentPath)
-                    if FileManager.default.fileExists(atPath: bodyURL.path) {
-                        try FileManager.default.removeItem(at: bodyURL)
+                    if let bodyURL = try? ClipboardArchivePath.containedURL(
+                        relativePath: rawContentPath,
+                        archiveRoot: archiveRoot
+                    ) {
+                        if FileManager.default.fileExists(atPath: bodyURL.path) {
+                            try FileManager.default.removeItem(at: bodyURL)
+                        }
+                        deletedBodyFile = rawContentPath
+                    } else {
+                        skippedUnsafeBodyPath = true
                     }
-                    deletedBodyFile = rawContentPath
                 }
 
                 event.contentPreview = "[deleted]"
@@ -80,6 +95,7 @@ public struct ClipboardArchiveRedactor: Sendable {
                     .appendingPathComponent(".\(eventFile.lastPathComponent).tmp-\(UUID().uuidString)")
                 try payload.write(to: tempURL, atomically: true, encoding: .utf8)
                 _ = try FileManager.default.replaceItemAt(eventFile, withItemAt: tempURL)
+                try ClipboardPrivateFileSystem.secureFile(eventFile)
                 try ClipboardDeletionLedger(archiveRoot: archiveRoot).recordDeletion(eventID: eventID, reason: reason)
                 let deletedFromIndex = try ClipboardDerivedIndex(archiveRoot: archiveRoot, indexURL: indexURL)
                     .delete(eventID: eventID)
@@ -87,7 +103,8 @@ public struct ClipboardArchiveRedactor: Sendable {
                     eventID: eventID,
                     redactedEventFile: eventFile.path,
                     deletedBodyFile: deletedBodyFile,
-                    deletedFromIndex: deletedFromIndex
+                    deletedFromIndex: deletedFromIndex,
+                    skippedUnsafeBodyPath: skippedUnsafeBodyPath
                 )
             }
         }

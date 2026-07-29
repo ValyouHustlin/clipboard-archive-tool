@@ -12,6 +12,8 @@ It has two jobs:
 ## Features
 
 - Native macOS menu bar app.
+- First-run privacy disclosure with capture-off, last-50, or full-archive
+  choices before the first item can be stored.
 - Continuous local text clipboard capture.
 - Search, recent items, copy-back, manual delete/redact, pause/resume, and app
   exclusions.
@@ -30,25 +32,29 @@ It has two jobs:
 
 ## Install A Release
 
-Install or update from the latest GitHub Release:
+Download or copy a release folder, then run:
 
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ValyouHustlin/clipboard-archive-tool/main/scripts/install-latest-github-release.sh)"
+./install.sh
 ```
 
-That command downloads the release zip, verifies `SHA256SUMS`, installs the
-menu bar app and CLI, and registers the LaunchAgent login item.
+The installer verifies bundled checksums before it stops an existing instance,
+stages the replacement app, and restores the previous app and LaunchAgent if
+the new app does not remain running. Checksums detect damaged or mismatched
+files; they do not prove publisher identity. Public distribution still requires
+Developer ID signing and notarization.
 
 ## Update Another Mac
 
-Run the same command any time you want another Mac to pull the newest release:
+The optional Terminal updater can fetch the latest GitHub Release:
 
 ```bash
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ValyouHustlin/clipboard-archive-tool/main/scripts/install-latest-github-release.sh)"
 ```
 
-The update preserves local clipboard history, settings, and indexes on that
-Mac. It replaces only the app bundle, CLI, and LaunchAgent definition.
+Review the downloaded script before using this convenience command. The update
+preserves local clipboard history, settings, and indexes on that Mac. It
+replaces only the app bundle, CLI, and LaunchAgent definition.
 
 To pin a specific version:
 
@@ -60,12 +66,6 @@ After install/update:
 
 ```bash
 ~/.local/bin/clipboard-archive health
-```
-
-Manual file handoff also works. Download or copy a release folder, then run:
-
-```bash
-./install.sh
 ```
 
 Default per-user install locations:
@@ -128,6 +128,7 @@ updater is a separate human-run Terminal helper; it is not part of app runtime.
 ## Development
 
 ```bash
+swift test
 swift run clipboard-archive-checks
 swift run clipboard-archive self-test
 swift run clipboard-archive monitor --duration 30
@@ -173,6 +174,10 @@ Clipboard Archive is intentionally transparent and controllable:
 - No network sync.
 - Password managers and obvious secrets are blocked.
 - Blocked sensitive events do not store raw content.
+- New profiles start with capture off and require an explicit first-run
+  retention choice.
+- App-created archive directories use owner-only permissions (`0700`) and
+  files use owner-only permissions (`0600`).
 - Delete/redact removes inline content, large body files, and derived SQLite
   search rows. Timeline metadata remains with a deletion marker.
 - Prune can periodically redact older content and rebuild local search.

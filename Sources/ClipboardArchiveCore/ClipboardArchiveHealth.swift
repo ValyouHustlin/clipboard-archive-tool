@@ -8,6 +8,8 @@ public struct ClipboardArchiveHealth: Codable, Equatable, Sendable {
     public var deletedEvents: Int
     public var largeBodyFiles: Int
     public var missingBodyFiles: Int
+    public var unsafeBodyPaths: Int
+    public var insecureFiles: Int
     public var invalidJSONLines: Int
     public var archiveBytes: Int64
     public var indexBytes: Int64
@@ -20,6 +22,7 @@ public struct ClipboardArchiveHealth: Codable, Equatable, Sendable {
 }
 
 public struct ClipboardDailyManifest: Codable, Equatable, Sendable {
+    public var schemaVersion: Int
     public var manifestDate: String
     public var generatedAt: Date
     public var storedEvents: Int
@@ -27,6 +30,7 @@ public struct ClipboardDailyManifest: Codable, Equatable, Sendable {
     public var deletedEvents: Int
     public var largeBodyFiles: Int
     public var missingBodyFiles: Int
+    public var unsafeBodyPaths: Int
     public var archiveBytes: Int64
     public var latestCapturedAt: Date?
 }
@@ -43,134 +47,220 @@ public struct ClipboardArchiveHealthReporter: Sendable {
         self.indexURL = indexURL
     }
 
-    public func health() throws -> ClipboardArchiveHealth {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let deleted = try ClipboardDeletionLedger(archiveRoot: archiveRoot).deletedIDs()
-        let eventFiles = try ClipboardArchiveReader(archiveRoot: archiveRoot).eventFiles()
-        let todayStart = Calendar.current.startOfDay(for: Date())
-        let sevenDaysAgo = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
-
-        var storedEvents = 0
-        var blockedEvents = 0
-        var invalidJSONLines = 0
-        var missingBodyFiles = 0
-        var latestCapturedAt: Date?
-        var todayStoredEvents = 0
-        var lastSevenDaysStoredEvents = 0
-
-        for eventFile in eventFiles {
-            let lines = try String(contentsOf: eventFile).split(separator: "\n", omittingEmptySubsequences: true)
-            for line in lines {
-                guard let data = String(line).data(using: .utf8) else {
-                    invalidJSONLines += 1
-                    continue
-                }
-                if let blocked = try? decoder.decode(BlockedClipboardEvent.self, from: data),
-                   blocked.eventType == "blocked_sensitive_clipboard_item" {
-                    blockedEvents += 1
-                    continue
-                }
-                guard let event = try? decoder.decode(StoredClipboardEvent.self, from: data) else {
-                    invalidJSONLines += 1
-                    continue
-                }
-                storedEvents += 1
-                if let currentLatest = latestCapturedAt {
-                    latestCapturedAt = max(currentLatest, event.capturedAt)
-                } else {
-                    latestCapturedAt = event.capturedAt
-                }
-                if event.capturedAt >= todayStart {
-                    todayStoredEvents += 1
-                }
-                if event.capturedAt >= sevenDaysAgo {
-                    lastSevenDaysStoredEvents += 1
-                }
-                if let rawContentPath = event.rawContentPath,
-                   !FileManager.default.fileExists(atPath: archiveRoot.appendingPathComponent(rawContentPath).path) {
-                    missingBodyFiles += 1
-                }
-            }
-        }
-
+    public func health(now: Date = Date(), calendar: Calendar = .current) throws -> ClipboardArchiveHealth {
+        let metrics = try scanEvents(in: nil)
+        let todayStart = calendar.startOfDay(for: now)
+        let sevenDaysAgo = calendar.date(byAdding: .day, value: -7, to: now) ?? now
+        let currentUpperBound = now.addingTimeInterval(0.001)
+        let today = try scanEvents(in: DateInterval(start: todayStart, end: currentUpperBound))
+        let lastSevenDays = try scanEvents(in: DateInterval(start: sevenDaysAgo, end: currentUpperBound))
         let indexModifiedAt = modifiedAt(indexURL)
         let indexExists = FileManager.default.fileExists(atPath: indexURL.path)
         let indexIsStale: Bool
-        if let latestCapturedAt, let indexModifiedAt {
+        if let latestCapturedAt = metrics.latestCapturedAt, let indexModifiedAt {
             indexIsStale = indexModifiedAt < latestCapturedAt
         } else {
-            indexIsStale = storedEvents > 0 && !indexExists
+            indexIsStale = metrics.storedEvents > 0 && !indexExists
         }
 
         return ClipboardArchiveHealth(
             archiveRoot: archiveRoot.path,
-            generatedAt: Date(),
-            storedEvents: storedEvents,
-            blockedEvents: blockedEvents,
-            deletedEvents: deleted.count,
-            largeBodyFiles: try countFiles(archiveRoot.appendingPathComponent("raw"), suffix: ".code")
-                + countFiles(archiveRoot.appendingPathComponent("raw"), suffix: ".txt"),
-            missingBodyFiles: missingBodyFiles,
-            invalidJSONLines: invalidJSONLines,
+            generatedAt: now,
+            storedEvents: metrics.storedEvents,
+            blockedEvents: metrics.blockedEvents,
+            deletedEvents: try ClipboardDeletionLedger(archiveRoot: archiveRoot).deletedIDs().count,
+            largeBodyFiles: try countBodyFiles(),
+            missingBodyFiles: metrics.missingBodyFiles,
+            unsafeBodyPaths: metrics.unsafeBodyPaths,
+            insecureFiles: insecureFileCount(),
+            invalidJSONLines: metrics.invalidJSONLines,
             archiveBytes: directorySize(archiveRoot),
             indexBytes: fileSize(indexURL),
-            latestCapturedAt: latestCapturedAt,
-            todayStoredEvents: todayStoredEvents,
-            lastSevenDaysStoredEvents: lastSevenDaysStoredEvents,
+            latestCapturedAt: metrics.latestCapturedAt,
+            todayStoredEvents: today.storedEvents,
+            lastSevenDaysStoredEvents: lastSevenDays.storedEvents,
             indexExists: indexExists,
             indexModifiedAt: indexModifiedAt,
             indexIsStale: indexIsStale
         )
     }
 
-    public func writeDailyManifest(for date: Date = Date()) throws -> URL {
-        let health = try health()
-        let day = dayString(date)
+    public func writeDailyManifest(for date: Date = Date(), calendar: Calendar = .current) throws -> URL {
+        let start = calendar.startOfDay(for: date)
+        let end = calendar.date(byAdding: .day, value: 1, to: start) ?? date.addingTimeInterval(86_400)
+        let interval = DateInterval(start: start, end: end)
+        let metrics = try scanEvents(in: interval)
+        let day = dayString(date, calendar: calendar)
         let manifest = ClipboardDailyManifest(
+            schemaVersion: 2,
             manifestDate: day,
             generatedAt: Date(),
-            storedEvents: health.storedEvents,
-            blockedEvents: health.blockedEvents,
-            deletedEvents: health.deletedEvents,
-            largeBodyFiles: health.largeBodyFiles,
-            missingBodyFiles: health.missingBodyFiles,
-            archiveBytes: health.archiveBytes,
-            latestCapturedAt: health.latestCapturedAt
+            storedEvents: metrics.storedEvents,
+            blockedEvents: metrics.blockedEvents,
+            deletedEvents: try deletionCount(in: interval),
+            largeBodyFiles: metrics.referencedBodyFiles,
+            missingBodyFiles: metrics.missingBodyFiles,
+            unsafeBodyPaths: metrics.unsafeBodyPaths,
+            archiveBytes: directorySize(archiveRoot),
+            latestCapturedAt: metrics.latestCapturedAt
         )
         let url = archiveRoot
             .appendingPathComponent("manifests")
             .appendingPathComponent("\(day)_manifest.json")
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try ClipboardPrivateFileSystem.createDirectory(
+            url.deletingLastPathComponent(),
+            archiveRoot: archiveRoot
+        )
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         try encoder.encode(manifest).write(to: url, options: [.atomic])
+        try ClipboardPrivateFileSystem.secureFile(url)
         return url
     }
 
-    private func countFiles(_ root: URL, suffix: String) throws -> Int {
+    private struct EventMetrics {
+        var storedEvents = 0
+        var blockedEvents = 0
+        var referencedBodyFiles = 0
+        var missingBodyFiles = 0
+        var unsafeBodyPaths = 0
+        var invalidJSONLines = 0
+        var latestCapturedAt: Date?
+    }
+
+    private func scanEvents(in interval: DateInterval?) throws -> EventMetrics {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        var metrics = EventMetrics()
+
+        for eventFile in try ClipboardArchiveReader(archiveRoot: archiveRoot).eventFiles() {
+            let lines = try String(contentsOf: eventFile)
+                .split(separator: "\n", omittingEmptySubsequences: true)
+            for line in lines {
+                guard let data = String(line).data(using: .utf8) else {
+                    metrics.invalidJSONLines += 1
+                    continue
+                }
+                if let blocked = try? decoder.decode(BlockedClipboardEvent.self, from: data),
+                   blocked.eventType == "blocked_sensitive_clipboard_item" {
+                    if interval.map({ $0.contains(blocked.capturedAt) }) ?? true {
+                        metrics.blockedEvents += 1
+                    }
+                    continue
+                }
+                guard let event = try? decoder.decode(StoredClipboardEvent.self, from: data) else {
+                    metrics.invalidJSONLines += 1
+                    continue
+                }
+                guard interval.map({ $0.contains(event.capturedAt) }) ?? true else {
+                    continue
+                }
+
+                metrics.storedEvents += 1
+                metrics.latestCapturedAt = metrics.latestCapturedAt.map { max($0, event.capturedAt) } ?? event.capturedAt
+
+                if let rawContentPath = event.rawContentPath {
+                    metrics.referencedBodyFiles += 1
+                    do {
+                        let bodyURL = try ClipboardArchivePath.containedURL(
+                            relativePath: rawContentPath,
+                            archiveRoot: archiveRoot
+                        )
+                        if !FileManager.default.fileExists(atPath: bodyURL.path) {
+                            metrics.missingBodyFiles += 1
+                        }
+                    } catch {
+                        metrics.unsafeBodyPaths += 1
+                    }
+                }
+            }
+        }
+        return metrics
+    }
+
+    private func deletionCount(in interval: DateInterval) throws -> Int {
+        let root = archiveRoot.appendingPathComponent("deletion-ledger")
         guard FileManager.default.fileExists(atPath: root.path) else {
             return 0
         }
-        let urls = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey])?.compactMap { $0 as? URL } ?? []
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let urls = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+            options: [.skipsHiddenFiles]
+        )?.compactMap { $0 as? URL } ?? []
+
+        var count = 0
+        for url in urls where url.pathExtension == "ndjson" {
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true else {
+                continue
+            }
+            for line in try String(contentsOf: url).split(separator: "\n", omittingEmptySubsequences: true) {
+                guard let data = String(line).data(using: .utf8),
+                      let event = try? decoder.decode(ClipboardDeletionEvent.self, from: data),
+                      interval.contains(event.deletedAt) else {
+                    continue
+                }
+                count += 1
+            }
+        }
+        return count
+    }
+
+    private func countBodyFiles() throws -> Int {
+        let root = archiveRoot.appendingPathComponent("raw")
+        guard FileManager.default.fileExists(atPath: root.path) else {
+            return 0
+        }
+        let urls = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey]
+        )?.compactMap { $0 as? URL } ?? []
         return try urls.filter { url in
             let values = try url.resourceValues(forKeys: [.isRegularFileKey])
-            return values.isRegularFile == true && url.lastPathComponent.hasSuffix(suffix)
+            return values.isRegularFile == true && ["code", "txt"].contains(url.pathExtension)
         }.count
     }
 
-    private func directorySize(_ root: URL) -> Int64 {
-        guard FileManager.default.fileExists(atPath: root.path) else {
-            return 0
+    private func insecureFileCount() -> Int {
+        let archiveFiles = regularFiles(under: archiveRoot)
+        let candidates = archiveFiles + (FileManager.default.fileExists(atPath: indexURL.path) ? [indexURL] : [])
+        var count = 0
+        for url in candidates {
+            guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+                  let permissions = attributes[.posixPermissions] as? NSNumber else {
+                continue
+            }
+            if permissions.intValue & 0o077 != 0 {
+                count += 1
+            }
         }
-        let urls = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey])?.compactMap { $0 as? URL } ?? []
-        return urls.reduce(Int64(0)) { total, url in
-            guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
-                  values.isRegularFile == true else {
+        return count
+    }
+
+    private func regularFiles(under root: URL) -> [URL] {
+        guard FileManager.default.fileExists(atPath: root.path) else {
+            return []
+        }
+        let urls = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey]
+        )?.compactMap { $0 as? URL } ?? []
+        return urls.filter {
+            (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+        }
+    }
+
+    private func directorySize(_ root: URL) -> Int64 {
+        regularFiles(under: root).reduce(Int64(0)) { total, url in
+            guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize else {
                 return total
             }
-            return total + Int64(values.fileSize ?? 0)
+            return total + Int64(size)
         }
     }
 
@@ -185,11 +275,11 @@ public struct ClipboardArchiveHealthReporter: Sendable {
         try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
     }
 
-    private func dayString(_ date: Date) -> String {
+    private func dayString(_ date: Date, calendar: Calendar) -> String {
         let formatter = DateFormatter()
-        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.calendar = calendar
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.timeZone = calendar.timeZone
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.string(from: date)
     }

@@ -98,7 +98,12 @@ public struct ClipboardArchiveSearcher: Sendable {
             return nil
         }
 
-        let bodyURL = archiveRoot.appendingPathComponent(rawContentPath)
+        guard let bodyURL = try? ClipboardArchivePath.containedURL(
+            relativePath: rawContentPath,
+            archiveRoot: archiveRoot
+        ) else {
+            return nil
+        }
         guard let body = try? String(contentsOf: bodyURL),
               body.lowercased().contains(query) else {
             return nil

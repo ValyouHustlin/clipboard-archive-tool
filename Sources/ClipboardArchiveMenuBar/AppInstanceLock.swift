@@ -7,7 +7,15 @@ final class AppInstanceLock {
 
     func acquire() -> Bool {
         let lockURL = ClipboardDefaults.lockURL()
-        try? FileManager.default.createDirectory(at: lockURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let lockDirectory = lockURL.deletingLastPathComponent()
+        let lockDirectoryAlreadyExisted = FileManager.default.fileExists(atPath: lockDirectory.path)
+        try? FileManager.default.createDirectory(at: lockDirectory, withIntermediateDirectories: true)
+        if !lockDirectoryAlreadyExisted {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: Int16(0o700))],
+                ofItemAtPath: lockDirectory.path
+            )
+        }
         let lockPath = lockURL.path
 
         fileDescriptor = open(lockPath, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
@@ -21,6 +29,7 @@ final class AppInstanceLock {
             return false
         }
 
+        _ = fchmod(fileDescriptor, S_IRUSR | S_IWUSR)
         ftruncate(fileDescriptor, 0)
         let pid = "\(getpid())\n"
         _ = pid.withCString { write(fileDescriptor, $0, strlen($0)) }

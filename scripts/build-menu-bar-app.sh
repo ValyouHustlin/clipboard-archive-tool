@@ -1,17 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="ClipboardArchive"
 VERSION="${CLIPBOARD_ARCHIVE_VERSION:-0.1.2}"
 BUILD_NUMBER="${CLIPBOARD_ARCHIVE_BUILD:-4}"
-APP_DIR="$ROOT/dist/${APP_NAME}.app"
+APP_DIR="${CLIPBOARD_ARCHIVE_APP_OUTPUT:-$ROOT/dist/${APP_NAME}.app}"
 CONTENTS="$APP_DIR/Contents"
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
 
 cd "$ROOT"
-swift build -c release --product ClipboardArchiveMenuBar
+/usr/bin/xcrun swift build -c release --product ClipboardArchiveMenuBar
+
+case "$APP_DIR" in
+  ""|"/"|"$HOME"|"$ROOT"|"$ROOT/dist")
+    echo "refusing unsafe app output path: $APP_DIR" >&2
+    exit 1
+    ;;
+  *.app)
+    ;;
+  *)
+    echo "app output must end in .app: $APP_DIR" >&2
+    exit 1
+    ;;
+esac
 
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS" "$RESOURCES"

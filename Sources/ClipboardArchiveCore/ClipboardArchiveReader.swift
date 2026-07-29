@@ -39,7 +39,11 @@ public struct ClipboardArchiveReader: Sendable {
         guard let rawContentPath = event.rawContentPath else {
             return event.contentPreview
         }
-        return try String(contentsOf: archiveRoot.appendingPathComponent(rawContentPath))
+        let bodyURL = try ClipboardArchivePath.containedURL(
+            relativePath: rawContentPath,
+            archiveRoot: archiveRoot
+        )
+        return try String(contentsOf: bodyURL)
     }
 
     public func eventFiles() throws -> [URL] {
@@ -50,16 +54,28 @@ public struct ClipboardArchiveReader: Sendable {
 
         let urls = FileManager.default.enumerator(
             at: rawRoot,
-            includingPropertiesForKeys: [.isRegularFileKey],
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
             options: [.skipsHiddenFiles]
         )?.compactMap { $0 as? URL } ?? []
 
         return try urls
             .filter { url in
-                let values = try url.resourceValues(forKeys: [.isRegularFileKey])
-                return values.isRegularFile == true && url.lastPathComponent.hasSuffix("_clipboard-events.ndjson")
+                let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+                guard values.isRegularFile == true,
+                      values.isSymbolicLink != true,
+                      url.lastPathComponent.hasSuffix("_clipboard-events.ndjson") else {
+                    return false
+                }
+                let rootPath = archiveRoot.standardizedFileURL.path
+                guard url.standardizedFileURL.path.hasPrefix(rootPath + "/") else {
+                    return false
+                }
+                let relativePath = String(url.standardizedFileURL.path.dropFirst(rootPath.count + 1))
+                return (try? ClipboardArchivePath.containedURL(
+                    relativePath: relativePath,
+                    archiveRoot: archiveRoot
+                )) != nil
             }
             .sorted { $0.path < $1.path }
     }
 }
-

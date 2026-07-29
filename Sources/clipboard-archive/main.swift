@@ -278,6 +278,9 @@ case "redact":
     if let deletedBodyFile = result.deletedBodyFile {
         print("deleted body: \(deletedBodyFile)")
     }
+    if result.skippedUnsafeBodyPath {
+        print("warning: unsafe body path was removed from the event without touching the referenced file")
+    }
 
 case "prune":
     guard let before = options.until ?? options.since ?? options.positional.first.flatMap(CLIOptions.parseDate) else {
@@ -329,6 +332,8 @@ case "health":
         print("last_7_days: \(health.lastSevenDaysStoredEvents)")
         print("large_bodies: \(health.largeBodyFiles)")
         print("missing_bodies: \(health.missingBodyFiles)")
+        print("unsafe_body_paths: \(health.unsafeBodyPaths)")
+        print("insecure_files: \(health.insecureFiles)")
         print("invalid_json: \(health.invalidJSONLines)")
         print("archive_bytes: \(health.archiveBytes)")
         print("index_bytes: \(health.indexBytes)")

@@ -230,6 +230,7 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         settings.recentItemLimit = limit
         settings.pollIntervalSeconds = poll
         settings.excludedBundleIdentifiers = Array(Set(excludedBundleIdentifiers)).sorted()
+        settings.hasCompletedOnboarding = true
 
         do {
             try settingsStore.save(settings)
