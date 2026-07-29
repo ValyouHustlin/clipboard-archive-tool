@@ -1,6 +1,6 @@
 # Clipboard Archive Architecture
 
-Last verified against source: 2026-07-28
+Last verified against source: 2026-07-29
 
 ## Product Boundary
 
@@ -35,6 +35,11 @@ redaction, pruning, health reporting, settings, and the derived index.
 `ClipboardArchiveMenuBar` owns pasteboard polling, source-app attribution,
 pause/storage controls, recent-history UI, settings, and the single-instance
 file lock.
+
+The primary UI is a native AppKit split-view window. Its left pane loads recent
+event metadata and filters it in memory; its right pane reads full content only
+for the selected event. Search from the menu focuses this same window instead
+of creating a separate modal result flow.
 
 `clipboard-archive` exposes local maintenance and retrieval commands.
 
@@ -163,3 +168,8 @@ Safe package-level development uses:
 
 Do not run the manual monitor or replace `dist/ClipboardArchive.app` while the
 installed live instance is in use without an explicit operational plan.
+
+Debug UI automation requires both the archive and Application Support roots to
+be explicit `/tmp` paths. It can author synthetic fixtures and render the
+history, settings, or onboarding surface, then terminates. The guard exists so
+visual testing cannot silently point at a real archive.

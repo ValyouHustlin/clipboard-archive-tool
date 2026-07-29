@@ -16,13 +16,13 @@ final class ClipboardOnboardingWindowController: NSWindowController {
 
     init(archiveRoot: URL) {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 620, height: 340),
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 500),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
         window.title = "Welcome to Clipboard Archive"
-        window.minSize = NSSize(width: 620, height: 340)
+        window.minSize = NSSize(width: 680, height: 500)
         super.init(window: window)
         buildUI(archiveRoot: archiveRoot)
     }
@@ -76,8 +76,8 @@ final class ClipboardOnboardingWindowController: NSWindowController {
 
         let root = NSStackView()
         root.orientation = .vertical
-        root.spacing = 16
-        root.edgeInsets = NSEdgeInsets(top: 24, left: 24, bottom: 24, right: 24)
+        root.spacing = 18
+        root.edgeInsets = NSEdgeInsets(top: 28, left: 32, bottom: 28, right: 32)
         root.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(root)
         NSLayoutConstraint.activate([
@@ -87,51 +87,154 @@ final class ClipboardOnboardingWindowController: NSWindowController {
             root.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
         ])
 
-        let title = NSTextField(labelWithString: "Choose what this Mac remembers")
-        title.font = .systemFont(ofSize: 22, weight: .semibold)
-        root.addArrangedSubview(title)
-
-        let explanation = wrappingLabel(
-            "Clipboard Archive stores accepted clipboard text as plaintext on this Mac. " +
-            "It blocks known password-manager apps and obvious credentials, but no filter catches everything."
+        let header = NSStackView()
+        header.orientation = .horizontal
+        header.spacing = 16
+        header.alignment = .top
+        let icon = NSImageView()
+        icon.image = NSImage(
+            systemSymbolName: "doc.on.clipboard.fill",
+            accessibilityDescription: "Clipboard Archive"
         )
-        root.addArrangedSubview(explanation)
+        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 40, weight: .medium)
+        icon.contentTintColor = .controlAccentColor
+        icon.widthAnchor.constraint(equalToConstant: 48).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 48).isActive = true
 
-        let pathTitle = NSTextField(labelWithString: "Archive location")
-        pathTitle.font = .systemFont(ofSize: 12, weight: .semibold)
-        pathTitle.textColor = .secondaryLabelColor
-        root.addArrangedSubview(pathTitle)
-
-        let path = wrappingLabel(archiveRoot.path)
-        path.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        path.textColor = .secondaryLabelColor
-        root.addArrangedSubview(path)
-
-        let guidance = wrappingLabel(
-            "Recommended: keep the latest 50 items while you learn the app. " +
-            "You can switch to a full archive, pause capture, add exclusions, or delete stored content at any time."
+        let headings = NSStackView()
+        headings.orientation = .vertical
+        headings.spacing = 5
+        let title = NSTextField(labelWithString: "Make your clipboard useful again")
+        title.font = .systemFont(ofSize: 25, weight: .semibold)
+        let subtitle = wrappingLabel(
+            "Find text, links, and code you copied recently—without sending any of it off this Mac."
         )
-        root.addArrangedSubview(guidance)
-        root.addArrangedSubview(NSView())
+        subtitle.font = .systemFont(ofSize: 14)
+        subtitle.textColor = .secondaryLabelColor
+        headings.addArrangedSubview(title)
+        headings.addArrangedSubview(subtitle)
+        header.addArrangedSubview(icon)
+        header.addArrangedSubview(headings)
+        root.addArrangedSubview(header)
 
-        let buttons = NSStackView()
-        buttons.orientation = .horizontal
-        buttons.spacing = 10
-        buttons.alignment = .centerY
+        let privacyBox = NSVisualEffectView()
+        privacyBox.material = .contentBackground
+        privacyBox.blendingMode = .withinWindow
+        privacyBox.state = .active
+        privacyBox.wantsLayer = true
+        privacyBox.layer?.cornerRadius = 10
+        let privacyStack = NSStackView()
+        privacyStack.orientation = .vertical
+        privacyStack.spacing = 5
+        privacyStack.edgeInsets = NSEdgeInsets(top: 13, left: 15, bottom: 13, right: 15)
+        privacyStack.translatesAutoresizingMaskIntoConstraints = false
+        let privacyTitle = NSTextField(labelWithString: "Private by design")
+        privacyTitle.font = .systemFont(ofSize: 13, weight: .semibold)
+        let privacyText = wrappingLabel(
+            "History is plain text on this Mac. Clipboard Archive blocks known password-manager apps and obvious credentials, but you should still exclude sensitive apps."
+        )
+        privacyText.font = .systemFont(ofSize: 12)
+        privacyText.textColor = .secondaryLabelColor
+        privacyStack.addArrangedSubview(privacyTitle)
+        privacyStack.addArrangedSubview(privacyText)
+        privacyBox.addSubview(privacyStack)
+        NSLayoutConstraint.activate([
+            privacyStack.leadingAnchor.constraint(equalTo: privacyBox.leadingAnchor),
+            privacyStack.trailingAnchor.constraint(equalTo: privacyBox.trailingAnchor),
+            privacyStack.topAnchor.constraint(equalTo: privacyBox.topAnchor),
+            privacyStack.bottomAnchor.constraint(equalTo: privacyBox.bottomAnchor),
+            privacyBox.heightAnchor.constraint(equalToConstant: 84)
+        ])
+        root.addArrangedSubview(privacyBox)
 
-        let notNow = NSButton(title: "Not Now", target: self, action: #selector(chooseNotNow))
-        let fullArchive = NSButton(title: "Use Full Archive", target: self, action: #selector(chooseFullArchive))
-        let recent = NSButton(title: "Keep Last 50", target: self, action: #selector(chooseRecent50))
-        notNow.tag = 101
-        fullArchive.tag = 102
-        recent.tag = 103
-        recent.keyEquivalent = "\r"
+        let choiceTitle = NSTextField(labelWithString: "How much should Clipboard Archive remember?")
+        choiceTitle.font = .systemFont(ofSize: 14, weight: .semibold)
+        root.addArrangedSubview(choiceTitle)
 
-        buttons.addArrangedSubview(notNow)
-        buttons.addArrangedSubview(NSView())
-        buttons.addArrangedSubview(fullArchive)
-        buttons.addArrangedSubview(recent)
-        root.addArrangedSubview(buttons)
+        let choices = NSStackView()
+        choices.orientation = .horizontal
+        choices.distribution = .fillEqually
+        choices.spacing = 12
+
+        let notNow = choiceCard(
+            title: "Not Now",
+            detail: "Explore settings first.",
+            buttonTitle: "Keep Capture Off",
+            action: #selector(chooseNotNow),
+            buttonTag: 101
+        )
+        let fullArchive = choiceCard(
+            title: "Full Archive",
+            detail: "Keep accepted clips until you delete them.",
+            buttonTitle: "Use Full Archive",
+            action: #selector(chooseFullArchive),
+            buttonTag: 102
+        )
+        let recent = choiceCard(
+            title: "Last 50",
+            detail: "A low-risk way to start.",
+            buttonTitle: "Keep Last 50",
+            action: #selector(chooseRecent50),
+            buttonTag: 103,
+            emphasized: true
+        )
+        choices.addArrangedSubview(notNow)
+        choices.addArrangedSubview(fullArchive)
+        choices.addArrangedSubview(recent)
+        root.addArrangedSubview(choices)
+
+        let location = NSTextField(labelWithString: "Stored locally: \(archiveRoot.path)")
+        location.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
+        location.textColor = .tertiaryLabelColor
+        location.lineBreakMode = .byTruncatingMiddle
+        root.addArrangedSubview(location)
+    }
+
+    private func choiceCard(
+        title: String,
+        detail: String,
+        buttonTitle: String,
+        action: Selector,
+        buttonTag: Int,
+        emphasized: Bool = false
+    ) -> NSView {
+        let box = NSBox()
+        box.boxType = .custom
+        box.borderWidth = 1
+        box.borderColor = emphasized ? .controlAccentColor : .separatorColor
+        box.cornerRadius = 9
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.spacing = 7
+        stack.edgeInsets = NSEdgeInsets(top: 14, left: 14, bottom: 14, right: 14)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
+        let detailLabel = wrappingLabel(detail)
+        detailLabel.font = .systemFont(ofSize: 11)
+        detailLabel.textColor = .secondaryLabelColor
+        let button = NSButton(title: buttonTitle, target: self, action: action)
+        button.tag = buttonTag
+        button.bezelStyle = .rounded
+        if emphasized {
+            button.keyEquivalent = "\r"
+        }
+        stack.addArrangedSubview(titleLabel)
+        stack.addArrangedSubview(detailLabel)
+        stack.addArrangedSubview(NSView())
+        stack.addArrangedSubview(button)
+        box.contentView?.addSubview(stack)
+        if let boxContent = box.contentView {
+            NSLayoutConstraint.activate([
+                stack.leadingAnchor.constraint(equalTo: boxContent.leadingAnchor),
+                stack.trailingAnchor.constraint(equalTo: boxContent.trailingAnchor),
+                stack.topAnchor.constraint(equalTo: boxContent.topAnchor),
+                stack.bottomAnchor.constraint(equalTo: boxContent.bottomAnchor)
+            ])
+        }
+        box.heightAnchor.constraint(equalToConstant: 136).isActive = true
+        return box
     }
 
     private func wrappingLabel(_ value: String) -> NSTextField {

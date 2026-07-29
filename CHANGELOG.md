@@ -1,6 +1,20 @@
 # Changelog
 
-## Unreleased - 2026-07-28
+## Unreleased - 2026-07-29
+
+- Rebuilt the seven-day history window as a searchable split view with rich
+  source/type/time rows, a readable full-content detail pane, multi-selection,
+  and clearer copy/delete feedback.
+- Simplified the menu-bar menu to five recent clips and direct History, Search,
+  Pause, and Settings actions; moved occasional controls under Maintenance.
+- Reworked first-run setup around a clear local-privacy explanation and three
+  understandable retention choices.
+- Reworked Settings into focused capture, timing, exclusion, and local-storage
+  sections.
+- Added a debug-only, `/tmp`-guarded synthetic UI fixture and snapshot path so
+  the app can be visually tested without opening a real clipboard archive.
+- Recorded the owner direction: polished personal utility and open-source
+  download, not a paid-product push.
 
 - Added first-run privacy disclosure and explicit capture/retention choice;
   new profiles start with capture off and last-50 as the recommended option.

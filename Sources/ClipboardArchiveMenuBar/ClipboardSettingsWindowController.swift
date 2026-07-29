@@ -31,13 +31,13 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         self.archiveRoot = archiveRoot
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 760, height: 640),
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 560),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "Clipboard Archive Settings"
-        window.minSize = NSSize(width: 700, height: 560)
+        window.title = "Clipboard Archive"
+        window.minSize = NSSize(width: 680, height: 520)
         super.init(window: window)
         buildUI()
         loadSettingsIntoControls()
@@ -55,6 +55,23 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         NSApp.activate(ignoringOtherApps: true)
     }
 
+#if DEBUG
+    func writeSnapshot(to url: URL) throws {
+        guard let view = window?.contentView else {
+            return
+        }
+        window?.displayIfNeeded()
+        guard let representation = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+            return
+        }
+        view.cacheDisplay(in: view.bounds, to: representation)
+        guard let data = representation.representation(using: .png, properties: [:]) else {
+            return
+        }
+        try data.write(to: url, options: [.atomic])
+    }
+#endif
+
     private func buildUI() {
         guard let contentView = window?.contentView else {
             return
@@ -62,11 +79,11 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
 
         let root = NSStackView()
         root.orientation = .vertical
-        root.spacing = 12
-        root.edgeInsets = NSEdgeInsets(top: 18, left: 18, bottom: 18, right: 18)
+        root.alignment = .width
+        root.spacing = 16
+        root.edgeInsets = NSEdgeInsets(top: 22, left: 24, bottom: 20, right: 24)
         root.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(root)
-
         NSLayoutConstraint.activate([
             root.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             root.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
@@ -74,21 +91,103 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
             root.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
         ])
 
-        let captureGroup = addGroup("Capture", to: root)
+        let headingText = NSStackView()
+        headingText.orientation = .vertical
+        headingText.spacing = 3
+        let title = NSTextField(labelWithString: "Clipboard Archive")
+        title.font = .systemFont(ofSize: 22, weight: .semibold)
+        let subtitle = NSTextField(labelWithString: "Choose what gets remembered—and what never should.")
+        subtitle.font = .systemFont(ofSize: 12)
+        subtitle.textColor = .secondaryLabelColor
+        headingText.addArrangedSubview(title)
+        headingText.addArrangedSubview(subtitle)
+        root.addArrangedSubview(headingText)
+
+        configureGeneralControls()
+        configurePrivacyControls()
+
+        let columns = NSStackView()
+        columns.orientation = .horizontal
+        columns.distribution = .fillEqually
+        columns.alignment = .top
+        columns.spacing = 14
+
+        let generalColumn = NSStackView()
+        generalColumn.orientation = .vertical
+        generalColumn.spacing = 14
+        generalColumn.addArrangedSubview(
+            sectionCard(
+                title: "Remember Clipboard Text",
+                subtitle: "Accepted text stays on this Mac. Pause anytime from the menu bar.",
+                views: [
+                    archiveEnabledButton,
+                    formRow(label: "Keep", control: retentionModePopup),
+                    formRow(label: "Clips loaded", control: recentLimitField, trailing: recentLimitStepper)
+                ]
+            )
+        )
+        generalColumn.addArrangedSubview(
+            sectionCard(
+                title: "Capture Timing",
+                subtitle: "Lower values notice new copies sooner but wake the app more often.",
+                views: [
+                    formRow(label: "Check every", control: pollIntervalField, suffix: "seconds")
+                ]
+            )
+        )
+
+        let privacyViews = privacyControls()
+        let privacyCard = sectionCard(
+            title: "Never Capture From These Apps",
+            subtitle: "Password managers are blocked automatically. Add other sensitive apps by bundle identifier.",
+            views: privacyViews
+        )
+        columns.addArrangedSubview(generalColumn)
+        columns.addArrangedSubview(privacyCard)
+        root.addArrangedSubview(columns)
+
+        let storage = NSStackView()
+        storage.orientation = .horizontal
+        storage.spacing = 8
+        storage.alignment = .centerY
+        let localLabel = NSTextField(labelWithString: "Stored locally")
+        localLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        let path = NSTextField(labelWithString: "Everything stays in your local archive.")
+        path.font = .systemFont(ofSize: 11)
+        path.textColor = .secondaryLabelColor
+        path.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        storage.addArrangedSubview(localLabel)
+        storage.addArrangedSubview(path)
+        storage.addArrangedSubview(
+            NSButton(title: "Show in Finder", target: self, action: #selector(showArchiveInFinder))
+        )
+        root.addArrangedSubview(storage)
+
+        let buttons = NSStackView()
+        buttons.orientation = .horizontal
+        buttons.spacing = 8
+        buttons.alignment = .centerY
+        statusLabel.font = .systemFont(ofSize: 11)
+        statusLabel.textColor = .secondaryLabelColor
+        buttons.addArrangedSubview(statusLabel)
+        buttons.addArrangedSubview(NSView())
+        buttons.addArrangedSubview(NSButton(title: "Cancel", target: self, action: #selector(cancel)))
+        let saveButton = NSButton(title: "Save Changes", target: self, action: #selector(save))
+        saveButton.keyEquivalent = "\r"
+        buttons.addArrangedSubview(saveButton)
+        root.addArrangedSubview(buttons)
+    }
+
+    private func configureGeneralControls() {
         archiveEnabledButton.target = self
         archiveEnabledButton.action = #selector(toggleArchiveEnabled)
-        captureGroup.addArrangedSubview(archiveEnabledButton)
-
+        archiveEnabledButton.font = .systemFont(ofSize: 13, weight: .medium)
         for mode in ClipboardRetentionMode.allCases {
             retentionModePopup.addItem(withTitle: mode.displayName)
             retentionModePopup.lastItem?.representedObject = mode.rawValue
         }
         retentionModePopup.target = self
         retentionModePopup.action = #selector(retentionModeChanged)
-        captureGroup.addArrangedSubview(formRow(label: "Storage mode", control: retentionModePopup))
-
-        let visibleGroup = addGroup("Visible History", to: root)
-        let recentRow = formRow(label: "Items shown in clipboard window", control: recentLimitField)
         recentLimitField.alignment = .right
         recentLimitField.formatter = integerFormatter()
         recentLimitField.target = self
@@ -98,64 +197,81 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         recentLimitStepper.increment = 50
         recentLimitStepper.target = self
         recentLimitStepper.action = #selector(recentStepperChanged)
-        recentRow.addArrangedSubview(recentLimitStepper)
-        visibleGroup.addArrangedSubview(recentRow)
-
-        let pollingGroup = addGroup("Polling", to: root)
         pollIntervalField.alignment = .right
         pollIntervalField.formatter = decimalFormatter()
-        pollingGroup.addArrangedSubview(formRow(label: "Poll interval seconds", control: pollIntervalField))
+    }
 
-        let excludedGroup = addGroup("Excluded Apps", to: root)
-        let helper = NSTextField(labelWithString: "Use macOS bundle identifiers, not app names. Example: com.apple.Safari")
-        helper.textColor = .secondaryLabelColor
-        helper.lineBreakMode = .byWordWrapping
-        excludedGroup.addArrangedSubview(helper)
-
-        let addRow = NSStackView()
-        addRow.orientation = .horizontal
-        addRow.spacing = 8
-        addRow.alignment = .centerY
-        excludedBundleField.placeholderString = "com.apple.Safari"
+    private func configurePrivacyControls() {
+        excludedBundleField.placeholderString = "com.example.sensitive-app"
         excludedBundleField.target = self
         excludedBundleField.action = #selector(addExcludedBundle)
-        excludedBundleField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        addRow.addArrangedSubview(excludedBundleField)
-        addRow.addArrangedSubview(NSButton(title: "Add", target: self, action: #selector(addExcludedBundle)))
-        addRow.addArrangedSubview(NSButton(title: "Remove Selected", target: self, action: #selector(removeSelectedExcludedBundle)))
-        excludedGroup.addArrangedSubview(addRow)
-
-        let excludedScroll = NSScrollView()
-        excludedScroll.hasVerticalScroller = true
-        excludedScroll.borderType = .bezelBorder
         excludedBundlesList.headerView = nil
-        excludedBundlesList.rowHeight = 24
+        excludedBundlesList.rowHeight = 28
         excludedBundlesList.usesAlternatingRowBackgroundColors = true
         excludedBundlesList.dataSource = self
         excludedBundlesList.delegate = self
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("bundle"))
         column.resizingMask = .autoresizingMask
         excludedBundlesList.addTableColumn(column)
+        excludedBundlesList.autoresizingMask = [.width]
+    }
+
+    private func privacyControls() -> [NSView] {
+        let addRow = NSStackView()
+        addRow.orientation = .horizontal
+        addRow.spacing = 7
+        addRow.addArrangedSubview(excludedBundleField)
+        addRow.addArrangedSubview(
+            NSButton(title: "Add", target: self, action: #selector(addExcludedBundle))
+        )
+
+        let excludedScroll = NSScrollView()
+        excludedScroll.hasVerticalScroller = true
+        excludedScroll.borderType = .bezelBorder
+        excludedBundlesList.frame = excludedScroll.contentView.bounds
         excludedScroll.documentView = excludedBundlesList
-        excludedScroll.heightAnchor.constraint(equalToConstant: 160).isActive = true
-        excludedGroup.addArrangedSubview(excludedScroll)
+        excludedScroll.heightAnchor.constraint(equalToConstant: 150).isActive = true
 
-        let storageGroup = addGroup("Storage", to: root)
-        storageGroup.addArrangedSubview(pathRow("Archive", archiveRoot.path))
-        storageGroup.addArrangedSubview(pathRow("Settings", settingsStore.settingsURL.path))
+        let remove = NSButton(
+            title: "Remove Selected",
+            target: self,
+            action: #selector(removeSelectedExcludedBundle)
+        )
+        remove.alignment = .left
+        return [addRow, excludedScroll, remove]
+    }
 
-        let buttons = NSStackView()
-        buttons.orientation = .horizontal
-        buttons.spacing = 8
-        buttons.alignment = .centerY
-        buttons.addArrangedSubview(statusLabel)
-        buttons.addArrangedSubview(NSView())
-        let cancelButton = NSButton(title: "Cancel", target: self, action: #selector(cancel))
-        let saveButton = NSButton(title: "Save", target: self, action: #selector(save))
-        saveButton.keyEquivalent = "\r"
-        buttons.addArrangedSubview(cancelButton)
-        buttons.addArrangedSubview(saveButton)
-        root.addArrangedSubview(buttons)
+    private func sectionCard(title: String, subtitle: String, views: [NSView]) -> NSView {
+        let card = NSVisualEffectView()
+        card.material = .contentBackground
+        card.blendingMode = .withinWindow
+        card.state = .active
+        card.wantsLayer = true
+        card.layer?.cornerRadius = 10
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.spacing = 10
+        stack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
+        let subtitleLabel = wrappingLabel(subtitle)
+        subtitleLabel.font = .systemFont(ofSize: 11)
+        subtitleLabel.textColor = .secondaryLabelColor
+        stack.addArrangedSubview(titleLabel)
+        stack.addArrangedSubview(subtitleLabel)
+        for view in views {
+            stack.addArrangedSubview(view)
+        }
+        card.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: card.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: card.bottomAnchor)
+        ])
+        return card
     }
 
     private func loadSettingsIntoControls() {
@@ -221,6 +337,10 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         window?.orderOut(nil)
     }
 
+    @objc private func showArchiveInFinder() {
+        NSWorkspace.shared.open(archiveRoot)
+    }
+
     @objc private func save() {
         let poll = max(0.1, min(5.0, pollIntervalField.doubleValue))
         let mode = selectedRetentionMode()
@@ -242,43 +362,31 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         }
     }
 
-    private func addGroup(_ title: String, to root: NSStackView) -> NSStackView {
-        let box = NSBox()
-        box.title = title
-        box.boxType = .primary
-        box.translatesAutoresizingMaskIntoConstraints = false
-
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        box.contentView?.addSubview(stack)
-        if let contentView = box.contentView {
-            NSLayoutConstraint.activate([
-                stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-                stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-                stack.topAnchor.constraint(equalTo: contentView.topAnchor),
-                stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
-            ])
-        }
-        root.addArrangedSubview(box)
-        return stack
-    }
-
-    private func formRow(label: String, control: NSControl) -> NSStackView {
+    private func formRow(
+        label: String,
+        control: NSControl,
+        trailing: NSView? = nil,
+        suffix: String? = nil
+    ) -> NSStackView {
         let row = NSStackView()
         row.orientation = .horizontal
-        row.spacing = 10
+        row.spacing = 7
         row.alignment = .centerY
         let text = NSTextField(labelWithString: label)
         text.alignment = .right
         text.textColor = .secondaryLabelColor
-        text.widthAnchor.constraint(equalToConstant: 170).isActive = true
-        control.widthAnchor.constraint(equalToConstant: control is NSPopUpButton ? 180 : 92).isActive = true
+        text.widthAnchor.constraint(equalToConstant: 82).isActive = true
+        control.widthAnchor.constraint(equalToConstant: control is NSPopUpButton ? 150 : 70).isActive = true
         row.addArrangedSubview(text)
         row.addArrangedSubview(control)
+        if let trailing {
+            row.addArrangedSubview(trailing)
+        }
+        if let suffix {
+            let suffixLabel = NSTextField(labelWithString: suffix)
+            suffixLabel.textColor = .secondaryLabelColor
+            row.addArrangedSubview(suffixLabel)
+        }
         row.addArrangedSubview(NSView())
         return row
     }
@@ -308,26 +416,11 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         statusLabel.stringValue = mode.storesLongTermHistory ? "Full long-term archive will be on" : "\(mode.displayName) will prune older content"
     }
 
-    private func pathRow(_ label: String, _ path: String) -> NSStackView {
-        let row = NSStackView()
-        row.orientation = .horizontal
-        row.spacing = 10
-        row.alignment = .centerY
-
-        let title = NSTextField(labelWithString: label)
-        title.alignment = .right
-        title.textColor = .secondaryLabelColor
-        title.widthAnchor.constraint(equalToConstant: 70).isActive = true
-
-        let text = NSTextField(labelWithString: path)
-        text.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        text.textColor = .secondaryLabelColor
-        text.lineBreakMode = .byTruncatingMiddle
-        text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        row.addArrangedSubview(title)
-        row.addArrangedSubview(text)
-        return row
+    private func wrappingLabel(_ value: String) -> NSTextField {
+        let label = NSTextField(wrappingLabelWithString: value)
+        label.maximumNumberOfLines = 0
+        label.lineBreakMode = .byWordWrapping
+        return label
     }
 
     private func integerFormatter() -> NumberFormatter {

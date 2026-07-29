@@ -2,6 +2,10 @@
 
 Research refreshed: 2026-07-28
 
+> Owner direction, 2026-07-29: keep Clipboard Archive as a polished personal
+> utility and open-source download shared from X. Do not pursue the paid-product
+> validation proposed below unless Aaron explicitly reopens that question.
+
 ## Recommendation
 
 Do not fund or publicly launch Clipboard Archive as a generic paid clipboard

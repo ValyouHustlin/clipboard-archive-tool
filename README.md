@@ -3,7 +3,8 @@
 Clipboard Archive is a local-first macOS menu bar app that records useful
 clipboard history without sending clipboard contents to cloud services.
 
-It has two jobs:
+It is intentionally a focused open-source tool, not a hosted service or a
+subscription product. It has two jobs:
 
 1. Keep a calm, searchable 7-day working view in the app.
 2. Preserve accepted clipboard events indefinitely in a durable local archive
@@ -12,13 +13,15 @@ It has two jobs:
 ## Features
 
 - Native macOS menu bar app.
+- Split-view history window with fast filtering, rich clip rows, full-text
+  preview, multi-select copy, and local delete/redact controls.
 - First-run privacy disclosure with capture-off, last-50, or full-archive
   choices before the first item can be stored.
 - Continuous local text clipboard capture.
 - Search, recent items, copy-back, manual delete/redact, pause/resume, and app
   exclusions.
-- Settings window for capture on/off, storage mode, visible item count, poll
-  interval, excluded apps, and storage paths.
+- Focused settings for capture, retention, history size, polling, and excluded
+  apps.
 - Password-manager and credential-like content blocking.
 - Append-oriented NDJSON archive with metadata.
 - Large clipboard bodies stored as separate local files.
@@ -86,10 +89,16 @@ capture, search, archive storage, health checks, or updates by file handoff.
 
 See [docs/INSTALL.md](docs/INSTALL.md).
 
-## Product And Business Context
+## Project Direction
 
-Current positioning and market analysis live in
-[docs/market-positioning-and-business-analysis.md](docs/market-positioning-and-business-analysis.md).
+Clipboard Archive is being maintained as Aaron's polished daily-use utility and
+an open-source download for anyone who finds that workflow useful. There is no
+current plan to turn it into a paid clipboard product, add cloud accounts, or
+compete on App Store growth.
+
+The prior market analysis remains available as historical context in
+[docs/market-positioning-and-business-analysis.md](docs/market-positioning-and-business-analysis.md);
+it is not the current product roadmap.
 
 For a short restart guide for the next agent session, see
 [docs/NEXT_SESSION_HANDOFF.md](docs/NEXT_SESSION_HANDOFF.md).

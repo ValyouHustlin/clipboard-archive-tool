@@ -49,6 +49,11 @@ final class ClipboardMenuBarApp: NSObject,
             object: nil
         )
         rebuildMenu()
+#if DEBUG
+        if runUIAutomationIfRequested() {
+            return
+        }
+#endif
         restartTimer()
         if !settings.hasCompletedOnboarding {
             lastStatus = "Choose privacy settings to begin"
@@ -177,6 +182,14 @@ final class ClipboardMenuBarApp: NSObject,
     }
 
     @objc private func openClipboardWindow() {
+        showClipboardWindow(focusSearch: false)
+    }
+
+    @objc private func openClipboardSearch() {
+        showClipboardWindow(focusSearch: true)
+    }
+
+    private func showClipboardWindow(focusSearch: Bool) {
         if panelController == nil {
             panelController = ClipboardPanelController(
                 archiveRoot: archiveRoot,
@@ -184,36 +197,10 @@ final class ClipboardMenuBarApp: NSObject,
                 recentItemLimit: settings.recentItemLimit
             )
         }
-        panelController?.show(recentItemLimit: settings.recentItemLimit)
-    }
-
-    @objc private func searchRecent() {
-        let alert = NSAlert()
-        alert.messageText = "Search Last 7 Days"
-        alert.informativeText = "Searches stored content from the last 7 days. Results exclude deleted items."
-        alert.addButton(withTitle: "Search")
-        alert.addButton(withTitle: "Cancel")
-
-        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24))
-        input.placeholderString = "Search text, URLs, or code"
-        alert.accessoryView = input
-
-        guard alert.runModal() == .alertFirstButtonReturn else {
-            return
-        }
-
-        let query = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else {
-            return
-        }
-
-        do {
-            let results = try ClipboardArchiveSearcher(archiveRoot: archiveRoot)
-                .search(ClipboardSearchOptions(query: query, since: sevenDaysAgo(), limit: 10))
-            showSearchResults(query: query, results: results)
-        } catch {
-            showError("Search failed: \(error)")
-        }
+        panelController?.show(
+            recentItemLimit: settings.recentItemLimit,
+            focusSearch: focusSearch
+        )
     }
 
     @objc private func showPreferences() {
@@ -251,13 +238,6 @@ final class ClipboardMenuBarApp: NSObject,
         }
         onboardingWindowController?.show()
 #if DEBUG
-        if let path = ProcessInfo.processInfo.environment["CLIPBOARD_ARCHIVE_UI_SNAPSHOT_PATH"],
-           !path.isEmpty {
-            let controller = onboardingWindowController
-            DispatchQueue.main.async {
-                try? controller?.writeSnapshot(to: URL(fileURLWithPath: path))
-            }
-        }
         if let choice = ProcessInfo.processInfo.environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_CHOICE"],
            !choice.isEmpty {
             let controller = onboardingWindowController
@@ -267,6 +247,122 @@ final class ClipboardMenuBarApp: NSObject,
         }
 #endif
     }
+
+#if DEBUG
+    private func runUIAutomationIfRequested() -> Bool {
+        let environment = ProcessInfo.processInfo.environment
+        guard let screen = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_SCREEN"],
+              !screen.isEmpty,
+              let snapshotPath = environment["CLIPBOARD_ARCHIVE_UI_SNAPSHOT_PATH"],
+              !snapshotPath.isEmpty else {
+            return false
+        }
+
+        let supportRoot = ClipboardDefaults.applicationSupportRoot()
+        guard archiveRoot.standardizedFileURL.path.hasPrefix("/tmp/"),
+              supportRoot.standardizedFileURL.path.hasPrefix("/tmp/") else {
+            FileHandle.standardError.write(
+                Data("UI automation requires isolated /tmp archive and support roots.\n".utf8)
+            )
+            NSApp.terminate(nil)
+            return true
+        }
+
+        settings = ClipboardSettings(
+            excludedBundleIdentifiers: ["com.example.passwords"],
+            pollIntervalSeconds: 0.2,
+            archiveEnabled: false,
+            recentItemLimit: 50,
+            retentionMode: .recent50,
+            hasCompletedOnboarding: true
+        )
+
+        do {
+            try settingsStore.save(settings)
+            if screen == "history" {
+                try seedSyntheticUIFixtures()
+                showClipboardWindow(focusSearch: false)
+                if let query = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_QUERY"] {
+                    panelController?.performAutomationSearch(query)
+                }
+            } else if screen == "settings" {
+                showPreferences()
+            } else if screen == "onboarding" {
+                showOnboarding()
+            } else {
+                throw NSError(
+                    domain: "ClipboardArchiveUIAutomation",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Unknown UI automation screen."]
+                )
+            }
+        } catch {
+            FileHandle.standardError.write(Data("UI automation setup failed: \(error)\n".utf8))
+            NSApp.terminate(nil)
+            return true
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            let url = URL(fileURLWithPath: snapshotPath)
+            do {
+                switch screen {
+                case "history":
+                    try self?.panelController?.writeSnapshot(to: url)
+                case "settings":
+                    try self?.settingsWindowController?.writeSnapshot(to: url)
+                case "onboarding":
+                    try self?.onboardingWindowController?.writeSnapshot(to: url)
+                default:
+                    break
+                }
+            } catch {
+                FileHandle.standardError.write(Data("UI snapshot failed: \(error)\n".utf8))
+            }
+            NSApp.terminate(nil)
+        }
+        return true
+    }
+
+    private func seedSyntheticUIFixtures() throws {
+        let fixtures: [(minutesAgo: TimeInterval, content: String, app: ClipboardSourceApp)] = [
+            (
+                3,
+                "Review the launch checklist before Friday, then send the final notes to the team.",
+                ClipboardSourceApp(name: "Notes", bundleIdentifier: "com.apple.Notes")
+            ),
+            (
+                18,
+                "https:" + "//example.com/design/clipboard-history",
+                ClipboardSourceApp(name: "Safari", bundleIdentifier: "com.apple.Safari")
+            ),
+            (
+                47,
+                "struct ClipRow {\\n    let title: String\\n    let copiedAt: Date\\n}",
+                ClipboardSourceApp(name: "Xcode", bundleIdentifier: "com.apple.dt.Xcode")
+            ),
+            (
+                95,
+                "Synthetic fixture: customer interview notes belong here, never real customer data.",
+                ClipboardSourceApp(name: "TextEdit", bundleIdentifier: "com.apple.TextEdit")
+            ),
+            (
+                180,
+                "A local clipboard should feel quiet, trustworthy, and instantly searchable.",
+                ClipboardSourceApp(name: "Messages", bundleIdentifier: "com.apple.MobileSMS")
+            )
+        ]
+        for fixture in fixtures {
+            try archiveWriter.archiveAllowedCapture(
+                ClipboardCapture(
+                    capturedAt: Date().addingTimeInterval(-fixture.minutesAgo * 60),
+                    content: fixture.content,
+                    sourceApp: fixture.app,
+                    pasteboardTypes: ["public.utf8-plain-text"]
+                )
+            )
+        }
+    }
+#endif
 
     func clipboardOnboardingWindow(
         _ controller: ClipboardOnboardingWindowController,
@@ -340,20 +436,6 @@ final class ClipboardMenuBarApp: NSObject,
         saveSettingsAndRefresh("Excluded \(source.name)")
     }
 
-    private func showSearchResults(query: String, results: [ClipboardSearchResult]) {
-        let alert = NSAlert()
-        alert.messageText = "Search Results"
-        if results.isEmpty {
-            alert.informativeText = "No matches for \"\(query)\" in the visible 7-day window."
-        } else {
-            alert.informativeText = results.enumerated().map { index, result in
-                "\(index + 1). \(shortDate(result.event.capturedAt)) - \(result.event.sourceApp.name)\n\(result.snippet)"
-            }.joined(separator: "\n\n")
-        }
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
-    }
-
     private func rebuildMenu() {
         let menu = NSMenu()
 
@@ -378,7 +460,7 @@ final class ClipboardMenuBarApp: NSObject,
         menu.addItem(NSMenuItem.separator())
 
         let recent = (try? reader.recentItems(since: sevenDaysAgo(), limit: 60)) ?? []
-        let quickTitle = NSMenuItem(title: "Last 10 Copied", action: nil, keyEquivalent: "")
+        let quickTitle = NSMenuItem(title: "Recent Clips", action: nil, keyEquivalent: "")
         quickTitle.isEnabled = false
         menu.addItem(quickTitle)
         if recent.isEmpty {
@@ -386,16 +468,15 @@ final class ClipboardMenuBarApp: NSObject,
             empty.isEnabled = false
             menu.addItem(empty)
         } else {
-            for event in recent.prefix(10) {
+            for event in recent.prefix(5) {
                 menu.addItem(quickCopyMenuItem(for: event))
             }
         }
         menu.addItem(NSMenuItem.separator())
 
-        menu.addItem(NSMenuItem(title: "Open Clipboard Window", action: #selector(openClipboardWindow), keyEquivalent: "o"))
-        menu.addItem(NSMenuItem(title: "Search Last 7 Days...", action: #selector(searchRecent), keyEquivalent: "f"))
+        menu.addItem(NSMenuItem(title: "Clipboard History…", action: #selector(openClipboardWindow), keyEquivalent: "o"))
+        menu.addItem(NSMenuItem(title: "Search History…", action: #selector(openClipboardSearch), keyEquivalent: "f"))
         menu.addItem(NSMenuItem(title: isPaused ? "Resume Capture" : "Pause Capture", action: #selector(togglePause), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: settings.retentionMode.storesLongTermHistory ? "Turn Off Full Archive" : "Turn On Full Archive", action: #selector(toggleFullArchive), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Settings...", action: #selector(showPreferences), keyEquivalent: ","))
         menu.addItem(NSMenuItem.separator())
 
@@ -406,10 +487,10 @@ final class ClipboardMenuBarApp: NSObject,
             empty.isEnabled = false
             recentSubmenu.addItem(empty)
         } else {
-            for event in recent.dropFirst(10) {
+            for event in recent.dropFirst(5) {
                 recentSubmenu.addItem(menuItem(for: event))
             }
-            if recent.count <= 10 {
+            if recent.count <= 5 {
                 let empty = NSMenuItem(title: "No additional items", action: nil, keyEquivalent: "")
                 empty.isEnabled = false
                 recentSubmenu.addItem(empty)
@@ -424,6 +505,13 @@ final class ClipboardMenuBarApp: NSObject,
         maintenanceSubmenu.addItem(NSMenuItem(title: "Rebuild Search Index", action: #selector(rebuildIndex), keyEquivalent: ""))
         maintenanceSubmenu.addItem(NSMenuItem(title: "Delete Latest Item...", action: #selector(deleteLatestItem), keyEquivalent: "d"))
         maintenanceSubmenu.addItem(NSMenuItem(title: "Exclude Current App", action: #selector(excludeCurrentApp), keyEquivalent: ""))
+        let fullArchive = NSMenuItem(
+            title: "Keep Full Archive",
+            action: #selector(toggleFullArchive),
+            keyEquivalent: ""
+        )
+        fullArchive.state = settings.retentionMode.storesLongTermHistory ? .on : .off
+        maintenanceSubmenu.addItem(fullArchive)
         maintenanceSubmenu.addItem(NSMenuItem.separator())
         let pauseMenu = NSMenuItem(title: "Pause For", action: nil, keyEquivalent: "")
         let pauseSubmenu = NSMenu()

@@ -1,16 +1,21 @@
 # Production Readiness Review
 
-Review date: 2026-07-28
+Review date: 2026-07-29
 
 ## Verdict
 
-Clipboard Archive is now credible engineering for a private alpha, not a
-finished paid product. The repository-level privacy and failure-safety blockers
-found at baseline are fixed and exercised with synthetic fixtures. Public or
-paid distribution remains blocked by Developer ID signing/notarization, an
-external beta/support loop, and evidence that the positioning converts.
+Clipboard Archive is credible engineering for Aaron's daily use and a useful
+open-source project. Aaron does not want a paid-product push; the current goal
+is a polished personal tool that others can download after seeing it on X.
+Commercial validation is therefore no longer a roadmap gate.
 
-The installed build has run continuously for 21 days and archive metadata
+The repository-level privacy and failure-safety blockers found at baseline are
+fixed and exercised with synthetic fixtures. A frictionless download for
+ordinary Mac users still needs Developer ID signing/notarization and a tested
+GitHub Release artifact; source builds and explicitly trusted unsigned builds
+remain viable for technical users.
+
+The installed build has run continuously for 22 days and archive metadata
 showed current writes. That is useful durability evidence, not external product
 validation.
 
@@ -45,8 +50,98 @@ archive/search/privacy check used synthetic fixtures authored by this lane.
   app does not remain running.
 - Clipboard-mutating stress scripts refuse to run while a Clipboard Archive
   process exists unless a deliberate override is supplied.
+- The history window is now the product's home surface: rich recent rows,
+  in-window search, full-content detail, multi-select copy, and local deletion.
+- Menu search now focuses the history window instead of opening a second modal
+  search flow; the menu shows five quick-copy clips and moves occasional
+  controls under Maintenance.
+- First-run and Settings were rewritten around understandable privacy,
+  retention, exclusion, and local-storage choices.
+- Debug UI automation refuses non-`/tmp` archive/support roots and authors only
+  synthetic fixtures.
 
 ## Verification Receipts
+
+Final UI-polish test run:
+
+```text
+/usr/bin/xcrun swift test
+[0/1] Planning build
+Building for debugging...
+[0/9] Write sources
+[1/9] Write swift-version--1AB21518FC5DEDBE.txt
+[3/6] Emitting module ClipboardArchiveMenuBar
+[4/6] Compiling ClipboardArchiveMenuBar main.swift
+[4/7] Write Objects.LinkFileList
+[5/7] Linking ClipboardArchiveMenuBar
+[6/7] Applying ClipboardArchiveMenuBar
+Build complete! (0.87s)
+◇ Test run started.
+↳ Testing Library Version: swift-6.2-DEVELOPMENT-SNAPSHOT-2025-12-03-a
+◇ Suite "Clipboard Archive Core" started.
+◇ Test testArchiveWriterUsesPrivateFilePermissions() started.
+◇ Test testFutureEventsAreNotCountedInCurrentHealthWindows() started.
+◇ Test testKnownPasswordManagerSourcesAreBlocked() started.
+◇ Test testOrdinaryWorkTextIsNotDetectedAsSecret() started.
+◇ Test testFailedIndexRebuildPreservesExistingIndex() started.
+◇ Test testHealthReportsUnsafeBodyPaths() started.
+◇ Test testWriterRejectsSymlinkedArchiveSubdirectory() started.
+◇ Test testIndexRebuildAndSearchRoundTrip() started.
+◇ Test testCommonCredentialFormatsAreDetected() started.
+◇ Test testSymlinkEscapeIsRejected() started.
+◇ Test testReaderRejectsBodyPathOutsideArchiveRoot() started.
+◇ Test testApplicationSupportRootCanBeIsolated() started.
+◇ Test testRedactionNeverDeletesOutsideArchiveRoot() started.
+◇ Test testDailyManifestContainsOnlyRequestedDayCounts() started.
+◇ Test testConfidentialPasteboardTypesAreBlocked() started.
+◇ Test testBearerTokenIsDetected() started.
+◇ Test testLegacySettingsCompleteOnboardingWithoutChangingCapture() started.
+◇ Test testNewSettingsDefaultToCaptureOffAndLimitedRetention() started.
+◇ Test testExistingIndexParentPermissionsAreNotChanged() started.
+◇ Test testBlockedCaptureDoesNotPersistRawContent() started.
+✔ Test testApplicationSupportRootCanBeIsolated() passed after 0.001 seconds.
+✔ Test testNewSettingsDefaultToCaptureOffAndLimitedRetention() passed after 0.001 seconds.
+✔ Test testLegacySettingsCompleteOnboardingWithoutChangingCapture() passed after 0.001 seconds.
+✔ Test testBearerTokenIsDetected() passed after 0.001 seconds.
+✔ Test testReaderRejectsBodyPathOutsideArchiveRoot() passed after 0.002 seconds.
+✔ Test testKnownPasswordManagerSourcesAreBlocked() passed after 0.002 seconds.
+✔ Test testOrdinaryWorkTextIsNotDetectedAsSecret() passed after 0.002 seconds.
+✔ Test testCommonCredentialFormatsAreDetected() passed after 0.002 seconds.
+✔ Test testSymlinkEscapeIsRejected() passed after 0.003 seconds.
+✔ Test testWriterRejectsSymlinkedArchiveSubdirectory() passed after 0.006 seconds.
+✔ Test testConfidentialPasteboardTypesAreBlocked() passed after 0.010 seconds.
+✔ Test testBlockedCaptureDoesNotPersistRawContent() passed after 0.010 seconds.
+✔ Test testFailedIndexRebuildPreservesExistingIndex() passed after 0.013 seconds.
+✔ Test testHealthReportsUnsafeBodyPaths() passed after 0.013 seconds.
+✔ Test testArchiveWriterUsesPrivateFilePermissions() passed after 0.014 seconds.
+✔ Test testFutureEventsAreNotCountedInCurrentHealthWindows() passed after 0.014 seconds.
+✔ Test testRedactionNeverDeletesOutsideArchiveRoot() passed after 0.014 seconds.
+✔ Test testDailyManifestContainsOnlyRequestedDayCounts() passed after 0.014 seconds.
+✔ Test testExistingIndexParentPermissionsAreNotChanged() passed after 0.018 seconds.
+✔ Test testIndexRebuildAndSearchRoundTrip() passed after 0.022 seconds.
+✔ Suite "Clipboard Archive Core" passed after 0.022 seconds.
+✔ Test run with 20 tests in 1 suite passed after 0.022 seconds.
+```
+
+Final compatibility and package receipts:
+
+```text
+/usr/bin/xcrun swift run clipboard-archive-checks
+24 named checks printed "ok"
+all checks passed
+
+./scripts/validate-release.sh releases/ClipboardArchive-0.1.2-macos-arm64
+release validation ok
+release_dir: releases/ClipboardArchive-0.1.2-macos-arm64
+
+./scripts/check-local-only.sh releases/ClipboardArchive-0.1.2-macos-arm64
+local-only check ok
+release_dir: releases/ClipboardArchive-0.1.2-macos-arm64
+```
+
+The live installed executable remained unchanged after the build and package
+flow (`SHA-256 79a47482…643a99`, `mtime 1781205139`, `size 852448`), and PID
+1844 still pointed at `dist/ClipboardArchive.app`.
 
 Phase 4 `swift test` command and complete output:
 
@@ -220,6 +315,19 @@ to run while Clipboard Archive was active.
 
 ## UI Observation
 
+On 2026-07-29, all three primary surfaces were driven in isolated debug
+instances using separate `/tmp` archive, index, settings, lock, and preference
+roots. The history instance authored five synthetic clips (text, URL, and code)
+and displayed them in the split view; selecting the first row displayed its
+synthetic full content and metadata in the detail pane. Settings and onboarding
+were rendered from isolated settings only. No real archive or export was
+opened, searched, sampled, printed, or summarized.
+
+The rendered pass caught two layout defects—a split view constrained to its
+intrinsic width and an overemphasized onboarding privacy panel—which were fixed
+before the final verification run. A debug search gesture filters the same
+synthetic history list used by the normal window.
+
 An isolated debug app used separate synthetic archive, index, settings, and
 lock roots. The onboarding window was rendered to a debug-only AppKit snapshot
 and visually inspected. A debug-only `NSButton.performClick` selected
@@ -246,16 +354,15 @@ afterward showed `0`, but there is no before-value receipt, so attribution is
 unknown. The running PID was not affected. Isolated profiles now use a separate
 preference suite, and the test covers that routing.
 
-## Remaining Ship Gates
+## Remaining Open-Source Download Gates
 
-1. Sign with an owner-approved Developer ID identity, enable hardened runtime,
-   notarize, and test Gatekeeper installation/update/rollback on a second Mac.
-2. Run a small external beta with a support/privacy incident process and no
-   request for participants' clipboard exports.
-3. Observe first-run, daily recall, deletion, exclusions, and recovery using
-   synthetic or participant-authored non-sensitive fixtures.
-4. Validate willingness to pay before licensing, App Store, or broader polish
-   work.
+1. If the X link should be one-click friendly for nontechnical users, sign with
+   an owner-approved Developer ID identity, enable hardened runtime, notarize,
+   and test Gatekeeper installation/update/rollback on a second Mac.
+2. Publish a versioned GitHub Release with checksums and concise install,
+   privacy, and uninstall guidance.
+3. Have one outside user exercise first-run, recall, deletion, exclusions, and
+   recovery using only synthetic or participant-authored non-sensitive text.
 
 Bundled checksums protect against corruption or mismatched extracted files; the
 checksum file travels with the artifact and therefore does not authenticate the
