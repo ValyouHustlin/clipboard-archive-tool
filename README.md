@@ -173,6 +173,7 @@ Clipboard Archive is intentionally transparent and controllable:
 - Local-only storage by default.
 - No network sync.
 - Password managers and obvious secrets are blocked.
+- Standard concealed/transient pasteboard types are blocked before storage.
 - Blocked sensitive events do not store raw content.
 - New profiles start with capture off and require an explicit first-run
   retention choice.

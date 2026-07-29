@@ -40,6 +40,11 @@ highly sensitive data. Password-manager and obvious-secret blocking reduce risk
 but are best effort. Browser password fields and autofill contexts are not
 reliably detectable through normal pasteboard polling.
 
+The filter honors standard macOS concealed/transient pasteboard types and known
+password-manager types before source-app and credential-pattern checks. Apps
+that do not mark sensitive clipboard values still depend on the other
+best-effort signals.
+
 Prefer copying passwords from a password manager app that can be excluded by
 bundle identifier rather than from arbitrary browser pages.
 

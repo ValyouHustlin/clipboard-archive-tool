@@ -9,6 +9,8 @@ Clipboard Archive is local-first.
 - After install, normal capture/search/archive operation works without an
   internet connection.
 - Password managers and credential-like content are blocked by default.
+- Standard concealed, transient, and password-manager pasteboard types are
+  blocked before content storage.
 - Blocked sensitive events are recorded without raw content.
 - New profiles start with capture off. First run explains plaintext storage and
   filter limits before offering no capture, last-50, or full-archive storage.

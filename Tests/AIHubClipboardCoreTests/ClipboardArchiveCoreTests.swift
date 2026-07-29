@@ -196,6 +196,46 @@ struct ClipboardArchiveCoreTests {
     }
 
     @Test
+    func testConfidentialPasteboardTypesAreBlocked() throws {
+        let confidentialTypes = [
+            "org.nspasteboard.ConcealedType",
+            "org.nspasteboard.TransientType",
+            "com.agilebits.onepassword"
+        ]
+
+        for pasteboardType in confidentialTypes {
+            let capture = ClipboardCapture(
+                content: "synthetic ordinary-looking value",
+                sourceApp: ClipboardSourceApp(name: "Synthetic Unknown App"),
+                pasteboardTypes: ["public.utf8-plain-text", pasteboardType]
+            )
+            guard case .block = ClipboardPrivacyFilter().evaluate(capture) else {
+                Issue.record("Expected \(pasteboardType) to be blocked")
+                continue
+            }
+        }
+
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let syntheticConfidentialValue = "synthetic concealed value must not persist"
+        let capture = ClipboardCapture(
+            content: syntheticConfidentialValue,
+            sourceApp: ClipboardSourceApp(name: "Synthetic Unknown App"),
+            pasteboardTypes: ["public.utf8-plain-text", "org.nspasteboard.ConcealedType"]
+        )
+        let result = try ClipboardIngestor(
+            archiveWriter: ClipboardArchiveWriter(archiveRoot: root)
+        ).ingest(capture)
+        guard case .blocked = result else {
+            Issue.record("Expected concealed synthetic capture to be blocked")
+            return
+        }
+        let eventFile = try #require(ClipboardArchiveReader(archiveRoot: root).eventFiles().first)
+        let payload = try String(contentsOf: eventFile)
+        #expect(!payload.contains(syntheticConfidentialValue))
+    }
+
+    @Test
     func testBlockedCaptureDoesNotPersistRawContent() throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

@@ -123,8 +123,9 @@ physically prune older content after accepted captures.
 ## Privacy And Trust Boundaries
 
 Filtering happens before archive writes. The current filter blocks a hard-coded
-set of password-manager/keychain apps, user-configured exclusions, and
-credential-like text recognized by `SecretDetector`.
+set of concealed/transient pasteboard types, password-manager/keychain apps,
+user-configured exclusions, and credential-like text recognized by
+`SecretDetector`.
 
 This is risk reduction, not a guarantee. Browser password fields, unknown
 credential formats, incorrect source attribution, and clipboard changes

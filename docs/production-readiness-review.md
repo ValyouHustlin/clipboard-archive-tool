@@ -23,6 +23,8 @@ archive/search/privacy check used synthetic fixtures authored by this lane.
 
 - New profiles start with capture off and require a first-run choice: no
   capture, last 50 (recommended), or full archive.
+- Standard concealed/transient/password-manager pasteboard types are blocked
+  before source-app and text-pattern checks.
 - The disclosure names plaintext storage, the archive path, and the limits of
   password-manager/credential filtering.
 - A standard Swift Testing target now covers filtering, blocked-content
@@ -46,7 +48,7 @@ archive/search/privacy check used synthetic fixtures authored by this lane.
 
 ## Verification Receipts
 
-Final `swift test` command and complete output:
+Phase 4 `swift test` command and complete output:
 
 ```text
 /usr/bin/xcrun swift test
@@ -127,6 +129,57 @@ Build complete! (2.36s)
 ✔ Test testIndexRebuildAndSearchRoundTrip() passed after 0.025 seconds.
 ✔ Suite "Clipboard Archive Core" passed after 0.025 seconds.
 ✔ Test run with 19 tests in 1 suite passed after 0.026 seconds.
+```
+
+Market review then exposed the missing confidential-pasteboard-type signal.
+After adding that test, the final test-run portion was:
+
+```text
+◇ Test run started.
+↳ Testing Library Version: swift-6.2-DEVELOPMENT-SNAPSHOT-2025-12-03-a
+◇ Suite "Clipboard Archive Core" started.
+◇ Test testHealthReportsUnsafeBodyPaths() started.
+◇ Test testBearerTokenIsDetected() started.
+◇ Test testLegacySettingsCompleteOnboardingWithoutChangingCapture() started.
+◇ Test testFailedIndexRebuildPreservesExistingIndex() started.
+◇ Test testApplicationSupportRootCanBeIsolated() started.
+◇ Test testWriterRejectsSymlinkedArchiveSubdirectory() started.
+◇ Test testOrdinaryWorkTextIsNotDetectedAsSecret() started.
+◇ Test testKnownPasswordManagerSourcesAreBlocked() started.
+◇ Test testFutureEventsAreNotCountedInCurrentHealthWindows() started.
+◇ Test testIndexRebuildAndSearchRoundTrip() started.
+◇ Test testNewSettingsDefaultToCaptureOffAndLimitedRetention() started.
+◇ Test testExistingIndexParentPermissionsAreNotChanged() started.
+◇ Test testCommonCredentialFormatsAreDetected() started.
+◇ Test testReaderRejectsBodyPathOutsideArchiveRoot() started.
+◇ Test testRedactionNeverDeletesOutsideArchiveRoot() started.
+◇ Test testDailyManifestContainsOnlyRequestedDayCounts() started.
+◇ Test testBlockedCaptureDoesNotPersistRawContent() started.
+◇ Test testArchiveWriterUsesPrivateFilePermissions() started.
+◇ Test testSymlinkEscapeIsRejected() started.
+✔ Test testApplicationSupportRootCanBeIsolated() passed after 0.001 seconds.
+◇ Test testConfidentialPasteboardTypesAreBlocked() started.
+✔ Test testNewSettingsDefaultToCaptureOffAndLimitedRetention() passed after 0.001 seconds.
+✔ Test testLegacySettingsCompleteOnboardingWithoutChangingCapture() passed after 0.001 seconds.
+✔ Test testBearerTokenIsDetected() passed after 0.001 seconds.
+✔ Test testOrdinaryWorkTextIsNotDetectedAsSecret() passed after 0.002 seconds.
+✔ Test testKnownPasswordManagerSourcesAreBlocked() passed after 0.002 seconds.
+✔ Test testReaderRejectsBodyPathOutsideArchiveRoot() passed after 0.002 seconds.
+✔ Test testCommonCredentialFormatsAreDetected() passed after 0.003 seconds.
+✔ Test testSymlinkEscapeIsRejected() passed after 0.004 seconds.
+✔ Test testWriterRejectsSymlinkedArchiveSubdirectory() passed after 0.005 seconds.
+✔ Test testBlockedCaptureDoesNotPersistRawContent() passed after 0.012 seconds.
+✔ Test testConfidentialPasteboardTypesAreBlocked() passed after 0.011 seconds.
+✔ Test testHealthReportsUnsafeBodyPaths() passed after 0.015 seconds.
+✔ Test testArchiveWriterUsesPrivateFilePermissions() passed after 0.015 seconds.
+✔ Test testFailedIndexRebuildPreservesExistingIndex() passed after 0.015 seconds.
+✔ Test testFutureEventsAreNotCountedInCurrentHealthWindows() passed after 0.016 seconds.
+✔ Test testRedactionNeverDeletesOutsideArchiveRoot() passed after 0.016 seconds.
+✔ Test testDailyManifestContainsOnlyRequestedDayCounts() passed after 0.016 seconds.
+✔ Test testExistingIndexParentPermissionsAreNotChanged() passed after 0.021 seconds.
+✔ Test testIndexRebuildAndSearchRoundTrip() passed after 0.024 seconds.
+✔ Suite "Clipboard Archive Core" passed after 0.025 seconds.
+✔ Test run with 20 tests in 1 suite passed after 0.025 seconds.
 ```
 
 Compatibility runner:

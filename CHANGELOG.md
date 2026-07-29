@@ -4,11 +4,13 @@
 
 - Added first-run privacy disclosure and explicit capture/retention choice;
   new profiles start with capture off and last-50 as the recommended option.
-- Added 19 synthetic Swift Testing tests for filtering, blocked-content
+- Added 20 synthetic Swift Testing tests for filtering, blocked-content
   non-retention, traversal and symlink containment, redaction boundaries,
   permissions, health windows, daily manifests, settings migration, and
   failure-safe SQLite rebuilds.
 - Expanded credential and password-manager detection coverage.
+- Honor standard concealed/transient pasteboard types before inspecting or
+  storing content.
 - Restricted app-created directories and files to owner-only permissions.
 - Rejected unsafe archive body paths across read, search, redact, prune,
   health, and index operations.

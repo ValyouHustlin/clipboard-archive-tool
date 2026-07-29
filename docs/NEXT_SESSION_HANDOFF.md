@@ -1,94 +1,71 @@
 # Next Session Handoff
 
-Date: 2026-05-16
+Date: 2026-07-28
 
-## Current State
+## State
 
-Clipboard Archive is a working local-first macOS clipboard history and archive
-app. It is currently best understood as:
+Clipboard Archive is a hardened personal product and engineering-quality
+private-alpha candidate. It is not ready for paid/public distribution.
 
-> Private local clipboard memory for AI-era Mac work.
+Current commercial call:
 
-The app has a normal menu bar clipboard UI, but the strategic differentiator is
-the durable local archive, privacy filtering, real redaction, rebuildable
-search index, health/manifest tooling, and CLI/local-agent access.
+> Maintain and validate; do not launch.
 
-## What Just Changed
+The May wedge, “private local clipboard memory for AI-era Mac work,” is no
+longer differentiated. macOS 26 has built-in seven-day history, Maccy is a
+strong free/local default, Raycast offers encrypted local history, and Paste
+shipped forever retention plus a local MCP server for Claude, Codex, and
+Cursor.
 
-Added:
+The only paid thesis worth testing is narrower: auditable, workspace-scoped
+context memory for AI-heavy Mac operators. The current app does not yet have
+hard workspace separation or scoped agent access, so do not market that promise
+as shipped.
 
-```text
-docs/market-positioning-and-business-analysis.md
-```
+Read:
 
-That document captures the current business thinking:
+1. `AGENTS.md`
+2. `README.md`
+3. `docs/architecture.md`
+4. `docs/production-readiness-review.md`
+5. `docs/market-positioning-and-business-analysis.md`
 
-- The clipboard manager category has visible demand but is crowded.
-- CopyClip and Paste prove demand for clipboard history.
-- AI/local clipboard tools already exist, so "AI clipboard search" is not
-  enough as a moat.
-- Clipboard Archive should lead with local private memory, durable archive
-  operations, redaction, and local-agent retrieval.
-- App Store work should wait until direct validation proves demand.
+## Work Landed
 
-## Recommended Next Agent Task
+- Inherited May positioning/handoff preserved in `b79c475`.
+- Verified architecture/readiness docs versioned in `59c99ba`.
+- Privacy, onboarding, tests, index/path/install hardening landed in `0b3b6b2`.
+- Confidential/transient pasteboard-type filtering and the refreshed product
+  recommendation are in the current follow-up change.
 
-Use this project as a local LLM evaluation target instead of spending frontier
-model time on speculative growth work.
+The standard suite has 20 synthetic tests. Packaging, release validation,
+local-only scanning, and synthetic failed-update rollback pass. The live app
+was not stopped or replaced.
 
-Good next task:
+## Privacy Receipt
 
-1. Read `AGENTS.md`.
-2. Read `README.md`.
-3. Read `docs/architecture.md`.
-4. Read `docs/production-readiness-review.md`.
-5. Read `docs/market-positioning-and-business-analysis.md`.
-6. Propose a local-LLM test plan for one contained task.
+No clipboard record or export content was read, printed, searched, sampled, or
+summarized. All functional fixtures were synthetic. Live observations were
+limited to process and file/settings metadata.
 
-Suggested local LLM tests:
+The first isolated UI run shared the production `UserDefaults` domain and may
+have persisted `capturePaused=false`; its after-value was `0`, with no prior
+receipt. The running process was unaffected. Isolated profiles now use a
+separate preference suite.
 
-- Turn the business analysis into landing-page copy.
-- Draft a one-page beta recruitment post.
-- Build a competitor matrix update from supplied source snippets.
-- Review onboarding UX from the README and propose first-run screens.
-- Generate App Store keyword/title/subtitle candidates from the positioning.
-- Draft a manual beta validation checklist.
+## Remaining Gates
 
-Do not ask a local model to inspect raw clipboard archives by default. Raw
-clipboard history is private-local and may contain sensitive content.
+1. Owner decision on whether to run the paid-intent validation.
+2. If yes: ten problem interviews, synthetic demo only, ending with a
+   refundable $29 reservation. Five deposits is the pass gate.
+3. Only after a pass: design workspace/client partitions and scoped local agent
+   access before broader feature work.
+4. Developer ID identity, hardened runtime, notarization, and second-Mac
+   Gatekeeper/update/recovery testing before any external install.
+5. Normal rendered-window visual QA; the debug cached-view snapshot did not
+   render native button labels, and external Accessibility/screen capture was
+   unavailable in the lane.
 
-## Safety Boundaries
-
-Follow `AGENTS.md` in this repo.
-
-Do not:
-
-- Start continuous clipboard capture unless Aaron explicitly asks.
-- Install launch agents or login items unless Aaron explicitly asks.
-- Send clipboard contents to cloud services.
-- Read or summarize raw archive content unless the task specifically requires
-  it and the privacy tradeoff is stated first.
-
-For substantial changes to capture, archive layout, source-retention behavior,
-launch/login behavior, or AI Hub integration, follow the workspace archive
-workflow from `/Users/legacy/Development/AGENTS.md`.
-
-## Open Decisions
-
-- Whether this remains a personal/local AI hub tool or becomes a paid product.
-- Whether direct distribution should be the first validation channel.
-- Whether Pro pricing should start at $29/year with an early lifetime option.
-- Whether App Store submission is worth pursuing after direct validation.
-- Which local LLM should be tested first and with what benchmark prompt.
-
-## Current Working Tree
-
-Expected uncommitted files after this handoff:
-
-```text
-docs/NEXT_SESSION_HANDOFF.md
-docs/market-positioning-and-business-analysis.md
-```
-
-No code changes are required for the current product/business closeout.
-
+Do not collect beta users' clipboard exports or ask them to test with sensitive
+real data. Do not stop or replace the installed instance without explicit
+approval.
