@@ -8,7 +8,7 @@ public struct ClipboardArchiveReader: Sendable {
     }
 
     public func recentItems(since: Date, limit: Int) throws -> [StoredClipboardEvent] {
-        let deleted = try ClipboardDeletionLedger(archiveRoot: archiveRoot).deletedIDs()
+        let suppression = try ClipboardSuppression(archiveRoot: archiveRoot).snapshot()
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         var items: [StoredClipboardEvent] = []
@@ -19,7 +19,7 @@ public struct ClipboardArchiveReader: Sendable {
                 guard let data = String(line).data(using: .utf8),
                       let event = try? decoder.decode(StoredClipboardEvent.self, from: data),
                       event.capturedAt >= since,
-                      !deleted.contains(event.id) else {
+                      !suppression.isSuppressed(event) else {
                     continue
                 }
                 items.append(event)

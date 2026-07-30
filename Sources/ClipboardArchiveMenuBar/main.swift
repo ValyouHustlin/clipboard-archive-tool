@@ -31,6 +31,12 @@ final class ClipboardMenuBarApp: NSObject,
     private let redactor = ClipboardArchiveRedactor(archiveRoot: archiveRoot)
     private var capturedCount = 0
     private var blockedCount = 0
+    /// In-memory estimate of live (unsuppressed) archive events, used so the
+    /// common under-limit retention check does zero archive scanning. Seeded
+    /// by the first `enforceRetentionLimit` scan, incremented on each store,
+    /// and reset to nil (forcing one reseed scan) when retention settings
+    /// change. Deletions leave it as a safe overestimate.
+    private var liveEventCountEstimate: Int?
     private var lastStatus = "Ready"
     private var lastNonSelfApp = ClipboardSourceApp(name: "Unknown", bundleIdentifier: nil)
     private var panelController: ClipboardPanelController?
@@ -56,6 +62,9 @@ final class ClipboardMenuBarApp: NSObject,
             return
         }
 #endif
+        // Seed the live-event estimate with one startup scan so per-capture
+        // retention checks stay in memory afterwards.
+        applyRetentionLimitIfNeeded()
         restartTimer()
         if !settings.hasCompletedOnboarding {
             lastStatus = "Choose privacy settings to begin"
@@ -119,6 +128,7 @@ final class ClipboardMenuBarApp: NSObject,
                 lastStatus = indexUpdate == .failed
                     ? "Captured; index update pending"
                     : "Captured \(shortDate(Date()))"
+                liveEventCountEstimate = liveEventCountEstimate.map { $0 + 1 }
                 applyRetentionLimitIfNeeded()
             case .blocked:
                 blockedCount += 1
@@ -197,9 +207,11 @@ final class ClipboardMenuBarApp: NSObject,
         if panelController == nil {
             panelController = ClipboardPanelController(
                 archiveRoot: archiveRoot,
-                pasteboard: pasteboard,
                 recentItemLimit: settings.recentItemLimit,
-                historyWindow: settings.historyWindow
+                historyWindow: settings.historyWindow,
+                copyToPasteboard: { [weak self] content in
+                    self?.copyToPasteboardWithoutRecapture(content)
+                }
             )
         }
         panelController?.show(
@@ -229,6 +241,9 @@ final class ClipboardMenuBarApp: NSObject,
 
     func clipboardSettingsWindow(_ controller: ClipboardSettingsWindowController, didSave settings: ClipboardSettings) {
         let previousInterval = self.settings.pollIntervalSeconds
+        if self.settings.retentionMode != settings.retentionMode {
+            liveEventCountEstimate = nil
+        }
         self.settings = settings
         ingestor = ClipboardIngestor(
             filter: ClipboardPrivacyFilter(settings: settings),
@@ -389,6 +404,7 @@ final class ClipboardMenuBarApp: NSObject,
         settings.retentionMode = retentionMode
         settings.recentItemLimit = retentionMode.retainedItemLimit ?? settings.recentItemLimit
         settings.hasCompletedOnboarding = true
+        liveEventCountEstimate = nil
         isPaused = false
         saveSettingsAndRefresh(
             archiveEnabled
@@ -399,11 +415,23 @@ final class ClipboardMenuBarApp: NSObject,
 
     private func applyRetentionLimitIfNeeded() {
         guard let limit = settings.retentionMode.retainedItemLimit else {
+            liveEventCountEstimate = nil
+            return
+        }
+        // Common case: the in-memory estimate proves we are at or under the
+        // limit, so no archive scanning happens at all. The estimate only
+        // overshoots (deletes are not subtracted), which is safe: an
+        // overshoot merely triggers one enforcement scan that refreshes it.
+        if let estimate = liveEventCountEstimate, estimate <= limit {
             return
         }
         do {
             let result = try ClipboardArchivePruner(archiveRoot: archiveRoot)
-                .pruneContent(keepingMostRecent: limit, reason: "retention-\(settings.retentionMode.rawValue)")
+                .enforceRetentionLimit(
+                    keepingMostRecent: limit,
+                    reason: "retention-\(settings.retentionMode.rawValue)"
+                )
+            liveEventCountEstimate = result.keptEvents
             if result.prunedEvents > 0 {
                 lastStatus = "Kept latest \(limit), pruned \(result.prunedEvents)"
             }
@@ -551,6 +579,7 @@ final class ClipboardMenuBarApp: NSObject,
             settings.retentionMode = .recent50
             settings.recentItemLimit = 50
             lastStatus = "Full archive off, keeping 50"
+            liveEventCountEstimate = nil
             applyRetentionLimitIfNeeded()
         } else {
             settings.retentionMode = .unlimited
@@ -599,6 +628,17 @@ final class ClipboardMenuBarApp: NSObject,
             return
         }
 
+        copyToPasteboardWithoutRecapture(content)
+    }
+
+    /// The ONE copy-back path (expansion contract 2): sets the pasteboard
+    /// AND updates the capture dedup state (`lastChangeCount` and
+    /// `lastContentHash`) so copying an archived clip back out is never
+    /// re-captured as a new duplicate event. Every copy-back surface — the
+    /// menu quick-copy above, the History window (wired via the panel's
+    /// `copyToPasteboard` closure), and the future quick picker — MUST route
+    /// through this method instead of touching the pasteboard directly.
+    private func copyToPasteboardWithoutRecapture(_ content: String) {
         pasteboard.clearContents()
         pasteboard.setString(content, forType: .string)
         lastContentHash = content.hashValue

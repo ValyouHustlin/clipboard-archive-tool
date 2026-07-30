@@ -10,7 +10,13 @@ final class ClipboardPanelController: NSWindowController,
     private let archiveRoot: URL
     private let reader: ClipboardArchiveReader
     private let redactor: ClipboardArchiveRedactor
-    private let pasteboard: NSPasteboard
+    /// Shared copy-back path owned by the app delegate
+    /// (`copyToPasteboardWithoutRecapture` in main.swift). It sets the
+    /// pasteboard AND updates the capture dedup state so a copy from this
+    /// window is not re-captured as a new event. The panel must never write
+    /// to the pasteboard directly, and the future quick picker must be wired
+    /// through the same closure.
+    private let copyToPasteboard: (String) -> Void
     private var events: [StoredClipboardEvent] = []
     private var filteredEvents: [StoredClipboardEvent] = []
     private var recentItemLimit: Int
@@ -34,14 +40,14 @@ final class ClipboardPanelController: NSWindowController,
 
     init(
         archiveRoot: URL,
-        pasteboard: NSPasteboard,
         recentItemLimit: Int,
-        historyWindow: ClipboardHistoryWindow
+        historyWindow: ClipboardHistoryWindow,
+        copyToPasteboard: @escaping (String) -> Void
     ) {
         self.archiveRoot = archiveRoot
         self.reader = ClipboardArchiveReader(archiveRoot: archiveRoot)
         self.redactor = ClipboardArchiveRedactor(archiveRoot: archiveRoot)
-        self.pasteboard = pasteboard
+        self.copyToPasteboard = copyToPasteboard
         self.recentItemLimit = recentItemLimit
         self.historyWindow = historyWindow
 
@@ -528,8 +534,7 @@ final class ClipboardPanelController: NSWindowController,
             return
         }
         let content = contents.count == 1 ? contents[0] : contents.joined(separator: "\n\n")
-        pasteboard.clearContents()
-        pasteboard.setString(content, forType: .string)
+        copyToPasteboard(content)
         statusLabel.stringValue = contents.count == 1 ? "Copied to clipboard" : "Copied \(contents.count) items"
     }
 

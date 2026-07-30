@@ -57,7 +57,7 @@ public struct ClipboardDerivedIndex: Sendable {
             let reader = ClipboardArchiveReader(archiveRoot: archiveRoot)
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
-            let deleted = try ClipboardDeletionLedger(archiveRoot: archiveRoot).deletedIDs()
+            let suppression = try ClipboardSuppression(archiveRoot: archiveRoot).snapshot()
             var count = 0
 
             for fileURL in try reader.eventFiles() {
@@ -66,8 +66,7 @@ public struct ClipboardDerivedIndex: Sendable {
                 for line in lines {
                     guard let data = String(line).data(using: .utf8),
                           let event = try? decoder.decode(StoredClipboardEvent.self, from: data),
-                          event.privacyLabel != .doNotIndex,
-                          !deleted.contains(event.id) else {
+                          !suppression.isSuppressed(event) else {
                         continue
                     }
                     let body = (try? reader.content(for: event)) ?? event.contentPreview
@@ -160,10 +159,35 @@ public struct ClipboardDerivedIndex: Sendable {
 
     @discardableResult
     public func delete(eventID: String) throws -> Bool {
+        try delete(eventIDs: [eventID])
+    }
+
+    /// Per-event index deletes batched into a single sqlite3 invocation.
+    /// Used by incremental retention enforcement so pruning N events costs
+    /// one process spawn instead of N (and never a full rebuild).
+    @discardableResult
+    public func delete(eventIDs: [String]) throws -> Bool {
+        guard !eventIDs.isEmpty else {
+            return false
+        }
         let indexDirectory = indexURL.deletingLastPathComponent()
         try ClipboardPrivateFileSystem.createDirectory(indexDirectory, archiveRoot: indexDirectory)
         return try withExclusiveLock {
-            try deleteUnlocked(eventID: eventID)
+            guard FileManager.default.fileExists(atPath: indexURL.path) else {
+                return false
+            }
+
+            var sql = "PRAGMA busy_timeout=2000;\nBEGIN IMMEDIATE TRANSACTION;\n"
+            for eventID in eventIDs {
+                sql += """
+                DELETE FROM clipboard_fts WHERE id = '\(escape(eventID))';
+                DELETE FROM clipboard_meta WHERE id = '\(escape(eventID))';
+
+                """
+            }
+            sql += "COMMIT;\n"
+            try runSQLite(input: sql)
+            return true
         }
     }
 
