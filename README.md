@@ -25,7 +25,7 @@ subscription product. It has two jobs:
 - Password-manager and credential-like content blocking.
 - Append-oriented NDJSON archive with metadata.
 - Large clipboard bodies stored as separate local files.
-- Rebuildable SQLite FTS search index.
+- Incrementally maintained, rebuildable SQLite FTS search index.
 - CLI pruning for older archive content.
 - Storage modes: remember 10 items, remember 50 items, or keep a full archive.
 - Daily manifests and health reports.
@@ -173,7 +173,8 @@ Each stored event includes capture time, source app metadata, content type,
 hash, byte/line counts, privacy label, allowed local uses, preview text, and
 either inline content or a relative path to a large body file.
 
-The SQLite FTS index is derived data and can be rebuilt from the archive.
+The SQLite FTS index is derived data. Accepted captures update it
+incrementally; it can still be rebuilt from the archive as a recovery path.
 
 ## Privacy
 

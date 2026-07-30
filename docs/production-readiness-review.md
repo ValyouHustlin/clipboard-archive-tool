@@ -44,6 +44,10 @@ archive/search/privacy check used synthetic fixtures authored by this lane.
 - SQLite rebuilds use a private sibling temporary database, run
   `/usr/bin/sqlite3` `quick_check`, and atomically replace the prior index only
   after success.
+- Accepted captures now upsert one SQLite FTS row in a short transaction.
+  Clipboard text is streamed over standard input rather than exposed in process
+  arguments, and an index error cannot fail the successful archive write.
+  Owner-only cross-process locking prevents rebuild/upsert replacement races.
 - Release packaging no longer writes over `dist/ClipboardArchive.app`.
 - The release installer validates bundled checksums before stopping an app,
   stages replacement, and restores the previous app and LaunchAgent if the new
@@ -312,6 +316,24 @@ mtime: 1781205139
 PID 1844 remained the running `dist/ClipboardArchive.app` executable. Both
 clipboard-mutating stress scripts exited `2` with the message that they refused
 to run while Clipboard Archive was active.
+
+Incremental-index follow-up receipts used synthetic fixtures only:
+
+```text
+/usr/bin/xcrun swift test
+✔ Test testIncrementalIndexStaysCurrentAcrossCaptureBurst() passed after 0.227 seconds.
+✔ Suite "Clipboard Archive Core" passed after 0.227 seconds.
+✔ Test run with 25 tests in 1 suite passed after 0.228 seconds.
+
+/usr/bin/xcrun swift run clipboard-archive-checks
+ok - accepted capture updates derived index incrementally
+ok - index failure does not block accepted capture
+all checks passed
+```
+
+The 50-capture synthetic burst produced 50 unique index rows, left
+`indexIsStale` false, and left archive/index files owner-only. No live
+clipboard value or real archive content was used.
 
 ## UI Observation
 

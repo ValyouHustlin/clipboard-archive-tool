@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public struct ClipboardDerivedIndex: Sendable {
@@ -18,6 +19,12 @@ public struct ClipboardDerivedIndex: Sendable {
     public func rebuild() throws -> Int {
         let indexDirectory = indexURL.deletingLastPathComponent()
         try ClipboardPrivateFileSystem.createDirectory(indexDirectory, archiveRoot: indexDirectory)
+        return try withExclusiveLock {
+            try rebuildUnlocked(indexDirectory: indexDirectory)
+        }
+    }
+
+    private func rebuildUnlocked(indexDirectory: URL) throws -> Int {
         let temporaryIndex = indexDirectory
             .appendingPathComponent(".\(indexURL.lastPathComponent).rebuild-\(UUID().uuidString)")
         let temporarySQL = indexDirectory
@@ -43,8 +50,7 @@ public struct ClipboardDerivedIndex: Sendable {
             try writeSQL("""
             PRAGMA journal_mode=OFF;
             PRAGMA synchronous=OFF;
-            CREATE VIRTUAL TABLE clipboard_fts USING fts5(id UNINDEXED, captured_at UNINDEXED, source_app, content_type, preview, body);
-            CREATE TABLE clipboard_meta(id TEXT PRIMARY KEY, captured_at TEXT, source_app TEXT, bundle_id TEXT, content_type TEXT, byte_count INTEGER, raw_content_path TEXT);
+            \(Self.schemaSQL)
             BEGIN TRANSACTION;
             """)
 
@@ -104,6 +110,29 @@ public struct ClipboardDerivedIndex: Sendable {
         }
     }
 
+    public func upsert(event: StoredClipboardEvent, body: String) throws {
+        let indexDirectory = indexURL.deletingLastPathComponent()
+        try ClipboardPrivateFileSystem.createDirectory(indexDirectory, archiveRoot: indexDirectory)
+        try withExclusiveLock {
+            if event.privacyLabel == .doNotIndex {
+                _ = try deleteUnlocked(eventID: event.id)
+                return
+            }
+
+            try runSQLite(input: """
+            PRAGMA busy_timeout=2000;
+            \(Self.schemaSQL)
+            BEGIN IMMEDIATE TRANSACTION;
+            DELETE FROM clipboard_fts WHERE id = '\(escape(event.id))';
+            DELETE FROM clipboard_meta WHERE id = '\(escape(event.id))';
+            INSERT INTO clipboard_fts(id,captured_at,source_app,content_type,preview,body) VALUES('\(escape(event.id))','\(escape(iso(event.capturedAt)))','\(escape(event.sourceApp.name))','\(escape(event.contentType.rawValue))','\(escape(event.contentPreview))','\(escape(body))');
+            INSERT INTO clipboard_meta(id,captured_at,source_app,bundle_id,content_type,byte_count,raw_content_path) VALUES('\(escape(event.id))','\(escape(iso(event.capturedAt)))','\(escape(event.sourceApp.name))','\(escape(event.sourceApp.bundleIdentifier ?? ""))','\(escape(event.contentType.rawValue))',\(event.byteCount),'\(escape(event.rawContentPath ?? ""))');
+            COMMIT;
+            """)
+            try ClipboardPrivateFileSystem.secureFile(indexURL)
+        }
+    }
+
     public func search(_ query: String, limit: Int = 25) throws -> String {
         let boundedLimit = max(1, min(limit, 10_000))
         let sql = """
@@ -131,26 +160,70 @@ public struct ClipboardDerivedIndex: Sendable {
 
     @discardableResult
     public func delete(eventID: String) throws -> Bool {
+        let indexDirectory = indexURL.deletingLastPathComponent()
+        try ClipboardPrivateFileSystem.createDirectory(indexDirectory, archiveRoot: indexDirectory)
+        return try withExclusiveLock {
+            try deleteUnlocked(eventID: eventID)
+        }
+    }
+
+    private func deleteUnlocked(eventID: String) throws -> Bool {
         guard FileManager.default.fileExists(atPath: indexURL.path) else {
             return false
         }
 
         let sql = """
+        PRAGMA busy_timeout=2000;
         DELETE FROM clipboard_fts WHERE id = '\(escape(eventID))';
         DELETE FROM clipboard_meta WHERE id = '\(escape(eventID))';
         """
 
+        try runSQLite(input: sql)
+        return true
+    }
+
+    private func withExclusiveLock<T>(_ body: () throws -> T) throws -> T {
+        let lockURL = indexURL.deletingLastPathComponent()
+            .appendingPathComponent(".\(indexURL.lastPathComponent).lock")
+        let descriptor = Darwin.open(
+            lockURL.path,
+            O_CREAT | O_RDWR,
+            S_IRUSR | S_IWUSR
+        )
+        guard descriptor >= 0 else {
+            throw ClipboardDerivedIndexError.lockFailed(errno)
+        }
+        defer {
+            _ = Darwin.lockf(descriptor, F_ULOCK, 0)
+            _ = Darwin.close(descriptor)
+        }
+        guard Darwin.fchmod(descriptor, S_IRUSR | S_IWUSR) == 0,
+              Darwin.lockf(descriptor, F_LOCK, 0) == 0 else {
+            throw ClipboardDerivedIndexError.lockFailed(errno)
+        }
+        return try body()
+    }
+
+    private func runSQLite(input sql: String) throws {
         let process = Process()
         process.executableURL = sqliteExecutableURL
-        process.arguments = [indexURL.path, sql]
+        process.arguments = [indexURL.path]
+        let input = Pipe()
+        process.standardInput = input
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try process.run()
+        do {
+            try input.fileHandleForWriting.write(contentsOf: Data(sql.utf8))
+            try input.fileHandleForWriting.close()
+        } catch {
+            process.terminate()
+            throw error
+        }
         process.waitUntilExit()
         guard process.terminationStatus == 0 else {
             throw ClipboardDerivedIndexError.sqliteFailed(process.terminationStatus)
         }
-        return true
     }
 
     private func validateIndex(at url: URL) throws {
@@ -182,14 +255,22 @@ public struct ClipboardDerivedIndex: Sendable {
     private func iso(_ date: Date) -> String {
         ISO8601DateFormatter().string(from: date)
     }
+
+    private static let schemaSQL = """
+    CREATE VIRTUAL TABLE IF NOT EXISTS clipboard_fts USING fts5(id UNINDEXED, captured_at UNINDEXED, source_app, content_type, preview, body);
+    CREATE TABLE IF NOT EXISTS clipboard_meta(id TEXT PRIMARY KEY, captured_at TEXT, source_app TEXT, bundle_id TEXT, content_type TEXT, byte_count INTEGER, raw_content_path TEXT);
+    """
 }
 
 public enum ClipboardDerivedIndexError: Error, Equatable, CustomStringConvertible, Sendable {
+    case lockFailed(Int32)
     case sqliteFailed(Int32)
     case validationFailed
 
     public var description: String {
         switch self {
+        case let .lockFailed(status):
+            return "index lock failed with errno \(status)"
         case let .sqliteFailed(status):
             return "sqlite3 failed with status \(status)"
         case .validationFailed:

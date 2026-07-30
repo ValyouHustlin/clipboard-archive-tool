@@ -207,8 +207,13 @@ struct PasteboardMonitor {
     private func ingest(_ capture: ClipboardCapture) throws {
         let result = try ingestor.ingest(capture)
         switch result {
-        case let .stored(event):
+        case let .stored(event, indexUpdate):
             print("stored \(event.id) \(event.byteCount)b \(event.sourceApp.name)")
+            if indexUpdate == .failed {
+                FileHandle.standardError.write(
+                    Data("warning: archive stored; incremental index update failed\n".utf8)
+                )
+            }
         case let .blocked(reason):
             print("blocked \(reason)")
         }
@@ -239,7 +244,10 @@ case "monitor":
     )
     let monitor = PasteboardMonitor(
         pasteboard: .general,
-        ingestor: ClipboardIngestor(archiveWriter: writer),
+        ingestor: ClipboardIngestor(
+            archiveWriter: writer,
+            derivedIndex: ClipboardDerivedIndex(archiveRoot: options.archiveRoot)
+        ),
         intervalSeconds: options.intervalSeconds,
         durationSeconds: options.durationSeconds,
         verbose: options.verbose

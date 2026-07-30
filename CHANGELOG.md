@@ -19,12 +19,17 @@
   the app can be visually tested without opening a real clipboard archive.
 - Kept synthetic UI snapshots from activating the debug app or stealing
   keyboard focus from the current foreground application.
+- Added incremental SQLite FTS updates after accepted captures so local-agent
+  search stays current without rebuilding the full archive. Index failures are
+  reported as pending maintenance and never roll back a successful archive
+  write; an owner-only cross-process lock serializes upserts, deletions, and
+  recovery rebuilds.
 - Recorded the owner direction: polished personal utility and open-source
   download, not a paid-product push.
 
 - Added first-run privacy disclosure and explicit capture/retention choice;
   new profiles start with capture off and last-50 as the recommended option.
-- Added 20 synthetic Swift Testing tests for filtering, blocked-content
+- Added 25 synthetic Swift Testing tests for filtering, blocked-content
   non-retention, traversal and symlink containment, redaction boundaries,
   permissions, health windows, daily manifests, settings migration, and
   failure-safe SQLite rebuilds.

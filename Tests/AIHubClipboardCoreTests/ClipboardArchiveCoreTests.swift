@@ -11,6 +11,21 @@ struct ClipboardArchiveCoreTests {
         return url
     }
 
+    private func sqliteScalar(database: URL, query: String) throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        process.arguments = [database.path, query]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        #expect(process.terminationStatus == 0)
+        return String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
     private func writeEvent(_ event: StoredClipboardEvent, archiveRoot: URL) throws -> URL {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
@@ -439,6 +454,153 @@ struct ClipboardArchiveCoreTests {
             FileManager.default.attributesOfItem(atPath: indexURL.path)[.posixPermissions] as? NSNumber
         )
         #expect(mode.intValue == 0o600)
+    }
+
+    @Test
+    func testIncrementalIndexUpsertCreatesAndReplacesOneRow() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let indexURL = root.appendingPathComponent("indexes/search.sqlite")
+        let writer = ClipboardArchiveWriter(archiveRoot: root)
+        var event = try writer.archiveAllowedCapture(
+            ClipboardCapture(
+                content: "synthetic first-only-needle",
+                sourceApp: ClipboardSourceApp(name: "Synthetic Test")
+            )
+        )
+        let index = ClipboardDerivedIndex(archiveRoot: root, indexURL: indexURL)
+
+        try index.upsert(event: event, body: "synthetic first-only-needle")
+        #expect(try index.search("first-only-needle").contains(event.id))
+
+        event.contentPreview = "synthetic replacement-only-needle"
+        event.contentInline = "synthetic replacement-only-needle"
+        try index.upsert(event: event, body: "synthetic replacement-only-needle")
+
+        #expect(try index.search("first-only-needle").isEmpty)
+        #expect(try index.search("replacement-only-needle").contains(event.id))
+        let rowCount = try sqliteScalar(
+            database: indexURL,
+            query: "SELECT count(*) FROM clipboard_meta;"
+        )
+        #expect(rowCount == "1")
+    }
+
+    @Test
+    func testIncrementalIndexRemovesDoNotIndexEvent() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let indexURL = root.appendingPathComponent("indexes/search.sqlite")
+        let writer = ClipboardArchiveWriter(archiveRoot: root)
+        var event = try writer.archiveAllowedCapture(
+            ClipboardCapture(
+                content: "synthetic removable-index-needle",
+                sourceApp: ClipboardSourceApp(name: "Synthetic Test")
+            )
+        )
+        let index = ClipboardDerivedIndex(archiveRoot: root, indexURL: indexURL)
+
+        try index.upsert(event: event, body: "synthetic removable-index-needle")
+        event.privacyLabel = .doNotIndex
+        try index.upsert(event: event, body: "synthetic removable-index-needle")
+
+        #expect(try index.search("removable-index-needle").isEmpty)
+    }
+
+    @Test
+    func testIngestorAutomaticallyUpdatesConfiguredIndex() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let index = ClipboardDerivedIndex(
+            archiveRoot: root,
+            indexURL: root.appendingPathComponent("indexes/search.sqlite")
+        )
+        let result = try ClipboardIngestor(
+            archiveWriter: ClipboardArchiveWriter(archiveRoot: root),
+            derivedIndex: index
+        ).ingest(
+            ClipboardCapture(
+                content: "synthetic automatic-index-needle",
+                sourceApp: ClipboardSourceApp(name: "Synthetic Test")
+            )
+        )
+
+        guard case let .stored(event, indexUpdate) = result else {
+            Issue.record("Expected synthetic capture to be stored")
+            return
+        }
+        #expect(indexUpdate == .updated)
+        #expect(try index.search("automatic-index-needle").contains(event.id))
+    }
+
+    @Test
+    func testIndexFailureDoesNotFailArchiveCapture() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let result = try ClipboardIngestor(
+            archiveWriter: ClipboardArchiveWriter(archiveRoot: root),
+            derivedIndex: ClipboardDerivedIndex(
+                archiveRoot: root,
+                indexURL: root.appendingPathComponent("indexes/search.sqlite"),
+                sqliteExecutableURL: URL(fileURLWithPath: "/usr/bin/false")
+            )
+        ).ingest(
+            ClipboardCapture(
+                content: "synthetic archive-survives-index-failure",
+                sourceApp: ClipboardSourceApp(name: "Synthetic Test")
+            )
+        )
+
+        guard case let .stored(_, indexUpdate) = result else {
+            Issue.record("Expected synthetic capture to survive index failure")
+            return
+        }
+        #expect(indexUpdate == .failed)
+        #expect(try ClipboardArchiveReader(archiveRoot: root).eventFiles().count == 1)
+    }
+
+    @Test
+    func testIncrementalIndexStaysCurrentAcrossCaptureBurst() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let indexURL = root.appendingPathComponent("indexes/search.sqlite")
+        let ingestor = ClipboardIngestor(
+            archiveWriter: ClipboardArchiveWriter(archiveRoot: root),
+            derivedIndex: ClipboardDerivedIndex(archiveRoot: root, indexURL: indexURL)
+        )
+
+        for item in 0..<50 {
+            let result = try ingestor.ingest(
+                ClipboardCapture(
+                    content: "synthetic indexed burst item \(item)",
+                    sourceApp: ClipboardSourceApp(name: "Synthetic Test")
+                )
+            )
+            guard case let .stored(_, indexUpdate) = result else {
+                Issue.record("Expected burst item \(item) to be stored")
+                return
+            }
+            #expect(indexUpdate == .updated)
+        }
+
+        #expect(
+            try sqliteScalar(
+                database: indexURL,
+                query: "SELECT count(*) FROM clipboard_meta;"
+            ) == "50"
+        )
+        let health = try ClipboardArchiveHealthReporter(
+            archiveRoot: root,
+            indexURL: indexURL
+        ).health()
+        let lockURL = indexURL.deletingLastPathComponent()
+            .appendingPathComponent(".\(indexURL.lastPathComponent).lock")
+        let lockMode = try #require(
+            FileManager.default.attributesOfItem(atPath: lockURL.path)[.posixPermissions] as? NSNumber
+        )
+        #expect(!health.indexIsStale)
+        #expect(health.insecureFiles == 0)
+        #expect(lockMode.intValue == 0o600)
     }
 
     @Test

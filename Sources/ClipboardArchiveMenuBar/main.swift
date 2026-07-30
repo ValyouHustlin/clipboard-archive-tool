@@ -21,9 +21,11 @@ final class ClipboardMenuBarApp: NSObject,
     private var lastContentHash: Int?
     private let pasteboard = NSPasteboard.general
     private let archiveWriter = ClipboardArchiveWriter(archiveRoot: archiveRoot)
+    private let derivedIndex = ClipboardDerivedIndex(archiveRoot: archiveRoot)
     private lazy var ingestor = ClipboardIngestor(
         filter: ClipboardPrivacyFilter(settings: settings),
-        archiveWriter: archiveWriter
+        archiveWriter: archiveWriter,
+        derivedIndex: derivedIndex
     )
     private let reader = ClipboardArchiveReader(archiveRoot: archiveRoot)
     private let redactor = ClipboardArchiveRedactor(archiveRoot: archiveRoot)
@@ -112,9 +114,11 @@ final class ClipboardMenuBarApp: NSObject,
 
         do {
             switch try ingestor.ingest(capture) {
-            case .stored:
+            case let .stored(_, indexUpdate):
                 capturedCount += 1
-                lastStatus = "Captured \(shortDate(Date()))"
+                lastStatus = indexUpdate == .failed
+                    ? "Captured; index update pending"
+                    : "Captured \(shortDate(Date()))"
                 applyRetentionLimitIfNeeded()
             case .blocked:
                 blockedCount += 1
@@ -226,7 +230,8 @@ final class ClipboardMenuBarApp: NSObject,
         self.settings = settings
         ingestor = ClipboardIngestor(
             filter: ClipboardPrivacyFilter(settings: settings),
-            archiveWriter: archiveWriter
+            archiveWriter: archiveWriter,
+            derivedIndex: derivedIndex
         )
         if previousInterval != settings.pollIntervalSeconds {
             restartTimer()
@@ -690,7 +695,8 @@ final class ClipboardMenuBarApp: NSObject,
             try settingsStore.save(settings)
             ingestor = ClipboardIngestor(
                 filter: ClipboardPrivacyFilter(settings: settings),
-                archiveWriter: archiveWriter
+                archiveWriter: archiveWriter,
+                derivedIndex: derivedIndex
             )
             userDefaults.set(isPaused, forKey: "capturePaused")
             lastStatus = status

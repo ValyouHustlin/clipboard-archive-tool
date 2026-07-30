@@ -337,6 +337,55 @@ do {
         try expect(output.contains("sqlite"), "expected derived index search result")
     }
 
+    try run("accepted capture updates derived index incrementally") {
+        let root = temporaryDirectory()
+        let indexURL = temporaryDirectory().appendingPathComponent("clipboard-search.sqlite")
+        let index = ClipboardDerivedIndex(archiveRoot: root, indexURL: indexURL)
+        let result = try ClipboardIngestor(
+            archiveWriter: ClipboardArchiveWriter(archiveRoot: root),
+            derivedIndex: index
+        ).ingest(
+            ClipboardCapture(
+                content: "synthetic automatic index runtime phrase",
+                sourceApp: ClipboardSourceApp(name: "Synthetic Check")
+            )
+        )
+
+        guard case let .stored(event, indexUpdate) = result else {
+            throw CheckFailure.failed("accepted synthetic capture was not stored")
+        }
+        let output = try index.search("automatic index runtime phrase", limit: 1)
+        try expect(indexUpdate == .updated, "incremental index update did not report success")
+        try expect(output.contains(event.id), "incremental index is missing the captured event")
+    }
+
+    try run("index failure does not block accepted capture") {
+        let root = temporaryDirectory()
+        let result = try ClipboardIngestor(
+            archiveWriter: ClipboardArchiveWriter(archiveRoot: root),
+            derivedIndex: ClipboardDerivedIndex(
+                archiveRoot: root,
+                indexURL: temporaryDirectory().appendingPathComponent("clipboard-search.sqlite"),
+                sqliteExecutableURL: URL(fileURLWithPath: "/usr/bin/false")
+            )
+        ).ingest(
+            ClipboardCapture(
+                content: "synthetic index failure boundary phrase",
+                sourceApp: ClipboardSourceApp(name: "Synthetic Check")
+            )
+        )
+
+        guard case let .stored(_, indexUpdate) = result else {
+            throw CheckFailure.failed("index failure blocked the synthetic archive write")
+        }
+        try expect(indexUpdate == .failed, "expected failed incremental index status")
+        let archiveFileCount = try ClipboardArchiveReader(archiveRoot: root).eventFiles().count
+        try expect(
+            archiveFileCount == 1,
+            "archive event disappeared after incremental index failure"
+        )
+    }
+
     try run("redaction purges derived sqlite index") {
         let root = temporaryDirectory()
         let indexURL = temporaryDirectory().appendingPathComponent("clipboard-search.sqlite")
