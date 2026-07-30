@@ -32,6 +32,56 @@ public struct ClipboardArchiveReader: Sendable {
         return items
     }
 
+    /// Fetches one stored event by occurrence id without scanning the
+    /// archive. Event ids embed their UTC capture day
+    /// (`clip_yyyyMMdd'T'HHmmss'Z'_…`, same UTC formatter family as the day
+    /// file names), so the lookup decodes exactly ONE day file. Returns nil
+    /// for malformed or traversal-shaped ids, a missing day file, an id not
+    /// present in its day file, or a suppressed event (deletion ledger or
+    /// doNotIndex label) — a stale search index must never resurrect
+    /// deleted content. This method NEVER falls back to a full archive scan.
+    public func event(withID id: String) throws -> StoredClipboardEvent? {
+        // Shape validation: "clip_" prefix + 8 ASCII digits (UTC yyyyMMdd)
+        // at byte offsets 5..<13. Anything else — including ids crafted to
+        // look like paths — is rejected before any filesystem access.
+        guard id.hasPrefix("clip_") else {
+            return nil
+        }
+        let bytes = Array(id.utf8)
+        guard bytes.count >= 13 else {
+            return nil
+        }
+        let digits = bytes[5..<13]
+        guard digits.allSatisfy({ $0 >= UInt8(ascii: "0") && $0 <= UInt8(ascii: "9") }) else {
+            return nil
+        }
+        let day = String(decoding: digits, as: UTF8.self)
+        let year = String(day.prefix(4))
+        let month = String(day.dropFirst(4).prefix(2))
+        let dayOfMonth = String(day.suffix(2))
+        let relativePath = "raw/\(year)/\(month)/\(year)-\(month)-\(dayOfMonth)_clipboard-events.ndjson"
+        guard let fileURL = try? ClipboardArchivePath.containedURL(
+            relativePath: relativePath,
+            archiveRoot: archiveRoot
+        ), FileManager.default.fileExists(atPath: fileURL.path) else {
+            return nil
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let suppression = try ClipboardSuppression(archiveRoot: archiveRoot).snapshot()
+        for line in try String(contentsOf: fileURL)
+            .split(separator: "\n", omittingEmptySubsequences: true) {
+            guard let data = String(line).data(using: .utf8),
+                  let event = try? decoder.decode(StoredClipboardEvent.self, from: data),
+                  event.id == id else {
+                continue
+            }
+            return suppression.isSuppressed(event) ? nil : event
+        }
+        return nil
+    }
+
     public func content(for event: StoredClipboardEvent) throws -> String {
         if let contentInline = event.contentInline {
             return contentInline

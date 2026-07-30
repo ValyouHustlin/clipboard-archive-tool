@@ -2,14 +2,51 @@ import ClipboardArchiveCore
 import AppKit
 import Foundation
 
+/// Table subclass so a plain Return keypress in the results list commits a
+/// copy through the shared no-re-capture path (keyboard-first contract;
+/// works in both scopes).
+final class HistoryResultsTableView: NSTableView {
+    var onReturnKey: (() -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 36, let onReturnKey {
+            onReturnKey()
+            return
+        }
+        super.keyDown(with: event)
+    }
+}
+
 @MainActor
 final class ClipboardPanelController: NSWindowController,
     NSTableViewDataSource,
     NSTableViewDelegate,
     NSSearchFieldDelegate {
+    /// Which data source drives the results list. `.thisWindow` is the
+    /// original in-memory recent-items path and its behavior is unchanged;
+    /// `.allHistory` reads the derived FTS index only (contract 3 — never
+    /// NDJSON scans on the UI thread).
+    private enum HistoryScope {
+        case thisWindow
+        case allHistory
+    }
+
+    /// State machine for the all-history scope (design: full-archive UI
+    /// search). `browse` and `results` both carry rows; the split keeps the
+    /// status line honest about whether a query is active.
+    private enum AllHistoryState {
+        case browse([ClipboardIndexSearchResult])
+        case searching
+        case results([ClipboardIndexSearchResult])
+        case empty
+        case error(String)
+        case preparingIndex
+    }
+
     private let archiveRoot: URL
     private let reader: ClipboardArchiveReader
     private let redactor: ClipboardArchiveRedactor
+    private let derivedIndex: ClipboardDerivedIndex
     /// Shared copy-back path owned by the app delegate
     /// (`copyToPasteboardWithoutRecapture` in main.swift). It sets the
     /// pasteboard AND updates the capture dedup state so a copy from this
@@ -23,10 +60,41 @@ final class ClipboardPanelController: NSWindowController,
     private var historyWindow: ClipboardHistoryWindow
     private var contentTypeFilter: ClipboardContentType?
 
+    // MARK: - All-history scope state
+
+    private var scope: HistoryScope = .thisWindow
+    private var allHistoryState: AllHistoryState = .browse([])
+    /// Rows currently backing the table in all-history scope. Kept separate
+    /// from the state so `.searching`/`.preparingIndex` can leave the last
+    /// results on screen instead of flashing an empty table per keystroke.
+    private var archiveRows: [ClipboardIndexSearchResult] = []
+    /// Serial background queue for every index/reader touch in all-history
+    /// scope; the main thread never runs a query or a day-file decode.
+    private let archiveQueue = DispatchQueue(
+        label: "app.clipboardarchive.panel.archive-search"
+    )
+    /// Debounce (250 ms) + generation counter: only the newest generation's
+    /// completion is applied; anything older is dropped as stale.
+    private var pendingQueryWork: DispatchWorkItem?
+    private var queryGeneration = 0
+    private var completedQueryGeneration = 0
+    private var detailFetchGeneration = 0
+    private var completedDetailFetchGeneration = 0
+    private var maintenanceInFlight = false
+    /// Cache of the fetched full event/content for the selected archive row
+    /// so Copy does not refetch what the detail pane already loaded.
+    private var archiveDetailEvent: StoredClipboardEvent?
+    private var archiveDetailContent: String?
+
     private let searchField = NSSearchField()
     private let historySubtitle = NSTextField(labelWithString: "")
     private let typeFilter = NSSegmentedControl()
-    private let tableView = NSTableView()
+    private let scopeControl = NSSegmentedControl()
+    private let dateFilterPopup = NSPopUpButton()
+    private let appFilterPopup = NSPopUpButton()
+    private let archiveFilterRow = NSStackView()
+    private let rebuildIndexButton = NSButton(title: "Rebuild Search Index", target: nil, action: nil)
+    private let tableView = HistoryResultsTableView()
     private let statusLabel = NSTextField(labelWithString: "")
     private let detailTitle = NSTextField(labelWithString: "Select an item")
     private let detailMetadata = NSTextField(labelWithString: "Choose a clip to preview its full text.")
@@ -47,6 +115,7 @@ final class ClipboardPanelController: NSWindowController,
         self.archiveRoot = archiveRoot
         self.reader = ClipboardArchiveReader(archiveRoot: archiveRoot)
         self.redactor = ClipboardArchiveRedactor(archiveRoot: archiveRoot)
+        self.derivedIndex = ClipboardDerivedIndex(archiveRoot: archiveRoot)
         self.copyToPasteboard = copyToPasteboard
         self.recentItemLimit = recentItemLimit
         self.historyWindow = historyWindow
@@ -126,7 +195,11 @@ final class ClipboardPanelController: NSWindowController,
 
     func performAutomationSearch(_ query: String) {
         searchField.stringValue = query
-        applyFilter()
+        if scope == .allHistory {
+            scheduleArchiveQuery(debounced: false)
+        } else {
+            applyFilter()
+        }
     }
 
     func performAutomationTypeFilter(_ filter: String) {
@@ -134,6 +207,82 @@ final class ClipboardPanelController: NSWindowController,
             .firstIndex(of: filter.lowercased()) ?? 0
         typeFilter.selectedSegment = segment
         typeFilter.performClick(nil)
+    }
+
+    func performAutomationScope(_ scopeName: String) {
+        scopeControl.selectedSegment = scopeName.lowercased() == "all-history" ? 1 : 0
+        scopeChanged()
+    }
+
+    func performAutomationDateFilter(_ title: String) {
+        guard let index = Self.dateFilterTitles
+            .firstIndex(where: { $0.lowercased() == title.lowercased() }) else {
+            return
+        }
+        dateFilterPopup.selectItem(at: index)
+        archiveFiltersChanged()
+    }
+
+    func performAutomationAppFilter(_ appName: String) {
+        if appFilterPopup.itemTitles.contains(appName) {
+            appFilterPopup.selectItem(withTitle: appName)
+        } else {
+            appFilterPopup.addItem(withTitle: appName)
+            appFilterPopup.selectItem(withTitle: appName)
+        }
+        archiveFiltersChanged()
+    }
+
+    /// True when no archive query or detail fetch is pending or in flight.
+    /// The harness polls this (0.1 s steps, 5 s cap) instead of sleeping a
+    /// fixed interval.
+    var automationIsSettled: Bool {
+        guard scope == .allHistory else {
+            return true
+        }
+        if maintenanceInFlight {
+            return false
+        }
+        if completedQueryGeneration < queryGeneration {
+            return false
+        }
+        if completedDetailFetchGeneration < detailFetchGeneration {
+            return false
+        }
+        switch allHistoryState {
+        case .searching, .preparingIndex:
+            return false
+        default:
+            return true
+        }
+    }
+
+    var automationStateName: String {
+        guard scope == .allHistory else {
+            return "working-window"
+        }
+        switch allHistoryState {
+        case .browse:
+            return "browse"
+        case .searching:
+            return "searching"
+        case .results:
+            return "results"
+        case .empty:
+            return "empty"
+        case .error:
+            return "error"
+        case .preparingIndex:
+            return "preparingIndex"
+        }
+    }
+
+    var automationVisibleResultIDs: [String] {
+        scope == .allHistory ? archiveRows.map(\.id) : filteredEvents.map(\.id)
+    }
+
+    var automationRowCount: Int {
+        scope == .allHistory ? archiveRows.count : filteredEvents.count
     }
 #endif
 
@@ -194,6 +343,21 @@ final class ClipboardPanelController: NSWindowController,
             constant: -28
         ).isActive = true
 
+        scopeControl.segmentCount = 2
+        scopeControl.setLabel("This Window", forSegment: 0)
+        scopeControl.setLabel("All History", forSegment: 1)
+        scopeControl.segmentStyle = .rounded
+        scopeControl.trackingMode = .selectOne
+        scopeControl.selectedSegment = 0
+        scopeControl.target = self
+        scopeControl.action = #selector(scopeChanged)
+        scopeControl.setAccessibilityLabel("Search scope")
+        listStack.addArrangedSubview(scopeControl)
+        scopeControl.widthAnchor.constraint(
+            equalTo: listStack.widthAnchor,
+            constant: -28
+        ).isActive = true
+
         searchField.placeholderString = "Search clips"
         searchField.delegate = self
         searchField.sendsSearchStringImmediately = true
@@ -219,6 +383,28 @@ final class ClipboardPanelController: NSWindowController,
             constant: -28
         ).isActive = true
 
+        // All-history-only filter row (hidden in This Window scope).
+        dateFilterPopup.addItems(withTitles: Self.dateFilterTitles)
+        dateFilterPopup.target = self
+        dateFilterPopup.action = #selector(archiveFiltersChanged)
+        dateFilterPopup.setAccessibilityLabel("Filter history by date range")
+        appFilterPopup.addItem(withTitle: Self.allAppsFilterTitle)
+        appFilterPopup.target = self
+        appFilterPopup.action = #selector(archiveFiltersChanged)
+        appFilterPopup.setAccessibilityLabel("Filter history by app")
+        archiveFilterRow.orientation = .horizontal
+        archiveFilterRow.alignment = .centerY
+        archiveFilterRow.spacing = 8
+        archiveFilterRow.addArrangedSubview(dateFilterPopup)
+        archiveFilterRow.addArrangedSubview(appFilterPopup)
+        archiveFilterRow.addArrangedSubview(NSView())
+        archiveFilterRow.isHidden = true
+        listStack.addArrangedSubview(archiveFilterRow)
+        archiveFilterRow.widthAnchor.constraint(
+            equalTo: listStack.widthAnchor,
+            constant: -28
+        ).isActive = true
+
         let listScroll = NSScrollView()
         listScroll.hasVerticalScroller = true
         listScroll.drawsBackground = false
@@ -239,6 +425,11 @@ final class ClipboardPanelController: NSWindowController,
         tableView.delegate = self
         tableView.target = self
         tableView.doubleAction = #selector(copySelected)
+        // Return in the list commits a copy through the shared
+        // no-re-capture path — in both scopes.
+        tableView.onReturnKey = { [weak self] in
+            self?.copySelected()
+        }
         let contextMenu = NSMenu()
         let copyItem = NSMenuItem(
             title: "Copy Selected",
@@ -363,6 +554,17 @@ final class ClipboardPanelController: NSWindowController,
             constant: -52
         ).isActive = true
         detailHeadings.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        // Recovery affordance for all-history scope: shown when a clip can
+        // no longer be fetched by id or the search errors; rebuilding the
+        // disposable index is always the recovery path.
+        rebuildIndexButton.target = self
+        rebuildIndexButton.action = #selector(rebuildSearchIndex)
+        rebuildIndexButton.bezelStyle = .rounded
+        rebuildIndexButton.isHidden = true
+        rebuildIndexButton.setAccessibilityLabel("Rebuild the archive search index")
+        detailStack.addArrangedSubview(rebuildIndexButton)
+
         let detailSeparator = separatorView()
         detailStack.addArrangedSubview(detailSeparator)
         detailSeparator.widthAnchor.constraint(
@@ -516,7 +718,360 @@ final class ClipboardPanelController: NSWindowController,
         default:
             contentTypeFilter = nil
         }
-        applyFilter()
+        if scope == .allHistory {
+            scheduleArchiveQuery(debounced: false)
+        } else {
+            applyFilter()
+        }
+    }
+
+    // MARK: - All-history scope (contract 3)
+
+    private static let allAppsFilterTitle = "All Apps"
+    private static let dateFilterTitles = [
+        "Any Time", "Today", "Last 7 Days", "Last 30 Days", "Last 90 Days", "This Year"
+    ]
+
+    @objc private func scopeChanged() {
+        let requested: HistoryScope = scopeControl.selectedSegment == 1 ? .allHistory : .thisWindow
+        guard requested != scope else {
+            return
+        }
+        scope = requested
+        archiveDetailEvent = nil
+        archiveDetailContent = nil
+        switch scope {
+        case .thisWindow:
+            // Cancel pending archive work and restore the existing
+            // in-memory path UNCHANGED.
+            pendingQueryWork?.cancel()
+            pendingQueryWork = nil
+            queryGeneration += 1
+            completedQueryGeneration = queryGeneration
+            detailFetchGeneration += 1
+            completedDetailFetchGeneration = detailFetchGeneration
+            archiveFilterRow.isHidden = true
+            rebuildIndexButton.isHidden = true
+            historySubtitle.stringValue = "\(historyWindow.displayName) · local to this Mac"
+            applyFilter()
+        case .allHistory:
+            archiveFilterRow.isHidden = false
+            historySubtitle.stringValue = "All history · local to this Mac"
+            populateAppFilter()
+            scheduleArchiveQuery(debounced: false)
+        }
+    }
+
+    @objc private func archiveFiltersChanged() {
+        guard scope == .allHistory else {
+            return
+        }
+        scheduleArchiveQuery(debounced: false)
+    }
+
+    @objc private func rebuildSearchIndex() {
+        guard !maintenanceInFlight else {
+            return
+        }
+        maintenanceInFlight = true
+        rebuildIndexButton.isHidden = true
+        setAllHistoryState(.preparingIndex)
+        let index = derivedIndex
+        archiveQueue.async { @Sendable [weak self] in
+            let failure: String?
+            do {
+                _ = try index.rebuild()
+                failure = nil
+            } catch {
+                failure = "\(error)"
+            }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else {
+                        return
+                    }
+                    self.maintenanceInFlight = false
+                    if let failure {
+                        self.setAllHistoryState(.error(failure))
+                    } else if self.scope == .allHistory {
+                        self.populateAppFilter()
+                        self.scheduleArchiveQuery(debounced: false)
+                    }
+                }
+            }
+        }
+    }
+
+    /// One query pipeline for both browse (empty query) and search. Every
+    /// keystroke debounces 250 ms; the generation counter drops stale
+    /// completions; all index work runs on the serial background queue.
+    private func scheduleArchiveQuery(debounced: Bool) {
+        guard scope == .allHistory else {
+            return
+        }
+        pendingQueryWork?.cancel()
+        queryGeneration += 1
+        let generation = queryGeneration
+        let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let filters = currentArchiveFilters()
+        let index = derivedIndex
+        setAllHistoryState(.searching)
+        let work = DispatchWorkItem { @Sendable [weak self] in
+            // First entry after a schema bump (or a missing index) triggers
+            // a full rebuild; surface the dedicated state while it runs.
+            if !index.schemaIsCurrent() {
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        guard let self, self.queryGeneration == generation else {
+                            return
+                        }
+                        self.setAllHistoryState(.preparingIndex)
+                    }
+                }
+            }
+            var outcome: AllHistoryState
+            do {
+                try index.ensureCurrentSchema()
+                let rows = query.isEmpty
+                    ? try index.browse(filters: filters, limit: 200)
+                    : try index.structuredSearch(query, filters: filters, limit: 200)
+                if rows.isEmpty {
+                    outcome = .empty
+                } else {
+                    outcome = query.isEmpty ? .browse(rows) : .results(rows)
+                }
+            } catch {
+                outcome = .error("\(error)")
+            }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else {
+                        return
+                    }
+                    self.completedQueryGeneration = max(self.completedQueryGeneration, generation)
+                    guard self.queryGeneration == generation, self.scope == .allHistory else {
+                        return // stale generation — drop
+                    }
+                    self.setAllHistoryState(outcome)
+                }
+            }
+        }
+        pendingQueryWork = work
+        if debounced {
+            archiveQueue.asyncAfter(deadline: .now() + 0.25, execute: work)
+        } else {
+            archiveQueue.async(execute: work)
+        }
+    }
+
+    private func setAllHistoryState(_ state: AllHistoryState) {
+        allHistoryState = state
+        switch state {
+        case let .browse(rows), let .results(rows):
+            archiveRows = rows
+        case .empty, .error:
+            archiveRows = []
+        case .searching, .preparingIndex:
+            // Keep the previous rows on screen while work is in flight so
+            // typing does not flash an empty table.
+            break
+        }
+        guard scope == .allHistory else {
+            return
+        }
+        tableView.reloadData()
+        if !archiveRows.isEmpty, tableView.selectedRow < 0 {
+            tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        }
+        updateStatus()
+        updateDetail()
+    }
+
+    private func currentArchiveFilters() -> ClipboardIndexSearchFilters {
+        var filters = ClipboardIndexSearchFilters()
+        filters.since = selectedSinceDate()
+        let appTitle = appFilterPopup.titleOfSelectedItem ?? Self.allAppsFilterTitle
+        if appTitle != Self.allAppsFilterTitle {
+            filters.sourceAppName = appTitle
+        }
+        filters.contentType = contentTypeFilter?.rawValue
+        return filters
+    }
+
+    private func selectedSinceDate() -> Date? {
+        let calendar = Calendar.current
+        let now = Date()
+        switch dateFilterPopup.indexOfSelectedItem {
+        case 1:
+            return calendar.startOfDay(for: now)
+        case 2:
+            return calendar.date(byAdding: .day, value: -7, to: now)
+        case 3:
+            return calendar.date(byAdding: .day, value: -30, to: now)
+        case 4:
+            return calendar.date(byAdding: .day, value: -90, to: now)
+        case 5:
+            return calendar.date(from: calendar.dateComponents([.year], from: now))
+        default:
+            return nil
+        }
+    }
+
+    /// Refreshes the app filter popup from the index, preserving the
+    /// current selection when the app is still present.
+    private func populateAppFilter() {
+        let index = derivedIndex
+        archiveQueue.async { @Sendable [weak self] in
+            let apps = (try? index.distinctSourceApps()) ?? []
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else {
+                        return
+                    }
+                    let selected = self.appFilterPopup.titleOfSelectedItem
+                    self.appFilterPopup.removeAllItems()
+                    self.appFilterPopup.addItem(withTitle: Self.allAppsFilterTitle)
+                    self.appFilterPopup.addItems(withTitles: apps)
+                    if let selected, self.appFilterPopup.itemTitles.contains(selected) {
+                        self.appFilterPopup.selectItem(withTitle: selected)
+                    }
+                }
+            }
+        }
+    }
+
+    private func selectedArchiveResult() -> ClipboardIndexSearchResult? {
+        let row = tableView.selectedRow
+        guard row >= 0, row < archiveRows.count else {
+            return nil
+        }
+        return archiveRows[row]
+    }
+
+    /// Background fetch of the selected result's full event + content via
+    /// the single-day-file by-id lookup (never a full archive scan).
+    private func fetchArchiveDetail(for result: ClipboardIndexSearchResult) {
+        detailFetchGeneration += 1
+        let generation = detailFetchGeneration
+        let reader = reader
+        let id = result.id
+        archiveQueue.async { @Sendable [weak self] in
+            let event = try? reader.event(withID: id)
+            let content = event.flatMap { try? reader.content(for: $0) }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else {
+                        return
+                    }
+                    self.completedDetailFetchGeneration = max(
+                        self.completedDetailFetchGeneration,
+                        generation
+                    )
+                    guard self.detailFetchGeneration == generation,
+                          self.scope == .allHistory,
+                          self.selectedArchiveResult()?.id == id else {
+                        return
+                    }
+                    if let event, let content {
+                        self.archiveDetailEvent = event
+                        self.archiveDetailContent = content
+                        self.renderArchiveDetail(event: event, content: content)
+                    } else {
+                        // Ledger drift or a pruned day file: the index row
+                        // is stale. Suppression already hid it from fetch;
+                        // offer the rebuild recovery affordance.
+                        self.archiveDetailEvent = nil
+                        self.archiveDetailContent = nil
+                        self.copyButton.isEnabled = false
+                        self.detailTitle.stringValue = "Clip unavailable"
+                        self.detailMetadata.stringValue = "This clip is no longer in the archive."
+                        self.detailTextView.string = "This clip is no longer in the archive."
+                        self.rebuildIndexButton.isHidden = false
+                    }
+                }
+            }
+        }
+    }
+
+    private func renderArchiveDetail(event: StoredClipboardEvent, content: String) {
+        detailTitle.stringValue = event.sourceApp.name
+        detailMetadata.stringValue = "Copied \(relativeDate(event.capturedAt))"
+        detailCapturedValue.stringValue = fullDate(event.capturedAt)
+        detailFormatValue.stringValue = event.contentType.rawValue.capitalized
+        detailSizeValue.stringValue = ByteCountFormatter.string(
+            fromByteCount: Int64(event.byteCount),
+            countStyle: .file
+        )
+        detailCardHeightConstraint?.constant = preferredDetailCardHeight(for: event)
+        detailTextView.font = event.contentType == .code
+            ? .monospacedSystemFont(ofSize: 13, weight: .regular)
+            : .systemFont(ofSize: 15)
+        detailTextView.string = content
+        copyButton.isEnabled = true
+    }
+
+    private func copySelectedArchiveResult() {
+        guard let result = selectedArchiveResult() else {
+            return
+        }
+        if let event = archiveDetailEvent, event.id == result.id,
+           let content = archiveDetailContent {
+            copyToPasteboard(content)
+            statusLabel.stringValue = "Copied to clipboard"
+            return
+        }
+        let reader = reader
+        let id = result.id
+        archiveQueue.async { @Sendable [weak self] in
+            let event = try? reader.event(withID: id)
+            let content = event.flatMap { try? reader.content(for: $0) }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else {
+                        return
+                    }
+                    if let content {
+                        // Same shared no-re-capture path as every copy
+                        // surface.
+                        self.copyToPasteboard(content)
+                        self.statusLabel.stringValue = "Copied to clipboard"
+                    } else {
+                        self.statusLabel.stringValue = "This clip is no longer in the archive."
+                        self.rebuildIndexButton.isHidden = false
+                    }
+                }
+            }
+        }
+    }
+
+    /// Esc behavior (design): first Esc clears the query; a second Esc in
+    /// All History returns to This Window.
+    private func handleSearchFieldEscape() -> Bool {
+        if !searchField.stringValue.isEmpty {
+            searchField.stringValue = ""
+            if scope == .allHistory {
+                scheduleArchiveQuery(debounced: false)
+            } else {
+                applyFilter()
+            }
+            return true
+        }
+        if scope == .allHistory {
+            scopeControl.selectedSegment = 0
+            scopeChanged()
+            return true
+        }
+        return false
+    }
+
+    private func focusResultsTable() {
+        guard tableView.numberOfRows > 0 else {
+            return
+        }
+        if tableView.selectedRow < 0 {
+            tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        }
+        window?.makeFirstResponder(tableView)
     }
 
     @objc private func openArchive() {
@@ -524,6 +1079,10 @@ final class ClipboardPanelController: NSWindowController,
     }
 
     @objc private func copySelected() {
+        if scope == .allHistory {
+            copySelectedArchiveResult()
+            return
+        }
         let selected = selectedEvents()
         guard !selected.isEmpty else {
             return
@@ -539,6 +1098,11 @@ final class ClipboardPanelController: NSWindowController,
     }
 
     @objc private func deleteSelected() {
+        // Deletion stays a This Window operation in this slice; bulk and
+        // archive-wide deletion land with the bulk-management slice.
+        guard scope == .thisWindow else {
+            return
+        }
         let selected = selectedEvents()
         guard !selected.isEmpty else {
             return
@@ -565,17 +1129,26 @@ final class ClipboardPanelController: NSWindowController,
     }
 
     private func reload() {
-        historySubtitle.stringValue = "\(historyWindow.displayName) · local to this Mac"
+        if scope == .thisWindow {
+            historySubtitle.stringValue = "\(historyWindow.displayName) · local to this Mac"
+        }
         let since = Calendar.current.date(
             byAdding: .day,
             value: -historyWindow.dayCount,
             to: Date()
         ) ?? Date()
         events = (try? reader.recentItems(since: since, limit: recentItemLimit)) ?? []
-        applyFilter()
+        if scope == .allHistory {
+            scheduleArchiveQuery(debounced: false)
+        } else {
+            applyFilter()
+        }
     }
 
     private func applyFilter() {
+        guard scope == .thisWindow else {
+            return
+        }
         let previousID = selectedEvents().first?.id
         let query = searchField.stringValue
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -604,11 +1177,37 @@ final class ClipboardPanelController: NSWindowController,
     }
 
     func controlTextDidChange(_ obj: Notification) {
-        applyFilter()
+        if scope == .allHistory {
+            scheduleArchiveQuery(debounced: true)
+        } else {
+            applyFilter()
+        }
+    }
+
+    /// Keyboard-first routing for the search field: ↓ jumps focus into the
+    /// results table; Esc clears the query, then (in All History) returns
+    /// to This Window.
+    func control(
+        _ control: NSControl,
+        textView: NSTextView,
+        doCommandBy commandSelector: Selector
+    ) -> Bool {
+        guard control === searchField else {
+            return false
+        }
+        switch commandSelector {
+        case #selector(NSResponder.moveDown(_:)):
+            focusResultsTable()
+            return true
+        case #selector(NSResponder.cancelOperation(_:)):
+            return handleSearchFieldEscape()
+        default:
+            return false
+        }
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int {
-        filteredEvents.count
+        scope == .allHistory ? archiveRows.count : filteredEvents.count
     }
 
     func tableView(
@@ -616,30 +1215,51 @@ final class ClipboardPanelController: NSWindowController,
         viewFor tableColumn: NSTableColumn?,
         row: Int
     ) -> NSView? {
+        if scope == .allHistory {
+            guard row < archiveRows.count else {
+                return nil
+            }
+            let result = archiveRows[row]
+            return historyCell(
+                contentType: ClipboardContentType(rawValue: result.contentType),
+                previewText: result.snippet,
+                metadataText: "\(result.sourceApp)  ·  \(relativeDate(result.capturedAt))"
+            )
+        }
         guard row < filteredEvents.count else {
             return nil
         }
         let event = filteredEvents[row]
+        return historyCell(
+            contentType: event.contentType,
+            previewText: event.contentPreview,
+            metadataText: "\(event.sourceApp.name)  ·  \(relativeDate(event.capturedAt))"
+        )
+    }
+
+    private func historyCell(
+        contentType: ClipboardContentType,
+        previewText: String,
+        metadataText: String
+    ) -> NSView {
         let cell = NSTableCellView()
 
         let icon = NSImageView()
         icon.image = NSImage(
-            systemSymbolName: symbolName(for: event.contentType),
-            accessibilityDescription: event.contentType.rawValue
+            systemSymbolName: symbolName(for: contentType),
+            accessibilityDescription: contentType.rawValue
         )
         icon.contentTintColor = .secondaryLabelColor
         icon.translatesAutoresizingMaskIntoConstraints = false
 
-        let metadata = NSTextField(
-            labelWithString: "\(event.sourceApp.name)  ·  \(relativeDate(event.capturedAt))"
-        )
+        let metadata = NSTextField(labelWithString: metadataText)
         metadata.font = .systemFont(ofSize: 11, weight: .medium)
         metadata.textColor = .secondaryLabelColor
         metadata.lineBreakMode = .byTruncatingTail
         metadata.alignment = .left
 
-        let preview = NSTextField(labelWithString: singleLine(event.contentPreview))
-        preview.font = event.contentType == .code
+        let preview = NSTextField(labelWithString: singleLine(previewText))
+        preview.font = contentType == .code
             ? .monospacedSystemFont(ofSize: 13, weight: .regular)
             : .systemFont(ofSize: 13)
         preview.lineBreakMode = .byTruncatingTail
@@ -680,6 +1300,23 @@ final class ClipboardPanelController: NSWindowController,
     }
 
     private func updateStatus() {
+        if scope == .allHistory {
+            switch allHistoryState {
+            case .searching:
+                statusLabel.stringValue = "Searching…"
+            case .preparingIndex:
+                statusLabel.stringValue = "Preparing search index…"
+            case .empty:
+                statusLabel.stringValue = "No matching clips in the archive"
+            case .error:
+                statusLabel.stringValue = "Search failed"
+            case let .browse(rows):
+                statusLabel.stringValue = "\(rows.count) archived clip\(rows.count == 1 ? "" : "s")"
+            case let .results(rows):
+                statusLabel.stringValue = "\(rows.count) match\(rows.count == 1 ? "" : "es")"
+            }
+            return
+        }
         let selectedCount = tableView.selectedRowIndexes.count
         let total = filteredEvents.count
         let isFiltered = !searchField.stringValue.isEmpty || contentTypeFilter != nil
@@ -691,7 +1328,64 @@ final class ClipboardPanelController: NSWindowController,
             : base
     }
 
+    private func updateArchiveDetail() {
+        deleteButton.isEnabled = false
+        detailCapturedValue.stringValue = "—"
+        detailFormatValue.stringValue = "—"
+        detailSizeValue.stringValue = "—"
+        detailCardHeightConstraint?.constant = 150
+        guard let result = selectedArchiveResult() else {
+            copyButton.isEnabled = false
+            detailTextView.string = ""
+            switch allHistoryState {
+            case .preparingIndex:
+                detailTitle.stringValue = "Preparing search index…"
+                detailMetadata.stringValue = "The first all-history search builds the index once."
+            case let .error(message):
+                detailTitle.stringValue = "Search failed"
+                detailMetadata.stringValue = message
+                rebuildIndexButton.isHidden = false
+            case .empty:
+                detailTitle.stringValue = "No matching clips"
+                detailMetadata.stringValue = "Try a different search or filter."
+            case .searching:
+                detailTitle.stringValue = "Searching…"
+                detailMetadata.stringValue = "Looking through your full archive."
+            case .browse, .results:
+                detailTitle.stringValue = "Select an item"
+                detailMetadata.stringValue = "Choose a clip to preview its full text."
+            }
+            return
+        }
+        if case .error = allHistoryState {
+            // keep the recovery affordance visible
+        } else {
+            rebuildIndexButton.isHidden = true
+        }
+        if let event = archiveDetailEvent, event.id == result.id,
+           let content = archiveDetailContent {
+            renderArchiveDetail(event: event, content: content)
+            return
+        }
+        copyButton.isEnabled = true
+        detailTitle.stringValue = result.sourceApp
+        detailMetadata.stringValue = "Copied \(relativeDate(result.capturedAt))"
+        detailCapturedValue.stringValue = fullDate(result.capturedAt)
+        detailFormatValue.stringValue = result.contentType.capitalized
+        detailSizeValue.stringValue = ByteCountFormatter.string(
+            fromByteCount: Int64(result.byteCount),
+            countStyle: .file
+        )
+        detailTextView.string = "Loading clip…"
+        fetchArchiveDetail(for: result)
+    }
+
     private func updateDetail() {
+        if scope == .allHistory {
+            updateArchiveDetail()
+            return
+        }
+        rebuildIndexButton.isHidden = true
         let selected = selectedEvents()
         copyButton.isEnabled = !selected.isEmpty
         deleteButton.isEnabled = !selected.isEmpty
