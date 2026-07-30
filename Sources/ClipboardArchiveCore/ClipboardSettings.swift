@@ -152,10 +152,14 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         ) ?? .sevenDays
         retentionMode = try container.decodeIfPresent(ClipboardRetentionMode.self, forKey: .retentionMode) ?? (archiveEnabled ? .unlimited : .recent50)
         hasCompletedOnboarding = try container.decodeIfPresent(Bool.self, forKey: .hasCompletedOnboarding) ?? true
-        shortcuts = try container.decodeIfPresent(
-            [String: ClipboardShortcutSetting].self,
+        // A malformed entry (wrong value type, future schema hiccup) must
+        // drop only that entry — never fail the whole settings decode, which
+        // would reset capture/retention/exclusions to factory defaults.
+        let tolerantShortcuts = try container.decodeIfPresent(
+            [String: FailableDecodable<ClipboardShortcutSetting>].self,
             forKey: .shortcuts
         ) ?? [:]
+        shortcuts = tolerantShortcuts.compactMapValues(\.value)
         quickPickerDirectPasteEnabled = try container.decodeIfPresent(
             Bool.self,
             forKey: .quickPickerDirectPasteEnabled
@@ -164,6 +168,16 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
 
     public static func clampRecentItemLimit(_ value: Int) -> Int {
         max(minimumRecentItemLimit, min(maximumRecentItemLimit, value))
+    }
+}
+
+/// Wraps a decodable value so a malformed instance decodes to nil instead of
+/// failing the containing structure's decode.
+struct FailableDecodable<Wrapped: Decodable>: Decodable {
+    let value: Wrapped?
+
+    init(from decoder: Decoder) throws {
+        value = try? Wrapped(from: decoder)
     }
 }
 
