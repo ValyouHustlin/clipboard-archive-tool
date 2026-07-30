@@ -231,11 +231,45 @@ public struct ClipboardDerivedIndex: Sendable {
     /// flow only replaces the file after `quick_check` passes).
     @discardableResult
     public func ensureCurrentSchema() throws -> Bool {
+        // Per-capture cost guard: without this cache every accepted capture
+        // spawns an extra sqlite3 subprocess on the main thread just to
+        // re-read user_version. Once this process has verified (or built)
+        // the schema, trust it. An external process swapping in an
+        // older-schema file mid-run degrades to a failed upsert (already
+        // non-fatal) and heals through the manual/CLI rebuild path.
+        if Self.verifiedSchemaPaths.contains(indexURL.path) {
+            return false
+        }
         guard !schemaIsCurrent() else {
+            Self.verifiedSchemaPaths.insert(indexURL.path)
             return false
         }
         _ = try rebuild()
+        Self.verifiedSchemaPaths.insert(indexURL.path)
         return true
+    }
+
+    private static let verifiedSchemaPaths = VerifiedPathSet()
+
+    private final class VerifiedPathSet: @unchecked Sendable {
+        private let lock = NSLock()
+        private var paths: Set<String> = []
+
+        func contains(_ path: String) -> Bool {
+            lock.lock()
+            defer {
+                lock.unlock()
+            }
+            return paths.contains(path)
+        }
+
+        func insert(_ path: String) {
+            lock.lock()
+            defer {
+                lock.unlock()
+            }
+            paths.insert(path)
+        }
     }
 
     // MARK: - Structured queries (contract 3)
@@ -464,6 +498,19 @@ public struct ClipboardDerivedIndex: Sendable {
     }
 
     private func withExclusiveLock<T>(_ body: () throws -> T) throws -> T {
+        // Two layers, both required. POSIX record locks (lockf) are scoped
+        // to (process, inode): two THREADS of this process on separate
+        // descriptors both acquire the file lock instantly, so lockf alone
+        // cannot serialize the main-thread capture upsert against the
+        // panel's background search queue (a rebuild racing an upsert was
+        // reproducibly shown to drop freshly indexed rows). The per-path
+        // process lock closes the intra-process hole; the file lock keeps
+        // covering app-vs-CLI.
+        let processLock = Self.processLocks.lock(forPath: indexURL.path)
+        processLock.lock()
+        defer {
+            processLock.unlock()
+        }
         let lockURL = indexURL.deletingLastPathComponent()
             .appendingPathComponent(".\(indexURL.lastPathComponent).lock")
         let descriptor = Darwin.open(
@@ -483,6 +530,28 @@ public struct ClipboardDerivedIndex: Sendable {
             throw ClipboardDerivedIndexError.lockFailed(errno)
         }
         return try body()
+    }
+
+    private static let processLocks = ProcessLockRegistry()
+
+    /// Per-index-path in-process locks; see `withExclusiveLock` for why the
+    /// file lock alone is insufficient between threads of one process.
+    private final class ProcessLockRegistry: @unchecked Sendable {
+        private let registryLock = NSLock()
+        private var locks: [String: NSLock] = [:]
+
+        func lock(forPath path: String) -> NSLock {
+            registryLock.lock()
+            defer {
+                registryLock.unlock()
+            }
+            if let existing = locks[path] {
+                return existing
+            }
+            let created = NSLock()
+            locks[path] = created
+            return created
+        }
     }
 
     /// Runs one read query in `sqlite3 -json -batch` mode with the SQL

@@ -58,3 +58,7 @@ Legend: status = planned | in-progress | integrated | verified.
 | 2026-07-30 review | Settings save hides the window in the same run-loop turn as a conflict label write | fixed: save-time registration failure shows an alert |
 | 2026-07-30 review | One malformed shortcuts entry reset ALL settings to defaults (capture off, exclusions lost) | fixed: FailableDecodable per-entry tolerance + tests |
 | 2026-07-30 design | PRE-EXISTING PRIVACY BUG: pause exit never resyncs lastChangeCount → the last item copied during a pause is retro-captured on resume | fix owned by Slice 5 (private mode + pause exit resync) |
+| 2026-07-30 review | CRITICAL: lockf is per-(process,inode) — same-process threads bypass the index lock; Slice 3's background search queue racing main-thread upserts reproducibly lost index rows during rebuild | fixed: per-path in-process NSLock layered under the file lock in withExclusiveLock |
+| 2026-07-30 review | ensureCurrentSchema spawned an extra sqlite3 subprocess per capture on the main thread | fixed: process-wide verified-schema path cache |
+| 2026-07-30 review | Save-time shortcut alert re-fired on every unrelated settings save | fixed: alert only on newly discovered failure |
+| 2026-07-30 review | structuredSearch/browse read-time filter checks ledger only, not a persisted privacy-label column; safe today because doNotIndex rows never physically enter the index (upsert deletes, rebuild skips) | accepted + documented; Slice 5's isIndexExcluded work revisits with any label-column bump |

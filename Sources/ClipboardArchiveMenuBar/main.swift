@@ -435,13 +435,16 @@ final class ClipboardMenuBarApp: NSObject,
             restartTimer()
         }
         markQuickPickerCacheDirty()
+        let failureBeforeSave = shortcutFailureMessage
         applyQuickPickerShortcut()
         lastStatus = settings.archiveEnabled ? "Settings saved" : "Archive tracking off"
         rebuildMenu()
         // The settings window hides itself right after save, so a
         // registration failure discovered here needs its own visible
-        // surface, not just the (now hidden) conflict label.
-        if let shortcutFailureMessage {
+        // surface, not just the (now hidden) conflict label. Alert only on
+        // a NEW failure — an unrelated save while an old conflict persists
+        // must not nag (the persistent menu item already covers it).
+        if let shortcutFailureMessage, shortcutFailureMessage != failureBeforeSave {
             let alert = NSAlert()
             alert.messageText = "Quick Picker Shortcut Not Active"
             alert.informativeText = shortcutFailureMessage
