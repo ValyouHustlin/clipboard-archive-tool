@@ -304,6 +304,33 @@ public struct ClipboardAnnotationsStore: Sendable {
         document().collections
     }
 
+    /// Content hashes carrying the manual `"restricted"` sensitivity
+    /// override (Slice 5). Index writers exclude these; readers never do.
+    public func restrictedContentHashes() -> Set<String> {
+        Set(document().annotations.filter { $0.value.sensitivityOverride == "restricted" }.keys)
+    }
+
+    /// Every record with an expiry, sorted soonest first.
+    public func entriesWithExpiry() -> [(contentHash: String, expiresAt: Date)] {
+        document().annotations
+            .compactMap { key, record in
+                record.expiresAt.map { (contentHash: key, expiresAt: $0) }
+            }
+            .sorted {
+                if $0.expiresAt == $1.expiresAt {
+                    return $0.contentHash < $1.contentHash
+                }
+                return $0.expiresAt < $1.expiresAt
+            }
+    }
+
+    /// The soonest pending expiry, or nil when nothing expires. This is the
+    /// sweeper's `nextDue` source: ONE stat-validated cache read, zero
+    /// archive IO.
+    public func earliestExpiry() -> Date? {
+        document().annotations.values.compactMap(\.expiresAt).min()
+    }
+
     /// Trim whitespace, drop empties, case-insensitive dedupe keeping the
     /// first-seen casing and order.
     public static func normalizedTags(_ tags: [String]) -> [String] {
@@ -370,6 +397,33 @@ public struct ClipboardAnnotationsStore: Sendable {
                 record.snippet = false
                 record.snippetTitle = nil
             }
+            document.annotations[contentHash] = record
+        }
+    }
+
+    /// Manual sensitivity override (Slice 5). `"restricted"` keeps the
+    /// content stored and visible but out of the search index; nil clears.
+    /// Event lines are never rewritten — the override survives re-copies via
+    /// content hash. Also updates the tolerant placeholder round-trip shape.
+    public func setSensitivityOverride(
+        _ sensitivityOverride: String?,
+        forContentHash contentHash: String
+    ) throws {
+        try mutate { document in
+            var record = document.annotations[contentHash] ?? ClipboardAnnotationRecord()
+            record.sensitivityOverride = sensitivityOverride
+            document.annotations[contentHash] = record
+        }
+    }
+
+    /// Expiring sensitive clip (Slice 5): at `expiresAt` the sweeper deletes
+    /// EVERY live occurrence of the content — including pinned ones (expiry
+    /// is the user's explicit instruction; the UI states this when setting
+    /// expiry on a pinned clip). nil clears the expiry.
+    public func setExpiry(_ expiresAt: Date?, forContentHash contentHash: String) throws {
+        try mutate { document in
+            var record = document.annotations[contentHash] ?? ClipboardAnnotationRecord()
+            record.expiresAt = expiresAt
             document.annotations[contentHash] = record
         }
     }
@@ -573,9 +627,16 @@ public struct ClipboardOccurrenceResolver: Sendable {
         self.indexURL = indexURL
     }
 
-    public func liveOccurrenceIDs(contentHash: String) throws -> [String] {
+    /// `viaReaderScan: true` skips the index entirely and enumerates live
+    /// occurrences from the archive files. Needed when the index cannot
+    /// know the answer — e.g. re-indexing content whose rows were removed
+    /// by a "restricted" override that is now being cleared (Slice 5).
+    public func liveOccurrenceIDs(
+        contentHash: String,
+        viaReaderScan: Bool = false
+    ) throws -> [String] {
         let suppression = try ClipboardSuppression(archiveRoot: archiveRoot).snapshot()
-        if FileManager.default.fileExists(atPath: indexURL.path) {
+        if !viaReaderScan, FileManager.default.fileExists(atPath: indexURL.path) {
             let index = ClipboardDerivedIndex(archiveRoot: archiveRoot, indexURL: indexURL)
             if let ids = try? index.occurrenceIDs(contentHash: contentHash) {
                 return ids.filter { !suppression.deletedIDs.contains($0) }

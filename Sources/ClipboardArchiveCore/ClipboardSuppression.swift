@@ -31,6 +31,29 @@ public struct ClipboardSuppression: Sendable {
         try snapshot().isSuppressed(event)
     }
 
+    /// The SECOND named predicate in the one suppression gate file
+    /// (Slice 5, `.restricted` semantics): true when an event must be kept
+    /// OUT of the derived search index while remaining fully visible on
+    /// reader-backed surfaces.
+    ///
+    /// `.restricted` = stored, visible, never searchable. This predicate is
+    /// deliberately NOT part of `isSuppressed` — folding it in would
+    /// silently turn "mark sensitive" into "delete". Index writers
+    /// (upsert delete-instead-of-insert, rebuild skip) and the CLI archive
+    /// searcher route through this; readers never do.
+    ///
+    /// `sensitivityOverride` is the annotation-store manual override for the
+    /// event's content hash (`"restricted"` marks re-copies of manually
+    /// restricted content without ever rewriting archive lines).
+    public static func isIndexExcluded(
+        _ event: StoredClipboardEvent,
+        sensitivityOverride: String? = nil
+    ) -> Bool {
+        event.privacyLabel == .doNotIndex
+            || event.privacyLabel == .restricted
+            || sensitivityOverride == "restricted"
+    }
+
     /// A point-in-time suppression view backed by one ledger read.
     public struct Snapshot: Sendable {
         public let deletedIDs: Set<String>

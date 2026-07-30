@@ -40,6 +40,11 @@ public struct ClipboardArchiveSearcher: Sendable {
         }
 
         let suppression = try ClipboardSuppression(archiveRoot: archiveRoot).snapshot()
+        // `.restricted` = stored, visible, never searchable (Slice 5): this
+        // searcher IS a search surface, so index-excluded events are
+        // skipped here even though the reader keeps showing them.
+        let restrictedHashes = ClipboardAnnotationsStore(archiveRoot: archiveRoot)
+            .restrictedContentHashes()
         var results: [ClipboardSearchResult] = []
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -50,7 +55,13 @@ public struct ClipboardArchiveSearcher: Sendable {
                 guard let data = String(line).data(using: .utf8),
                       let event = try? decoder.decode(StoredClipboardEvent.self, from: data),
                       isWithinDateWindow(event.capturedAt, options: options),
-                      !suppression.isSuppressed(event) else {
+                      !suppression.isSuppressed(event),
+                      !ClipboardSuppression.isIndexExcluded(
+                          event,
+                          sensitivityOverride: restrictedHashes.contains(event.contentHash)
+                              ? "restricted"
+                              : nil
+                      ) else {
                     continue
                 }
 

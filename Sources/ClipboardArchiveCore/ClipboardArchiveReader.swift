@@ -82,6 +82,32 @@ public struct ClipboardArchiveReader: Sendable {
         return nil
     }
 
+    /// Recent blocked-event audit records (no content was ever stored for
+    /// these), newest first. Powers the dashboard's "Recent Blocked Items"
+    /// section (Slice 5).
+    public func recentBlockedEvents(since: Date, limit: Int) throws -> [BlockedClipboardEvent] {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        var items: [BlockedClipboardEvent] = []
+
+        for fileURL in try eventFiles().reversed() {
+            let lines = try String(contentsOf: fileURL).split(separator: "\n", omittingEmptySubsequences: true)
+            for line in lines.reversed() {
+                guard let data = String(line).data(using: .utf8),
+                      let blocked = try? decoder.decode(BlockedClipboardEvent.self, from: data),
+                      blocked.eventType == "blocked_sensitive_clipboard_item",
+                      blocked.capturedAt >= since else {
+                    continue
+                }
+                items.append(blocked)
+                if items.count >= limit {
+                    return items
+                }
+            }
+        }
+        return items
+    }
+
     public func content(for event: StoredClipboardEvent) throws -> String {
         if let contentInline = event.contentInline {
             return contentInline

@@ -16,10 +16,26 @@ protocol ClipboardSettingsWindowControllerDelegate: AnyObject {
 @MainActor
 final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate {
     weak var delegate: ClipboardSettingsWindowControllerDelegate?
+    /// Opens the Storage & Health dashboard (owned by the app delegate).
+    var onOpenDashboard: (() -> Void)?
 
     private let settingsStore: ClipboardSettingsStore
     private let archiveRoot: URL
     private var settings: ClipboardSettings
+
+    /// One App Privacy Rules row (Slice 5). Legacy exclusion-list entries
+    /// with no explicit rule render as Block; changing their mode makes
+    /// them explicit. Unknown modes from newer builds render as
+    /// "Unknown (…)" and round-trip losslessly unless the user changes
+    /// them.
+    private struct AppRuleRow {
+        var bundleID: String
+        var mode: String
+        var addedAt: Date
+        var isExplicit: Bool
+    }
+
+    private var appRuleRows: [AppRuleRow] = []
 
     private let archiveEnabledButton = NSButton(checkboxWithTitle: "Capture clipboard history", target: nil, action: nil)
     private let retentionModePopup = NSPopUpButton()
@@ -172,8 +188,8 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         )
 
         let privacyCard = sectionCard(
-            title: "Private App Exclusions",
-            subtitle: "Password managers are blocked automatically. Add any other app by bundle identifier.",
+            title: "App Privacy Rules",
+            subtitle: "Password managers are always blocked — a Normal rule cannot override them. Block stores nothing; Store, don't index keeps clips visible in History but out of search.",
             symbol: "hand.raised.fill",
             tint: .systemRed,
             views: privacyControls()
@@ -379,16 +395,20 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         excludedBundleField.placeholderString = "com.example.sensitive-app"
         excludedBundleField.target = self
         excludedBundleField.action = #selector(addExcludedBundle)
-        excludedBundleField.setAccessibilityLabel("App bundle identifier to exclude")
+        excludedBundleField.setAccessibilityLabel("App bundle identifier for a privacy rule")
         excludedBundlesList.headerView = nil
         excludedBundlesList.rowHeight = 28
         excludedBundlesList.usesAlternatingRowBackgroundColors = true
         excludedBundlesList.dataSource = self
         excludedBundlesList.delegate = self
-        excludedBundlesList.setAccessibilityLabel("Excluded applications")
+        excludedBundlesList.setAccessibilityLabel("App privacy rules")
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("bundle"))
         column.resizingMask = .autoresizingMask
         excludedBundlesList.addTableColumn(column)
+        let modeColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("mode"))
+        modeColumn.width = 150
+        modeColumn.minWidth = 140
+        excludedBundlesList.addTableColumn(modeColumn)
         excludedBundlesList.autoresizingMask = [.width]
     }
 
@@ -505,7 +525,12 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
             action: #selector(removeSelectedExcludedBundle)
         )
         remove.alignment = .left
-        return [addRow, excludedScroll, remove]
+        let downgradeNote = wrappingLabel(
+            "Store, don't index keeps the app in the plain exclusion list too, so older versions of Clipboard Archive block it outright — stricter, never looser."
+        )
+        downgradeNote.font = .systemFont(ofSize: 10)
+        downgradeNote.textColor = .tertiaryLabelColor
+        return [addRow, excludedScroll, remove, downgradeNote]
     }
 
     private func sectionCard(
@@ -646,10 +671,23 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
             target: self,
             action: #selector(showArchiveInFinder)
         )
+        let dashboard = NSButton(
+            title: "Storage & Health…",
+            target: self,
+            action: #selector(openDashboardClicked)
+        )
+        dashboard.setAccessibilityLabel("Open the Storage & Health dashboard")
+        let buttons = NSStackView(views: [reveal, dashboard])
+        buttons.orientation = .horizontal
+        buttons.spacing = 8
         stack.addArrangedSubview(privacy)
         stack.addArrangedSubview(path)
-        stack.addArrangedSubview(reveal)
+        stack.addArrangedSubview(buttons)
         return stack
+    }
+
+    @objc private func openDashboardClicked() {
+        onOpenDashboard?()
     }
 
     private func iconTile(symbol: String, tint: NSColor, size: CGFloat) -> NSView {
@@ -705,6 +743,7 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         recentLimitStepper.integerValue = settings.recentItemLimit
         pollIntervalField.doubleValue = settings.pollIntervalSeconds
         excludedBundleIdentifiers = settings.excludedBundleIdentifiers.sorted()
+        rebuildAppRuleRows()
         excludedBundleField.stringValue = ""
         excludedBundlesList.reloadData()
         shortcutRecorder.shortcut = settings.quickPickerShortcut
@@ -737,28 +776,81 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         recentLimitStepper.integerValue = value
     }
 
+    /// Merges explicit rules with legacy exclusion-list entries into one
+    /// display list. Legacy entries without an explicit rule render Block.
+    private func rebuildAppRuleRows() {
+        var rows: [AppRuleRow] = []
+        for (bundleID, rule) in settings.appPrivacyRules {
+            rows.append(AppRuleRow(
+                bundleID: bundleID,
+                mode: rule.mode,
+                addedAt: rule.addedAt,
+                isExplicit: true
+            ))
+        }
+        for bundleID in excludedBundleIdentifiers {
+            let lowered = bundleID.lowercased()
+            guard !rows.contains(where: { $0.bundleID == lowered }) else {
+                continue
+            }
+            rows.append(AppRuleRow(
+                bundleID: lowered,
+                mode: ClipboardAppPrivacyRule.blockMode,
+                addedAt: .distantPast,
+                isExplicit: false
+            ))
+        }
+        appRuleRows = rows.sorted { $0.bundleID < $1.bundleID }
+    }
+
     @objc private func addExcludedBundle() {
-        let value = excludedBundleField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = excludedBundleField.stringValue
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
         guard !value.isEmpty else {
             return
         }
-        if !excludedBundleIdentifiers.contains(value) {
-            excludedBundleIdentifiers.append(value)
-            excludedBundleIdentifiers.sort()
+        if !appRuleRows.contains(where: { $0.bundleID == value }) {
+            appRuleRows.append(AppRuleRow(
+                bundleID: value,
+                mode: ClipboardAppPrivacyRule.blockMode,
+                addedAt: Date(),
+                isExplicit: true
+            ))
+            appRuleRows.sort { $0.bundleID < $1.bundleID }
             excludedBundlesList.reloadData()
         }
         excludedBundleField.stringValue = ""
-        statusLabel.stringValue = "Added exclusion"
+        statusLabel.stringValue = "Added rule (Block)"
     }
 
     @objc private func removeSelectedExcludedBundle() {
         let row = excludedBundlesList.selectedRow
-        guard row >= 0, row < excludedBundleIdentifiers.count else {
+        guard row >= 0, row < appRuleRows.count else {
             return
         }
-        excludedBundleIdentifiers.remove(at: row)
+        appRuleRows.remove(at: row)
         excludedBundlesList.reloadData()
-        statusLabel.stringValue = "Removed exclusion"
+        statusLabel.stringValue = "Removed rule"
+    }
+
+    @objc private func ruleModeChanged(_ sender: NSPopUpButton) {
+        let row = sender.tag
+        guard row >= 0, row < appRuleRows.count,
+              let mode = sender.selectedItem?.representedObject as? String else {
+            return
+        }
+        appRuleRows[row].mode = mode
+        appRuleRows[row].isExplicit = true
+        appRuleRows[row].addedAt = Date()
+        if ClipboardPrivacyFilter.defaultBlockedBundleIdentifiers
+            .contains(appRuleRows[row].bundleID),
+            mode == ClipboardAppPrivacyRule.normalMode {
+            statusLabel.stringValue = "Built-in password manager protection stays active for this app"
+        } else {
+            statusLabel.stringValue = "Rule updated — save to apply"
+        }
+        excludedBundlesList.reloadData()
     }
 
     @objc private func cancel() {
@@ -778,7 +870,24 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         settings.recentItemLimit = limit
         settings.historyWindow = selectedHistoryWindow()
         settings.pollIntervalSeconds = poll
-        settings.excludedBundleIdentifiers = Array(Set(excludedBundleIdentifiers)).sorted()
+        // App Privacy Rules save (Slice 5, downgrade fail-closed): every
+        // NON-normal row also stays in the legacy exclusion list so an
+        // older build — which only knows that list — blocks the app
+        // outright (stricter, never looser). A "normal" rule removes the
+        // legacy entry. Unknown modes count as non-normal (fail closed).
+        var rules: [String: ClipboardAppPrivacyRule] = [:]
+        var legacyExclusions: Set<String> = []
+        for row in appRuleRows {
+            let bundleID = row.bundleID.lowercased()
+            if row.isExplicit {
+                rules[bundleID] = ClipboardAppPrivacyRule(mode: row.mode, addedAt: row.addedAt)
+            }
+            if row.mode != ClipboardAppPrivacyRule.normalMode {
+                legacyExclusions.insert(bundleID)
+            }
+        }
+        settings.appPrivacyRules = rules
+        settings.excludedBundleIdentifiers = legacyExclusions.sorted()
         settings.hasCompletedOnboarding = true
         var shortcut = shortcutRecorder.shortcut ?? settings.quickPickerShortcut
         shortcut.enabled = shortcutEnabledButton.state == .on
@@ -862,15 +971,54 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int {
-        excludedBundleIdentifiers.count
+        appRuleRows.count
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard row < excludedBundleIdentifiers.count else {
+        guard row < appRuleRows.count else {
             return nil
         }
+        let rule = appRuleRows[row]
+        if tableColumn?.identifier.rawValue == "mode" {
+            let cell = NSTableCellView()
+            let popup = NSPopUpButton()
+            popup.bezelStyle = .inline
+            popup.controlSize = .small
+            popup.font = .systemFont(ofSize: 11)
+            for (title, mode) in [
+                ("Block", ClipboardAppPrivacyRule.blockMode),
+                ("Store, don't index", ClipboardAppPrivacyRule.storeNoIndexMode),
+                ("Normal", ClipboardAppPrivacyRule.normalMode)
+            ] {
+                popup.addItem(withTitle: title)
+                popup.lastItem?.representedObject = mode
+            }
+            if !ClipboardAppPrivacyRule.knownModes.contains(rule.mode) {
+                // Unknown mode from a newer build: fails closed (Block) at
+                // capture time and round-trips losslessly unless changed.
+                popup.addItem(withTitle: "Unknown (\(rule.mode))")
+                popup.lastItem?.representedObject = rule.mode
+            }
+            if let item = popup.itemArray.first(where: {
+                ($0.representedObject as? String) == rule.mode
+            }) {
+                popup.select(item)
+            }
+            popup.tag = row
+            popup.target = self
+            popup.action = #selector(ruleModeChanged(_:))
+            popup.setAccessibilityLabel("Privacy mode for \(rule.bundleID)")
+            popup.translatesAutoresizingMaskIntoConstraints = false
+            cell.addSubview(popup)
+            NSLayoutConstraint.activate([
+                popup.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
+                popup.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -2),
+                popup.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
+            ])
+            return cell
+        }
         let cell = NSTableCellView()
-        let text = NSTextField(labelWithString: excludedBundleIdentifiers[row])
+        let text = NSTextField(labelWithString: rule.bundleID)
         text.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         text.lineBreakMode = .byTruncatingMiddle
         text.translatesAutoresizingMaskIntoConstraints = false

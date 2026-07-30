@@ -17,6 +17,10 @@ struct CLIOptions {
     var json: Bool
     var dryRun: Bool
     var includePinned: Bool
+    var bundleID: String?
+    var appName: String?
+    var contentType: String?
+    var sensitivity: String?
 
     static func parse(_ arguments: [String]) throws -> CLIOptions {
         var args = Array(arguments.dropFirst())
@@ -38,6 +42,10 @@ struct CLIOptions {
         var json = false
         var dryRun = false
         var includePinned = false
+        var bundleID: String?
+        var appName: String?
+        var contentType: String?
+        var sensitivity: String?
 
         var index = 0
         while index < args.count {
@@ -87,6 +95,31 @@ struct CLIOptions {
                     throw CLIError.invalidValue("--until")
                 }
                 until = value
+            case "--bundle-id":
+                index += 1
+                guard index < args.count, !args[index].isEmpty else {
+                    throw CLIError.missingValue("--bundle-id")
+                }
+                bundleID = args[index]
+            case "--app":
+                index += 1
+                guard index < args.count, !args[index].isEmpty else {
+                    throw CLIError.missingValue("--app")
+                }
+                appName = args[index]
+            case "--type":
+                index += 1
+                guard index < args.count, !args[index].isEmpty else {
+                    throw CLIError.missingValue("--type")
+                }
+                contentType = args[index]
+            case "--sensitivity":
+                index += 1
+                guard index < args.count,
+                      ClipboardBulkCriteria.Sensitivity(rawValue: args[index]) != nil else {
+                    throw CLIError.invalidValue("--sensitivity (any-flagged | manual-restricted)")
+                }
+                sensitivity = args[index]
             case "--verbose":
                 verbose = true
             case "--json":
@@ -118,7 +151,11 @@ struct CLIOptions {
             verbose: verbose,
             json: json,
             dryRun: dryRun,
-            includePinned: includePinned
+            includePinned: includePinned,
+            bundleID: bundleID,
+            appName: appName,
+            contentType: contentType,
+            sensitivity: sensitivity
         )
     }
 
@@ -322,6 +359,61 @@ case "prune":
         print("exempt_pinned: \(result.exemptedPinnedEvents)")
     }
 
+case "bulk":
+    // Truthful preview first: bulk deletion is not undoable, so the CLI
+    // requires --dry-run for the preview and prints the SAME numbers the
+    // real run reports (one shared engine path).
+    let criteria = ClipboardBulkCriteria(
+        since: options.since,
+        until: options.until,
+        bundleID: options.bundleID,
+        sourceAppName: options.appName,
+        contentType: options.contentType,
+        sensitivity: options.sensitivity.flatMap(ClipboardBulkCriteria.Sensitivity.init(rawValue:)),
+        includePinned: options.includePinned
+    )
+    guard !criteria.isEmpty else {
+        throw CLIError.missingValue(
+            "bulk criteria; pass at least one of --since/--until/--bundle-id/--app/--type/--sensitivity"
+        )
+    }
+    let engine = ClipboardBulkEngine(archiveRoot: options.archiveRoot, indexURL: options.indexPath)
+    let result = options.dryRun
+        ? try engine.preview(criteria)
+        : try engine.execute(criteria)
+    if options.json {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        print(String(data: try encoder.encode(result), encoding: .utf8) ?? "{}")
+    } else {
+        print(options.dryRun ? "bulk dry run (no changes made)" : "bulk delete complete (not undoable)")
+        print("reason: \(result.reason)")
+        print("matched: \(result.matchedEvents)")
+        print("reclaimed_bytes: \(result.reclaimedBytes)")
+        print("deleted_body_files: \(result.deletedBodyFiles)")
+        print("changed_files: \(result.changedFiles)")
+        print("exempt_pinned: \(result.exemptedPinnedEvents)")
+        print("removed_annotation_hashes: \(result.removedAnnotationHashes)")
+    }
+
+case "sweep-expired":
+    let sweeper = ClipboardExpirySweeper(archiveRoot: options.archiveRoot, indexURL: options.indexPath)
+    if let nextDue = sweeper.nextDue() {
+        print("next_due: \(ISO8601DateFormatter().string(from: nextDue))")
+    } else {
+        print("next_due: none")
+    }
+    let result = try sweeper.sweepIfDue()
+    if options.json {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        print(String(data: try encoder.encode(result), encoding: .utf8) ?? "{}")
+    } else {
+        print("swept_hashes: \(result.sweptContentHashes)")
+        print("deleted_events: \(result.deletedEvents)")
+        print("reclaimed_bytes: \(result.reclaimedBytes)")
+    }
+
 case "repair-index":
     let index = ClipboardDerivedIndex(archiveRoot: options.archiveRoot, indexURL: options.indexPath)
     let count = try index.rebuild()
@@ -359,6 +451,17 @@ case "health":
         print("archive_bytes: \(health.archiveBytes)")
         print("index_bytes: \(health.indexBytes)")
         print("index_stale: \(health.indexIsStale)")
+        print("body_file_bytes: \(health.bodyFileBytes)")
+        print("event_files: \(health.eventFileCount)")
+        print("restricted_events: \(health.restrictedEvents)")
+        print("pinned_items: \(health.pinnedItems)")
+        print("tagged_items: \(health.taggedItems)")
+        print("expiring_items: \(health.expiringItems)")
+        print("index_user_version: \(health.indexUserVersion.map(String.init) ?? "none")")
+        print("annotations_bytes: \(health.annotationsBytes)")
+        if let oldest = health.oldestCapturedAt {
+            print("oldest_captured_at: \(ISO8601DateFormatter().string(from: oldest))")
+        }
         if let latest = health.latestCapturedAt {
             print("latest_captured_at: \(ISO8601DateFormatter().string(from: latest))")
         }
@@ -378,6 +481,9 @@ default:
       search QUERY Search the local archive.
       redact ID    Redact archived content for one clipboard event.
       prune        Redact stored content before a cutoff date.
+      bulk         Bulk-delete by date/app/type/sensitivity criteria.
+                   Preview with --dry-run first; execution is not undoable.
+      sweep-expired Delete clips whose sensitivity expiry has passed.
       repair-index Rebuild the derived SQLite FTS search index.
       index-search QUERY Search the derived SQLite FTS index.
       health       Report archive/index health.
@@ -395,8 +501,12 @@ default:
       --since YYYY-MM-DD            Search lower date bound.
       --until YYYY-MM-DD            Search upper date bound, or prune cutoff.
       --dry-run                     Report prune impact without changing files.
-      --include-pinned              Prune pinned content too. Pinned clips are
-                                    exempt from pruning by default.
+      --include-pinned              Prune/bulk-delete pinned content too. Pinned
+                                    clips are exempt by default.
+      --bundle-id ID                Bulk criterion: source app bundle id.
+      --app NAME                    Bulk criterion: source app display name.
+      --type TYPE                   Bulk criterion: content type (text/url/code/...).
+      --sensitivity KIND            Bulk criterion: any-flagged | manual-restricted.
       --verbose                     Print ignored non-text changes.
       --json                        JSON output for supported commands.
 

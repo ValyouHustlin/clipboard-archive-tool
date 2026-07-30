@@ -133,6 +133,11 @@ final class ClipboardPanelController: NSWindowController,
 
     private var pinnedHashes: Set<String> = []
     private var snippetHashes: Set<String> = []
+    /// Hashes carrying the manual "restricted" sensitivity override
+    /// (Slice 5): visible with an eye.slash badge, never searchable.
+    private var restrictedHashes: Set<String> = []
+    /// Hashes with a pending sensitivity expiry (Slice 5).
+    private var expiringHashes: Set<String> = []
     private var knownCollections: [ClipboardAnnotationCollection] = []
     private var collectionScope: CollectionScope = .all
     private var groupDuplicates: Bool
@@ -195,6 +200,7 @@ final class ClipboardPanelController: NSWindowController,
     private let copyButton = NSButton(title: "Copy", target: nil, action: nil)
     private let deleteButton = NSButton(title: "Delete", target: nil, action: nil)
     private let pinButton = NSButton(title: "", target: nil, action: nil)
+    private let sensitiveButton = NSButton(title: "", target: nil, action: nil)
     private let tagsField = NSTokenField()
     private let collectionMembershipButton = NSPopUpButton()
     private var detailCardHeightConstraint: NSLayoutConstraint?
@@ -370,8 +376,83 @@ final class ClipboardPanelController: NSWindowController,
             _ = toggleSelectedGroup(expand: false)
         case "copy-selected":
             copySelected()
+        case "mark-restricted-selected":
+            setRestricted(true, forContentHashes: selectedContentHashes())
+        case "clear-sensitivity-selected":
+            clearSensitivity(forContentHashes: selectedContentHashes())
+        case "expire-selected-hour":
+            setExpiry(afterHours: 1, forContentHashes: selectedContentHashes())
+        case "expire-selected-past":
+            // Harness-only: writes an ALREADY-DUE expiry through the
+            // production store API so the sweep receipt can fire without
+            // waiting an hour.
+            for hash in selectedContentHashes() {
+                try? annotations.setExpiry(Date().addingTimeInterval(-3_600), forContentHash: hash)
+            }
+            refreshAnnotationState()
+            onArchiveMutation(.annotationsChanged(pinRemoved: false))
+            refreshAfterAnnotationChange()
         default:
             break
+        }
+    }
+
+    var automationRestrictedVisibleIDs: [String] {
+        displayRows.compactMap { row in
+            switch row {
+            case let .single(index), let .occurrence(index, _):
+                guard scope == .thisWindow, index < filteredEvents.count,
+                      isRestricted(filteredEvents[index]) else {
+                    return nil
+                }
+                return flatID(at: index)
+            case let .group(info):
+                guard restrictedHashes.contains(info.hash) else {
+                    return nil
+                }
+                return info.indices.first.flatMap { flatID(at: $0) }
+            }
+        }
+    }
+
+    var automationDetailContentHash: String {
+        detailContentHash ?? ""
+    }
+
+    /// Index rows currently stored for the detail hash — the
+    /// mark-restricted receipt asserts this drops to zero immediately.
+    var automationIndexRowCountForDetailHash: Int {
+        guard let hash = detailContentHash, !hash.isEmpty else {
+            return -1
+        }
+        return (try? derivedIndex.occurrenceIDs(contentHash: hash).count) ?? -1
+    }
+
+    /// True when the FIRST table row's live cell view contains the
+    /// restricted badge image (pixel-independent badge receipt).
+    var automationRow0ShowsRestrictedBadge: Bool {
+        guard tableView.numberOfRows > 0,
+              let cell = tableView.view(atColumn: 0, row: 0, makeIfNecessary: true) else {
+            return false
+        }
+        func containsBadge(_ view: NSView) -> Bool {
+            if let imageView = view as? NSImageView,
+               imageView.image?.accessibilityDescription == "Restricted — hidden from search" {
+                return true
+            }
+            return view.subviews.contains(where: containsBadge)
+        }
+        return containsBadge(cell)
+    }
+
+    /// Selection-independent restricted receipt: total index rows across
+    /// EVERY override-restricted hash (must be 0 right after marking).
+    var automationRestrictedIndexRowCount: Int {
+        guard !restrictedHashes.isEmpty else {
+            return -1
+        }
+        return restrictedHashes.reduce(0) { total, hash in
+            total + ((try? derivedIndex.occurrenceIDs(contentHash: hash).count) ?? 0)
         }
     }
 
@@ -734,6 +815,17 @@ final class ClipboardPanelController: NSWindowController,
         pinButton.toolTip = "Pin selected clip (⌘P)"
         pinButton.setAccessibilityLabel("Pin selected clip")
 
+        sensitiveButton.target = self
+        sensitiveButton.action = #selector(sensitiveButtonClicked(_:))
+        sensitiveButton.bezelStyle = .texturedRounded
+        sensitiveButton.title = ""
+        sensitiveButton.image = NSImage(
+            systemSymbolName: "eye.slash",
+            accessibilityDescription: "Mark selected clip sensitive"
+        )
+        sensitiveButton.toolTip = "Mark Sensitive (restricted / expiring)"
+        sensitiveButton.setAccessibilityLabel("Mark selected clip sensitive")
+
         let revealButton = symbolButton(
             symbol: "folder",
             accessibilityLabel: "Show archive in Finder",
@@ -745,6 +837,7 @@ final class ClipboardPanelController: NSWindowController,
         actions.spacing = 8
         actions.alignment = .centerY
         actions.addArrangedSubview(revealButton)
+        actions.addArrangedSubview(sensitiveButton)
         actions.addArrangedSubview(pinButton)
         actions.addArrangedSubview(deleteButton)
         actions.addArrangedSubview(copyButton)
@@ -984,8 +1077,18 @@ final class ClipboardPanelController: NSWindowController,
         let document = annotations.document()
         pinnedHashes = Set(document.annotations.filter { $0.value.pinned }.keys)
         snippetHashes = Set(document.annotations.filter { $0.value.snippet }.keys)
+        restrictedHashes = Set(
+            document.annotations.filter { $0.value.sensitivityOverride == "restricted" }.keys
+        )
+        expiringHashes = Set(document.annotations.filter { $0.value.expiresAt != nil }.keys)
         knownCollections = document.collections
         populateCollectionPopup()
+    }
+
+    /// Restricted display state for one This Window event: stored label
+    /// (app-rule store-no-index) OR manual annotation override.
+    private func isRestricted(_ event: StoredClipboardEvent) -> Bool {
+        event.privacyLabel == .restricted || restrictedHashes.contains(event.contentHash)
     }
 
     private func populateCollectionPopup() {
@@ -1120,10 +1223,10 @@ final class ClipboardPanelController: NSWindowController,
             }
             refreshAnnotationState()
             onArchiveMutation(.annotationsChanged(pinRemoved: !pinned))
+            refreshAfterAnnotationChange()
             statusLabel.stringValue = pinned
                 ? (targets.count == 1 ? "Pinned" : "Pinned \(targets.count) clips")
                 : (targets.count == 1 ? "Unpinned" : "Unpinned \(targets.count) clips")
-            refreshAfterAnnotationChange()
         } catch {
             statusLabel.stringValue = annotationsErrorMessage(error)
         }
@@ -1162,6 +1265,17 @@ final class ClipboardPanelController: NSWindowController,
         togglePinOnSelection()
     }
 
+    @objc private func sensitiveButtonClicked(_ sender: NSButton) {
+        guard !selectedContentHashes().isEmpty else {
+            return
+        }
+        markSensitiveMenu().popUp(
+            positioning: nil,
+            at: NSPoint(x: 0, y: sender.bounds.height + 4),
+            in: sender
+        )
+    }
+
     private func annotationsErrorMessage(_ error: Error) -> String {
         if case ClipboardAnnotationsError.newerFormat = error {
             return "Saved by a newer version of Clipboard Archive."
@@ -1184,7 +1298,15 @@ final class ClipboardPanelController: NSWindowController,
         if scope == .thisWindow {
             rebuildDisplayRows()
         }
+        // Preserve the selection across the reload: annotation toggles
+        // (pin, mark sensitive) do not change row membership in the
+        // unfiltered scope, and losing the selection made chained actions
+        // silently no-op.
+        let selection = tableView.selectedRowIndexes
         tableView.reloadData()
+        if let last = selection.max(), last < displayRows.count {
+            tableView.selectRowIndexes(selection, byExtendingSelection: false)
+        }
         updateDetail()
     }
 
@@ -1229,6 +1351,193 @@ final class ClipboardPanelController: NSWindowController,
         } catch {
             statusLabel.stringValue = annotationsErrorMessage(error)
         }
+    }
+
+    // MARK: - Mark Sensitive (Slice 5)
+
+    /// Restricted = stored, visible, never searchable. Setting the manual
+    /// override immediately removes every live occurrence from the search
+    /// index; clearing re-upserts them (reader scan — the index no longer
+    /// knows the occurrences).
+    private func setRestricted(_ restricted: Bool, forContentHashes hashes: [String]) {
+        let targets = hashes.filter { !$0.isEmpty }
+        guard !targets.isEmpty else {
+            return
+        }
+        do {
+            for hash in targets {
+                try annotations.setSensitivityOverride(
+                    restricted ? "restricted" : nil,
+                    forContentHash: hash
+                )
+                if restricted {
+                    let ids = (try? occurrenceResolver.liveOccurrenceIDs(contentHash: hash)) ?? []
+                    _ = try? derivedIndex.delete(eventIDs: ids)
+                } else {
+                    reindexOccurrences(contentHash: hash)
+                }
+            }
+            refreshAnnotationState()
+            onArchiveMutation(.annotationsChanged(pinRemoved: false))
+            refreshAfterAnnotationChange()
+            // After the refresh: re-selecting rows fires updateStatus,
+            // which would otherwise clobber this message.
+            statusLabel.stringValue = restricted
+                ? "Restricted — hidden from search"
+                : "Restriction cleared — searchable again"
+        } catch {
+            statusLabel.stringValue = annotationsErrorMessage(error)
+        }
+    }
+
+    /// Re-upserts every live occurrence of a hash after its restriction is
+    /// cleared. Events whose STORED label is `.restricted` (app-rule
+    /// store-no-index) stay excluded — the upsert predicate keeps them out.
+    private func reindexOccurrences(contentHash: String) {
+        let ids = (try? occurrenceResolver.liveOccurrenceIDs(
+            contentHash: contentHash,
+            viaReaderScan: true
+        )) ?? []
+        for id in ids {
+            guard let event = try? reader.event(withID: id),
+                  let content = try? reader.content(for: event) else {
+                continue
+            }
+            try? derivedIndex.upsert(event: event, body: content)
+        }
+    }
+
+    /// Expiring sensitive clip: at the chosen time the sweeper deletes ALL
+    /// occurrences — including pinned ones (stated in the warning).
+    private func setExpiry(afterHours hours: Int, forContentHashes hashes: [String]) {
+        let targets = hashes.filter { !$0.isEmpty }
+        guard !targets.isEmpty else {
+            return
+        }
+        let pinnedTargets = targets.filter { pinnedHashes.contains($0) }
+        if !pinnedTargets.isEmpty, !confirmExpiryOverridesPins(count: pinnedTargets.count) {
+            return
+        }
+        let expiresAt = Date().addingTimeInterval(TimeInterval(hours) * 3_600)
+        do {
+            for hash in targets {
+                try annotations.setExpiry(expiresAt, forContentHash: hash)
+            }
+            refreshAnnotationState()
+            onArchiveMutation(.annotationsChanged(pinRemoved: false))
+            refreshAfterAnnotationChange()
+            statusLabel.stringValue = "Will be deleted \(relativeDate(expiresAt)) — enforced at launch, every 30 minutes, and when history opens"
+        } catch {
+            statusLabel.stringValue = annotationsErrorMessage(error)
+        }
+    }
+
+    private func confirmExpiryOverridesPins(count: Int) -> Bool {
+#if DEBUG
+        if ProcessInfo.processInfo.environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_SCREEN"] != nil {
+            return true
+        }
+#endif
+        let alert = NSAlert()
+        alert.messageText = count == 1
+            ? "Expire this pinned clip?"
+            : "Expire \(count) pinned clips?"
+        alert.informativeText = "Expiry overrides pin protection: when the time comes, the clip is deleted even though it is pinned."
+        alert.addButton(withTitle: "Set Expiry")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    /// Clears manual sensitivity: override AND pending expiry. Stored
+    /// `.restricted` labels (app-rule store-no-index events) are permanent
+    /// — event lines are never rewritten.
+    private func clearSensitivity(forContentHashes hashes: [String]) {
+        let targets = hashes.filter { !$0.isEmpty }
+        guard !targets.isEmpty else {
+            return
+        }
+        do {
+            for hash in targets {
+                let wasRestricted = restrictedHashes.contains(hash)
+                try annotations.setSensitivityOverride(nil, forContentHash: hash)
+                try annotations.setExpiry(nil, forContentHash: hash)
+                if wasRestricted {
+                    reindexOccurrences(contentHash: hash)
+                }
+            }
+            refreshAnnotationState()
+            onArchiveMutation(.annotationsChanged(pinRemoved: false))
+            refreshAfterAnnotationChange()
+            statusLabel.stringValue = "Sensitivity cleared"
+        } catch {
+            statusLabel.stringValue = annotationsErrorMessage(error)
+        }
+    }
+
+    @objc private func toggleRestrictedFromMenu() {
+        let hashes = selectedContentHashes()
+        let allRestricted = !hashes.isEmpty && hashes.allSatisfy { restrictedHashes.contains($0) }
+        setRestricted(!allRestricted, forContentHashes: hashes)
+    }
+
+    @objc private func expireOneHourFromMenu() {
+        setExpiry(afterHours: 1, forContentHashes: selectedContentHashes())
+    }
+
+    @objc private func expireOneDayFromMenu() {
+        setExpiry(afterHours: 24, forContentHashes: selectedContentHashes())
+    }
+
+    @objc private func expireSevenDaysFromMenu() {
+        setExpiry(afterHours: 24 * 7, forContentHashes: selectedContentHashes())
+    }
+
+    @objc private func clearSensitivityFromMenu() {
+        clearSensitivity(forContentHashes: selectedContentHashes())
+    }
+
+    /// The shared Mark Sensitive submenu (context menu + detail pane).
+    private func markSensitiveMenu() -> NSMenu {
+        let menu = NSMenu()
+        let hashes = selectedContentHashes()
+        let allRestricted = !hashes.isEmpty && hashes.allSatisfy { restrictedHashes.contains($0) }
+        let restrictedItem = NSMenuItem(
+            title: "Restricted (hidden from search)",
+            action: #selector(toggleRestrictedFromMenu),
+            keyEquivalent: ""
+        )
+        restrictedItem.target = self
+        restrictedItem.state = allRestricted ? .on : .off
+        menu.addItem(restrictedItem)
+        menu.addItem(.separator())
+        for (title, action) in [
+            ("Expire in 1 Hour", #selector(expireOneHourFromMenu)),
+            ("Expire in 1 Day", #selector(expireOneDayFromMenu)),
+            ("Expire in 7 Days", #selector(expireSevenDaysFromMenu))
+        ] {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        let clearItem = NSMenuItem(
+            title: "Clear Sensitivity",
+            action: #selector(clearSensitivityFromMenu),
+            keyEquivalent: ""
+        )
+        clearItem.target = self
+        clearItem.isEnabled = hashes.contains {
+            restrictedHashes.contains($0) || expiringHashes.contains($0)
+        }
+        menu.addItem(clearItem)
+        return menu
+    }
+
+    /// External-mutation refresh hook (expiry sweep, dashboard cleanup,
+    /// bulk sheet): reloads the visible history from disk.
+    func reloadFromExternalMutation() {
+        reload()
     }
 
     // MARK: - All-history scope (contract 3)
@@ -1864,14 +2173,13 @@ final class ClipboardPanelController: NSWindowController,
     }
 
     @objc private func deleteSelected() {
-        // Deletion stays a This Window operation in this slice; bulk and
-        // archive-wide deletion land with the bulk-management slice.
+        // Deletion stays a This Window operation; archive-wide deletion
+        // lives in the Bulk Cleanup sheet.
         guard scope == .thisWindow else {
             return
         }
         // Delete is DISABLED on collapsed group rows: a group hides N
-        // copies behind one row, and bulk deletion (Slice 5) owns
-        // multi-occurrence destruction. Expand the group to delete copies.
+        // copies behind one row. Expand the group to delete copies.
         guard !selectionContainsGroupRow() else {
             statusLabel.stringValue = "Expand the group to delete individual copies"
             return
@@ -1881,58 +2189,76 @@ final class ClipboardPanelController: NSWindowController,
             return
         }
 
-        // Contract 5 warning: if this selection covers the LAST live
-        // occurrence of a pinned or snippet hash, deleting it also removes
-        // the pin, tags, and snippet — say so and retitle the button. A
-        // single explicit delete needs no SECOND confirmation; the
-        // separately-confirmed override belongs to Slice 5 bulk.
-        let selectedIDs = Set(selected.map(\.id))
-        var removesAnnotations = false
-        for event in selected {
-            let hash = event.contentHash
-            guard pinnedHashes.contains(hash) || snippetHashes.contains(hash) else {
-                continue
-            }
-            guard let remaining = try? occurrenceResolver.liveOccurrenceIDs(contentHash: hash) else {
-                continue
-            }
-            if remaining.allSatisfy({ selectedIDs.contains($0) }) {
-                removesAnnotations = true
-                break
-            }
-        }
-
-        let alert = NSAlert()
-        alert.messageText = selected.count == 1 ? "Delete this clip?" : "Delete \(selected.count) clips?"
-        var informative = "Stored content will be redacted and removed from local search. Timeline metadata remains."
-        if removesAnnotations {
-            informative += " Deleting its last copy also removes its pin, tags, and snippet."
-        }
-        alert.informativeText = informative
-        let deleteTitle: String
-        if removesAnnotations {
-            deleteTitle = selected.count == 1 ? "Delete Clip and Pin" : "Delete Clips and Pins"
-        } else {
-            deleteTitle = selected.count == 1 ? "Delete Clip" : "Delete Clips"
-        }
-        alert.addButton(withTitle: deleteTitle)
-        alert.addButton(withTitle: "Cancel")
-        alert.alertStyle = .warning
-        guard alert.runModal() == .alertFirstButtonReturn else {
+        // Slice 5 reroute: multi-select deletion flows through the ONE bulk
+        // engine path, so the confirmation shows the SAME truthful numbers
+        // (count + reclaimed bytes) the execution will report.
+        let engine = ClipboardBulkEngine(archiveRoot: archiveRoot)
+        var criteria = ClipboardBulkCriteria(eventIDs: Set(selected.map(\.id)))
+        guard var preview = try? engine.preview(criteria) else {
+            statusLabel.stringValue = "Could not preview the deletion"
             return
         }
 
-        do {
-            for event in selected {
-                try redactor.redact(eventID: event.id)
+        if preview.matchedEvents == 0, preview.exemptedPinnedEvents > 0 {
+            // Everything selected is pinned. Deleting pinned content is the
+            // explicit, SEPARATELY confirmed override (contract 5).
+            criteria.includePinned = true
+            guard let pinnedPreview = try? engine.preview(criteria) else {
+                statusLabel.stringValue = "Could not preview the deletion"
+                return
             }
+            let alert = NSAlert()
+            alert.messageText = pinnedPreview.matchedEvents == 1
+                ? "Delete this pinned clip?"
+                : "Delete \(pinnedPreview.matchedEvents) pinned clips?"
+            alert.informativeText = "Pins normally protect clips from deletion. Deleting reclaims \(byteString(pinnedPreview.reclaimedBytes)) and cannot be undone. Deleting the last copy also removes its pin, tags, and snippet."
+            alert.addButton(withTitle: pinnedPreview.matchedEvents == 1 ? "Delete Pinned Clip" : "Delete Pinned Clips")
+            alert.addButton(withTitle: "Cancel")
+            alert.alertStyle = .warning
+            guard alert.runModal() == .alertFirstButtonReturn else {
+                return
+            }
+            preview = pinnedPreview
+        } else {
+            let alert = NSAlert()
+            alert.messageText = preview.matchedEvents == 1
+                ? "Delete this clip?"
+                : "Delete \(preview.matchedEvents) clips?"
+            var informative = "Deletes the stored content, reclaiming \(byteString(preview.reclaimedBytes)). This cannot be undone. Timeline metadata remains."
+            if preview.exemptedPinnedEvents > 0 {
+                informative += " \(preview.exemptedPinnedEvents) pinned clip\(preview.exemptedPinnedEvents == 1 ? "" : "s") in the selection will be kept (unpin first to delete them)."
+            }
+            if preview.removedAnnotationHashes > 0 {
+                informative += " Deleting the last copy of annotated content also removes its tags and collections."
+            }
+            alert.informativeText = informative
+            alert.addButton(withTitle: preview.matchedEvents == 1 ? "Delete Clip" : "Delete Clips")
+            alert.addButton(withTitle: "Cancel")
+            alert.alertStyle = .warning
+            guard alert.runModal() == .alertFirstButtonReturn else {
+                return
+            }
+        }
+
+        do {
+            let result = try engine.execute(criteria)
             onArchiveMutation(.eventsDeleted)
             reload()
-            statusLabel.stringValue = selected.count == 1 ? "Clip deleted" : "\(selected.count) clips deleted"
+            var status = result.matchedEvents == 1
+                ? "Clip deleted · reclaimed \(byteString(result.reclaimedBytes))"
+                : "\(result.matchedEvents) clips deleted · reclaimed \(byteString(result.reclaimedBytes))"
+            if result.exemptedPinnedEvents > 0 {
+                status += " · \(result.exemptedPinnedEvents) pinned kept"
+            }
+            statusLabel.stringValue = status
         } catch {
             onArchiveMutation(.eventsDeleted)
             statusLabel.stringValue = "Delete failed"
         }
+    }
+
+    private func byteString(_ value: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
     }
 
     private func reload() {
@@ -2132,6 +2458,11 @@ final class ClipboardPanelController: NSWindowController,
                     menu.addItem(snippetItem)
                 }
             }
+
+            // Mark Sensitive (Slice 5): restricted toggle + expiry + clear.
+            let sensitiveItem = NSMenuItem(title: "Mark Sensitive", action: nil, keyEquivalent: "")
+            sensitiveItem.submenu = markSensitiveMenu()
+            menu.addItem(sensitiveItem)
         }
 
         menu.addItem(.separator())
@@ -2225,6 +2556,7 @@ final class ClipboardPanelController: NSWindowController,
                 previewText: result.snippet,
                 metadataText: "\(result.sourceApp)  ·  \(relativeDate(result.capturedAt))",
                 pinned: pinnedHashes.contains(result.contentHash),
+                restricted: restrictedHashes.contains(result.contentHash),
                 indented: indented
             )
         }
@@ -2237,6 +2569,7 @@ final class ClipboardPanelController: NSWindowController,
             previewText: event.contentPreview,
             metadataText: "\(event.sourceApp.name)  ·  \(relativeDate(event.capturedAt))",
             pinned: pinnedHashes.contains(event.contentHash),
+            restricted: isRestricted(event),
             indented: indented
         )
     }
@@ -2246,6 +2579,7 @@ final class ClipboardPanelController: NSWindowController,
         previewText: String,
         metadataText: String,
         pinned: Bool = false,
+        restricted: Bool = false,
         indented: Bool = false
     ) -> NSView {
         let cell = NSTableCellView()
@@ -2293,6 +2627,27 @@ final class ClipboardPanelController: NSWindowController,
                 badge.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -10),
                 badge.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
                 badge.widthAnchor.constraint(equalToConstant: 12),
+                badge.heightAnchor.constraint(equalToConstant: 12)
+            ])
+            trailingAnchor = badge.leadingAnchor
+            trailingConstant = -6
+        }
+        if restricted {
+            // Restricted badge (Slice 5): stored and visible, hidden from
+            // search.
+            let badge = NSImageView()
+            badge.image = NSImage(
+                systemSymbolName: "eye.slash",
+                accessibilityDescription: "Restricted — hidden from search"
+            )
+            badge.contentTintColor = .systemPurple
+            badge.toolTip = "Restricted: stored and visible, hidden from search"
+            badge.translatesAutoresizingMaskIntoConstraints = false
+            cell.addSubview(badge)
+            NSLayoutConstraint.activate([
+                badge.trailingAnchor.constraint(equalTo: trailingAnchor, constant: trailingConstant),
+                badge.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+                badge.widthAnchor.constraint(equalToConstant: 14),
                 badge.heightAnchor.constraint(equalToConstant: 12)
             ])
             trailingAnchor = badge.leadingAnchor
@@ -2475,6 +2830,9 @@ final class ClipboardPanelController: NSWindowController,
             case .error:
                 statusLabel.stringValue = "Search failed"
             case let .browse(rows):
+                // All History footer note (Slice 5): restricted clips are
+                // stored and visible in This Window but never enter the
+                // search index this scope reads.
                 if groupDuplicates {
                     let groupCount = displayRows.filter {
                         if case .group = $0 {
@@ -2482,12 +2840,12 @@ final class ClipboardPanelController: NSWindowController,
                         }
                         return false
                     }.count
-                    statusLabel.stringValue = "\(rows.count) archived clip\(rows.count == 1 ? "" : "s") · \(groupCount) duplicate group\(groupCount == 1 ? "" : "s")\(capSuffix)"
+                    statusLabel.stringValue = "\(rows.count) archived clip\(rows.count == 1 ? "" : "s") · \(groupCount) duplicate group\(groupCount == 1 ? "" : "s")\(capSuffix) · Restricted clips are hidden from search."
                 } else {
-                    statusLabel.stringValue = "\(rows.count) archived clip\(rows.count == 1 ? "" : "s")\(capSuffix)"
+                    statusLabel.stringValue = "\(rows.count) archived clip\(rows.count == 1 ? "" : "s")\(capSuffix) · Restricted clips are hidden from search."
                 }
             case let .results(rows):
-                statusLabel.stringValue = "\(rows.count) match\(rows.count == 1 ? "" : "es")\(capSuffix)"
+                statusLabel.stringValue = "\(rows.count) match\(rows.count == 1 ? "" : "es")\(capSuffix) · Restricted clips are hidden from search."
             }
             return
         }
@@ -2529,6 +2887,7 @@ final class ClipboardPanelController: NSWindowController,
         }
 
         collectionMembershipButton.isEnabled = hasHash
+        sensitiveButton.isEnabled = !selectedContentHashes().isEmpty
         rebuildCollectionMembershipMenu(contentHash: hasHash ? contentHash : nil)
     }
 

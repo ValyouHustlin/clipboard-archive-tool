@@ -19,6 +19,20 @@ public struct ClipboardArchiveHealth: Codable, Equatable, Sendable {
     public var indexExists: Bool
     public var indexModifiedAt: Date?
     public var indexIsStale: Bool
+    // Slice 5 dashboard extensions.
+    public var bodyFileBytes: Int64
+    public var eventFileCount: Int
+    public var oldestCapturedAt: Date?
+    /// Live events that are stored-but-never-searchable: `.restricted`
+    /// label or a manual "restricted" annotation override.
+    public var restrictedEvents: Int
+    public var pinnedItems: Int
+    public var taggedItems: Int
+    public var expiringItems: Int
+    /// The index database's `PRAGMA user_version`; nil when the index file
+    /// is missing or unreadable.
+    public var indexUserVersion: Int?
+    public var annotationsBytes: Int64
 }
 
 public struct ClipboardDailyManifest: Codable, Equatable, Sendable {
@@ -48,7 +62,14 @@ public struct ClipboardArchiveHealthReporter: Sendable {
     }
 
     public func health(now: Date = Date(), calendar: Calendar = .current) throws -> ClipboardArchiveHealth {
-        let metrics = try scanEvents(in: nil)
+        let annotationsStore = ClipboardAnnotationsStore(archiveRoot: archiveRoot)
+        let annotationsDocument = annotationsStore.document()
+        let restrictedHashes = Set(
+            annotationsDocument.annotations
+                .filter { $0.value.sensitivityOverride == "restricted" }
+                .keys
+        )
+        let metrics = try scanEvents(in: nil, restrictedHashes: restrictedHashes)
         let todayStart = calendar.startOfDay(for: now)
         let sevenDaysAgo = calendar.date(byAdding: .day, value: -7, to: now) ?? now
         let currentUpperBound = now.addingTimeInterval(0.001)
@@ -81,7 +102,17 @@ public struct ClipboardArchiveHealthReporter: Sendable {
             lastSevenDaysStoredEvents: lastSevenDays.storedEvents,
             indexExists: indexExists,
             indexModifiedAt: indexModifiedAt,
-            indexIsStale: indexIsStale
+            indexIsStale: indexIsStale,
+            bodyFileBytes: bodyFileBytes(),
+            eventFileCount: (try? ClipboardArchiveReader(archiveRoot: archiveRoot).eventFiles().count) ?? 0,
+            oldestCapturedAt: metrics.oldestCapturedAt,
+            restrictedEvents: metrics.restrictedEvents,
+            pinnedItems: annotationsDocument.annotations.filter { $0.value.pinned }.count,
+            taggedItems: annotationsDocument.annotations.filter { !$0.value.tags.isEmpty }.count,
+            expiringItems: annotationsDocument.annotations.filter { $0.value.expiresAt != nil }.count,
+            indexUserVersion: ClipboardDerivedIndex(archiveRoot: archiveRoot, indexURL: indexURL)
+                .userVersion(),
+            annotationsBytes: fileSize(annotationsStore.annotationsFileURL)
         )
     }
 
@@ -127,9 +158,14 @@ public struct ClipboardArchiveHealthReporter: Sendable {
         var unsafeBodyPaths = 0
         var invalidJSONLines = 0
         var latestCapturedAt: Date?
+        var oldestCapturedAt: Date?
+        var restrictedEvents = 0
     }
 
-    private func scanEvents(in interval: DateInterval?) throws -> EventMetrics {
+    private func scanEvents(
+        in interval: DateInterval?,
+        restrictedHashes: Set<String> = []
+    ) throws -> EventMetrics {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         var metrics = EventMetrics()
@@ -159,6 +195,10 @@ public struct ClipboardArchiveHealthReporter: Sendable {
 
                 metrics.storedEvents += 1
                 metrics.latestCapturedAt = metrics.latestCapturedAt.map { max($0, event.capturedAt) } ?? event.capturedAt
+                metrics.oldestCapturedAt = metrics.oldestCapturedAt.map { min($0, event.capturedAt) } ?? event.capturedAt
+                if event.privacyLabel == .restricted || restrictedHashes.contains(event.contentHash) {
+                    metrics.restrictedEvents += 1
+                }
 
                 if let rawContentPath = event.rawContentPath {
                     metrics.referencedBodyFiles += 1
@@ -224,6 +264,20 @@ public struct ClipboardArchiveHealthReporter: Sendable {
             let values = try url.resourceValues(forKeys: [.isRegularFileKey])
             return values.isRegularFile == true && ["code", "txt"].contains(url.pathExtension)
         }.count
+    }
+
+    /// Total bytes of large-item body files under `raw/` (Slice 5
+    /// dashboard). Counting matches `countBodyFiles` (code/txt extensions).
+    private func bodyFileBytes() -> Int64 {
+        let root = archiveRoot.appendingPathComponent("raw")
+        return regularFiles(under: root)
+            .filter { ["code", "txt"].contains($0.pathExtension) }
+            .reduce(Int64(0)) { total, url in
+                guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize else {
+                    return total
+                }
+                return total + Int64(size)
+            }
     }
 
     private func insecureFileCount() -> Int {
