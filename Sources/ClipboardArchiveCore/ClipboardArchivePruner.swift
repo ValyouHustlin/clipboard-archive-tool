@@ -128,10 +128,11 @@ public struct ClipboardArchivePruner: Sendable {
                         relativePath: rawContentPath,
                         archiveRoot: archiveRoot
                     ) {
-                        deletedBodyFiles += 1
-                        if !dryRun,
-                           FileManager.default.fileExists(atPath: bodyURL.path) {
-                            try FileManager.default.removeItem(at: bodyURL)
+                        if FileManager.default.fileExists(atPath: bodyURL.path) {
+                            deletedBodyFiles += 1
+                            if !dryRun {
+                                try FileManager.default.removeItem(at: bodyURL)
+                            }
                         }
                     }
                 }
@@ -282,6 +283,15 @@ public struct ClipboardArchivePruner: Sendable {
         var deletedBodyFiles = 0
         var changedFiles = 0
 
+        // Fail-closed ordering: remove index rows BEFORE tombstoning the
+        // archive lines. A crash after this point leaves events missing from
+        // the index (benign, self-heals: they are still live and over-limit,
+        // so the next enforcement pass re-selects them). The reverse order
+        // could leave deleted content searchable in the index indefinitely,
+        // because this incremental path never runs a full rebuild.
+        _ = try ClipboardDerivedIndex(archiveRoot: archiveRoot, indexURL: indexURL)
+            .delete(eventIDs: overflowIDs)
+
         for (eventFile, idsToPrune) in overflowIDsByFile.sorted(by: { $0.key.path < $1.key.path }) {
             let originalLines = try String(contentsOf: eventFile)
                 .split(separator: "\n", omittingEmptySubsequences: true)
@@ -302,9 +312,9 @@ public struct ClipboardArchivePruner: Sendable {
                        relativePath: rawContentPath,
                        archiveRoot: archiveRoot
                    ) {
-                    deletedBodyFiles += 1
                     if FileManager.default.fileExists(atPath: bodyURL.path) {
                         try FileManager.default.removeItem(at: bodyURL)
+                        deletedBodyFiles += 1
                     }
                 }
 
@@ -338,8 +348,6 @@ public struct ClipboardArchivePruner: Sendable {
         for id in overflowIDs {
             try ledger.recordDeletion(eventID: id, reason: reason)
         }
-        _ = try ClipboardDerivedIndex(archiveRoot: archiveRoot, indexURL: indexURL)
-            .delete(eventIDs: overflowIDs)
 
         return ClipboardRetentionEnforcementResult(
             liveEvents: live.count,
