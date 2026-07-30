@@ -14,6 +14,12 @@ contracts; changes to a contract require a lead decision recorded here.
   default. No new required fields, ever, within the NDJSON format.
 - Fields are never removed or renamed. Semantic changes bump
   `currentEventSchemaVersion` (a constant in `ClipboardModels.swift`).
+- Per-line stamping (amended 2026-07-30 for Slice 6): a line's
+  `schemaVersion` reflects the newest schema feature it actually uses —
+  text-only events keep stamping 1 so existing text lines stay
+  byte-identical; only events carrying v2 fields (e.g. `richContent`)
+  stamp 2. `rawContentPath` remains plain-text-only forever; rich binary
+  bodies live exclusively in `richContent.bodyPath`.
 - `ClipboardContentType` decoding becomes tolerant: unknown raw values decode
   as a new `.other(String)`-equivalent fallback (`unknown` case retaining the
   raw string in `pasteboardTypes`/metadata) instead of failing the whole
@@ -160,5 +166,10 @@ contracts; changes to a contract require a lead decision recorded here.
 - `check-local-only.sh` must keep passing; no networking of any kind enters
   app runtime. Encryption (Slice 8) uses CryptoKit AES-GCM with an HKDF/
   scrypt-class KDF from the platform — never hand-rolled primitives.
+  Clarified 2026-07-30 (lead decision): the passphrase KDF is CommonCrypto
+  PBKDF2-HMAC-SHA256 (runtime-calibrated, hard floor 600k iterations) —
+  the platform ships no scrypt/Argon2 without third-party deps and HKDF
+  alone is not a password KDF; CryptoKit HKDF-SHA256 then derives the
+  domain-separated subkeys. Both primitives are platform-vetted.
 - The live installed app (PID 10609 at lane start) is never stopped,
   replaced, or pointed at by development instances.
