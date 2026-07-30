@@ -54,6 +54,16 @@ final class ClipboardMenuBarApp: NSObject,
     private var panelController: ClipboardPanelController?
     private var settingsWindowController: ClipboardSettingsWindowController?
     private var onboardingWindowController: ClipboardOnboardingWindowController?
+    private var dashboardWindowController: ClipboardDashboardWindowController?
+    /// True when the previous poll was gated (private mode or pause) — the
+    /// capture gate turns the first ungated poll into a resync-only pass so
+    /// nothing copied during the gap is retro-captured (Slice 5 fix).
+    private var captureGateWasActive = false
+    /// The most recent blocked-event reason this run (menu status line,
+    /// shown only when `showBlockedEventStatus` is on).
+    private var lastBlockedReason: String?
+    /// 30-minute expiry enforcement timer (never the capture poll).
+    private var expiryTimer: Timer?
     private static let quickPickerHotKeyID: UInt32 = 1
     private let hotKeyManager = GlobalHotKeyManager()
     private var quickPickerController: QuickPickerPanelController?
@@ -80,6 +90,8 @@ final class ClipboardMenuBarApp: NSObject,
     /// Exact bytes of the future-version annotations fixture at seed time,
     /// so the result can prove the file stayed byte-identical.
     private var automationAnnotationsBytesBefore: Data?
+    /// Expiry-sweep receipt captured when the harness requests a sweep.
+    private var automationSweepReceipt: [String: Any] = [:]
 #endif
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -111,6 +123,14 @@ final class ClipboardMenuBarApp: NSObject,
         // Seed the live-event estimate with one startup scan so per-capture
         // retention checks stay in memory afterwards.
         applyRetentionLimitIfNeeded()
+        // Expiry enforcement points (Slice 5): launch, a 30-minute timer,
+        // and lazy checks when read surfaces open — never the capture poll.
+        sweepExpiredIfDue()
+        expiryTimer = Timer.scheduledTimer(withTimeInterval: 30 * 60, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.sweepExpiredIfDue()
+            }
+        }
         restartTimer()
         if !settings.hasCompletedOnboarding {
             lastStatus = "Choose privacy settings to begin"
@@ -120,20 +140,55 @@ final class ClipboardMenuBarApp: NSObject,
     }
 
     private func pollPasteboard() {
+        // Timed private mode (Slice 5): return BEFORE reading the
+        // pasteboard. Nothing is evaluated, stored, or recorded as a
+        // blocked-event line — guaranteed structurally, not by filtering.
+        if settings.isPrivateModeActive {
+            captureGateWasActive = true
+            return
+        }
+        if settings.privateModeUntil != nil {
+            // Private mode just expired on its own: clear it and resync
+            // the dedup state WITHOUT ingesting so the last item copied
+            // while private is never retro-captured.
+            settings.privateModeUntil = nil
+            try? settingsStore.save(settings)
+            resyncPasteboardStateWithoutIngesting()
+            captureGateWasActive = false
+            lastStatus = "Private mode ended"
+            configureStatusIcon()
+            rebuildMenu()
+        }
+
         if settings.isTemporarilyPaused {
             isPaused = true
+            captureGateWasActive = true
             configureStatusIcon()
             return
         } else if isPaused, settings.pauseUntil != nil {
             settings.pauseUntil = nil
             try? settingsStore.save(settings)
             isPaused = false
+            // FIX (pre-existing privacy bug): without this resync the last
+            // item copied DURING the pause was retro-captured on resume.
+            resyncPasteboardStateWithoutIngesting()
+            captureGateWasActive = false
             configureStatusIcon()
             lastStatus = "Capture resumed"
             rebuildMenu()
         }
 
         guard !isPaused else {
+            captureGateWasActive = true
+            return
+        }
+
+        if captureGateWasActive {
+            // First ungated poll after ANY gate (manual pause end handles
+            // its own resync too, but this is the safety net for every
+            // exit path): sync dedup state, ingest nothing this pass.
+            captureGateWasActive = false
+            resyncPasteboardStateWithoutIngesting()
             return
         }
 
@@ -177,8 +232,9 @@ final class ClipboardMenuBarApp: NSObject,
                 liveEventCountEstimate = liveEventCountEstimate.map { $0 + 1 }
                 markQuickPickerCacheDirty()
                 applyRetentionLimitIfNeeded()
-            case .blocked:
+            case let .blocked(reason):
                 blockedCount += 1
+                lastBlockedReason = reason
                 lastStatus = "Blocked sensitive item \(shortDate(Date()))"
             }
             rebuildMenu()
@@ -193,9 +249,110 @@ final class ClipboardMenuBarApp: NSObject,
         settings.pauseUntil = nil
         try? settingsStore.save(settings)
         userDefaults.set(isPaused, forKey: "capturePaused")
+        if !isPaused {
+            // FIX (pre-existing privacy bug): resuming from a manual pause
+            // must not retro-capture the last item copied while paused.
+            resyncPasteboardStateWithoutIngesting()
+            captureGateWasActive = false
+        }
         configureStatusIcon()
         lastStatus = isPaused ? "Paused by user" : "Capture resumed"
         rebuildMenu()
+    }
+
+    /// The one gate-exit resync (Slice 5): aligns the capture dedup state
+    /// with the CURRENT pasteboard without ingesting, so whatever was
+    /// copied during private mode or a pause never becomes an archive
+    /// event. Only a NEW copy (a fresh change count) captures afterwards.
+    private func resyncPasteboardStateWithoutIngesting() {
+        lastChangeCount = pasteboard.changeCount
+        lastContentHash = pasteboard.string(forType: .string)?.hashValue
+    }
+
+    // MARK: - Timed private mode (Slice 5)
+
+    @objc private func privateMode15Minutes() {
+        startPrivateMode(until: Date().addingTimeInterval(15 * 60))
+    }
+
+    @objc private func privateModeOneHour() {
+        startPrivateMode(until: Date().addingTimeInterval(60 * 60))
+    }
+
+    @objc private func privateModeUntilTomorrow() {
+        let tomorrow = Calendar.current.startOfDay(
+            for: Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date()
+        )
+        startPrivateMode(until: tomorrow)
+    }
+
+    private func startPrivateMode(until: Date) {
+        settings.privateModeUntil = until
+        try? settingsStore.save(settings)
+        captureGateWasActive = true
+        lastStatus = "Private until \(shortTime(until))"
+        configureStatusIcon()
+        rebuildMenu()
+    }
+
+    @objc private func endPrivateMode() {
+        settings.privateModeUntil = nil
+        try? settingsStore.save(settings)
+        // Manual exit uses the same resync rule as expiry: nothing copied
+        // while private is retro-captured.
+        resyncPasteboardStateWithoutIngesting()
+        captureGateWasActive = false
+        lastStatus = "Private mode ended"
+        configureStatusIcon()
+        rebuildMenu()
+    }
+
+    // MARK: - Expiry enforcement (Slice 5)
+
+    /// Cheap due-check (one annotations stat) and, only when due, a
+    /// background sweep. Wired to launch, the 30-minute timer, and surface
+    /// opens — NEVER the capture poll.
+    private func sweepExpiredIfDue() {
+        let sweeper = ClipboardExpirySweeper(archiveRoot: archiveRoot)
+        guard let due = sweeper.nextDue(), due <= Date() else {
+            return
+        }
+        DispatchQueue.global(qos: .utility).async { @Sendable [weak self] in
+            let result = try? sweeper.sweepIfDue()
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, let result, result.sweptContentHashes > 0 else {
+                        return
+                    }
+                    self.markQuickPickerCacheDirty()
+                    self.liveEventCountEstimate = nil
+                    self.lastStatus = "Removed \(result.deletedEvents) expired clip\(result.deletedEvents == 1 ? "" : "s")"
+                    self.panelController?.reloadFromExternalMutation()
+                    self.rebuildMenu()
+                }
+            }
+        }
+    }
+
+    // MARK: - Storage & Health dashboard (Slice 5)
+
+    @objc private func openDashboard() {
+        sweepExpiredIfDue()
+        if dashboardWindowController == nil {
+            dashboardWindowController = ClipboardDashboardWindowController(
+                archiveRoot: archiveRoot,
+                onArchiveMutated: { [weak self] in
+                    guard let self else {
+                        return
+                    }
+                    self.markQuickPickerCacheDirty()
+                    self.liveEventCountEstimate = nil
+                    self.panelController?.reloadFromExternalMutation()
+                    self.rebuildMenu()
+                }
+            )
+        }
+        dashboardWindowController?.show(activate: true)
     }
 
     @objc private func pause15Minutes() {
@@ -251,6 +408,8 @@ final class ClipboardMenuBarApp: NSObject,
     }
 
     private func showClipboardWindow(focusSearch: Bool, activate: Bool) {
+        // Lazy expiry check on surface open (Slice 5 enforcement point).
+        sweepExpiredIfDue()
         if panelController == nil {
             panelController = ClipboardPanelController(
                 archiveRoot: archiveRoot,
@@ -308,6 +467,8 @@ final class ClipboardMenuBarApp: NSObject,
     /// The one entry point for the picker: invoked by the global hotkey, the
     /// menu item, and the DEBUG automation harness.
     private func toggleQuickPicker() {
+        // Lazy expiry check on surface open (Slice 5 enforcement point).
+        sweepExpiredIfDue()
         if quickPickerController == nil {
             quickPickerController = QuickPickerPanelController(
                 dependencies: QuickPickerPanelController.Dependencies(
@@ -495,6 +656,9 @@ final class ClipboardMenuBarApp: NSObject,
                 archiveRoot: archiveRoot
             )
             controller.delegate = self
+            controller.onOpenDashboard = { [weak self] in
+                self?.openDashboard()
+            }
             settingsWindowController = controller
         }
         settingsWindowController?.show(settings: settings, activate: activate)
@@ -599,7 +763,15 @@ final class ClipboardMenuBarApp: NSObject,
             recentItemLimit: 50,
             historyWindow: .fourteenDays,
             retentionMode: .recent50,
-            hasCompletedOnboarding: true
+            hasCompletedOnboarding: true,
+            // Rules-card render fixture: one explicit store-no-index rule
+            // beside the legacy Block entry above.
+            appPrivacyRules: [
+                "com.example.crm": ClipboardAppPrivacyRule(
+                    mode: ClipboardAppPrivacyRule.storeNoIndexMode,
+                    addedAt: Date(timeIntervalSince1970: 1_800_000_000)
+                )
+            ]
         )
 
         do {
@@ -619,6 +791,11 @@ final class ClipboardMenuBarApp: NSObject,
                 }
                 if environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_ANNOTATIONS_FIXTURE"] == "future-version" {
                     try seedFutureVersionAnnotationsFixture()
+                }
+                if environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_REBUILD_INDEX"] == "1" {
+                    // Restricted receipts need real index rows to prove
+                    // they disappear on mark-restricted.
+                    _ = try derivedIndex.rebuild()
                 }
                 let scopeRequest = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_SCOPE"] ?? "working"
                 if scopeRequest == "all-history" {
@@ -653,6 +830,21 @@ final class ClipboardMenuBarApp: NSObject,
                 showSettingsWindow(activate: false)
             } else if screen == "onboarding" {
                 showOnboarding(activate: false)
+            } else if screen == "dashboard" {
+                try seedSyntheticUIFixtures()
+                try seedBlockedEventFixtures()
+                _ = try derivedIndex.rebuild()
+                openDashboardForAutomation()
+            } else if screen == "bulk" {
+                try seedBulkFixtures()
+                _ = try derivedIndex.rebuild()
+                openDashboardForAutomation()
+                dashboardWindowController?.performAutomationOpenBulkSheet()
+            } else if screen == "privatemode" {
+                // No seeding: the receipt proves NOTHING lands in the
+                // archive while private, including blocked-event lines.
+                runPrivateModeAutomation(snapshotPath: snapshotPath)
+                return true
             } else if screen == "quickpicker" {
                 try seedSyntheticUIFixtures()
                 if environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_SEED_SNIPPET"] == "1",
@@ -706,6 +898,19 @@ final class ClipboardMenuBarApp: NSObject,
                             self.panelController?.performAutomationHistoryGesture(String(gesture))
                         }
                     }
+                    if ProcessInfo.processInfo
+                        .environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_SWEEP_EXPIRED"] == "1" {
+                        // Synchronous sweep so the receipt is deterministic;
+                        // production wiring uses the same sweeper off-main.
+                        let sweep = try? ClipboardExpirySweeper(archiveRoot: archiveRoot)
+                            .sweepIfDue()
+                        self.automationSweepReceipt = [
+                            "sweptHashes": sweep?.sweptContentHashes ?? -1,
+                            "deletedEvents": sweep?.deletedEvents ?? -1,
+                            "reclaimedBytes": Int(sweep?.reclaimedBytes ?? -1)
+                        ]
+                        self.panelController?.reloadFromExternalMutation()
+                    }
                     self.pollPasteboard()
                     let eventCountAfter = self.archiveEventCount()
                     let url = URL(fileURLWithPath: snapshotPath)
@@ -720,6 +925,37 @@ final class ClipboardMenuBarApp: NSObject,
                     )
                     NSApp.terminate(nil)
                 }
+            }
+            return true
+        }
+
+        if screen == "dashboard" {
+            let deadline = Date().addingTimeInterval(5.0)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                self?.pollDashboardAutomationSettled(deadline: deadline) { [weak self] in
+                    guard let self else {
+                        return
+                    }
+                    do {
+                        try self.dashboardWindowController?.writeSnapshot(
+                            to: URL(fileURLWithPath: snapshotPath)
+                        )
+                    } catch {
+                        FileHandle.standardError.write(Data("UI snapshot failed: \(error)\n".utf8))
+                    }
+                    self.writeDashboardAutomationResult()
+                    NSApp.terminate(nil)
+                }
+            }
+            return true
+        }
+
+        if screen == "bulk" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.runBulkAutomation(snapshotPath: snapshotPath)
+                // NSApp.terminate stalls while a sheet is attached; the
+                // receipts are already written atomically, so exit directly.
+                exit(0)
             }
             return true
         }
@@ -756,6 +992,244 @@ final class ClipboardMenuBarApp: NSObject,
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             self?.pollHistoryAutomationSettled(deadline: deadline, completion: completion)
         }
+    }
+
+    private func pollDashboardAutomationSettled(
+        deadline: Date,
+        completion: @escaping () -> Void
+    ) {
+        if dashboardWindowController?.automationIsSettled ?? true || Date() >= deadline {
+            completion()
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.pollDashboardAutomationSettled(deadline: deadline, completion: completion)
+        }
+    }
+
+    /// Opens the dashboard without activating the app (never steals focus
+    /// from the foreground application).
+    private func openDashboardForAutomation() {
+        if dashboardWindowController == nil {
+            dashboardWindowController = ClipboardDashboardWindowController(
+                archiveRoot: archiveRoot,
+                onArchiveMutated: { [weak self] in
+                    self?.markQuickPickerCacheDirty()
+                    self?.liveEventCountEstimate = nil
+                }
+            )
+        }
+        dashboardWindowController?.show(activate: false)
+    }
+
+    /// Blocked-event fixtures for the dashboard's Recent Blocked Items
+    /// section: one per reason family, so the humanized explanations render.
+    private func seedBlockedEventFixtures() throws {
+        let fixtures: [(reason: String, app: ClipboardSourceApp)] = [
+            (
+                "source_app_denylist:com.1password.1password",
+                ClipboardSourceApp(name: "1Password", bundleIdentifier: "com.1password.1password")
+            ),
+            (
+                "app_rule_block:com.example.crm",
+                ClipboardSourceApp(name: "Example CRM", bundleIdentifier: "com.example.crm")
+            ),
+            (
+                "secret_detector:env-secret-assignment",
+                ClipboardSourceApp(name: "Terminal", bundleIdentifier: "com.apple.Terminal")
+            )
+        ]
+        for (offset, fixture) in fixtures.enumerated() {
+            try archiveWriter.archiveBlockedCapture(
+                ClipboardCapture(
+                    capturedAt: Date().addingTimeInterval(TimeInterval(-(offset + 1)) * 300),
+                    content: "synthetic blocked fixture — content is never stored",
+                    sourceApp: fixture.app,
+                    pasteboardTypes: ["public.utf8-plain-text"]
+                ),
+                reason: fixture.reason
+            )
+        }
+    }
+
+    private func writeDashboardAutomationResult() {
+        let environment = ProcessInfo.processInfo.environment
+        guard let resultPath = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_RESULT_PATH"],
+              !resultPath.isEmpty else {
+            return
+        }
+        let result: [String: Any] = [
+            "settled": dashboardWindowController?.automationIsSettled ?? false,
+            "healthFacts": dashboardWindowController?.automationHealthFacts ?? [:],
+            "blockedExplanations": dashboardWindowController?.automationBlockedExplanations ?? [],
+            "cleanupResultText": dashboardWindowController?.automationCleanupResultText ?? "",
+            "deleteEnabled": dashboardWindowController?.automationDeleteEnabled ?? false
+        ]
+        if let data = try? JSONSerialization.data(
+            withJSONObject: result,
+            options: [.prettyPrinted, .sortedKeys]
+        ) {
+            try? data.write(to: URL(fileURLWithPath: resultPath), options: [.atomic])
+        }
+    }
+
+    /// Bulk fixtures: 4 old clips (one pinned) + 1 fresh clip, so the
+    /// "Older than 7 days" criterion matches exactly the old unpinned ones.
+    private func seedBulkFixtures() throws {
+        let apps = [
+            ClipboardSourceApp(name: "Notes", bundleIdentifier: "com.apple.Notes"),
+            ClipboardSourceApp(name: "Safari", bundleIdentifier: "com.apple.Safari")
+        ]
+        var events: [StoredClipboardEvent] = []
+        for slot in 0..<4 {
+            let event = try archiveWriter.archiveAllowedCapture(
+                ClipboardCapture(
+                    capturedAt: Date().addingTimeInterval(TimeInterval(-(10 + slot)) * 86_400),
+                    content: "synthetic old bulk fixture clip \(slot)",
+                    sourceApp: apps[slot % apps.count],
+                    pasteboardTypes: ["public.utf8-plain-text"]
+                )
+            )
+            events.append(event)
+        }
+        _ = try archiveWriter.archiveAllowedCapture(
+            ClipboardCapture(
+                capturedAt: Date().addingTimeInterval(-120),
+                content: "synthetic fresh bulk fixture clip",
+                sourceApp: apps[0],
+                pasteboardTypes: ["public.utf8-plain-text"]
+            )
+        )
+        if let pinTarget = events.first {
+            try annotationsStore.setPinned(true, forContentHash: pinTarget.contentHash)
+        }
+    }
+
+    /// Drives the bulk sheet through its production automation handlers:
+    /// criteria → preview (pinned exempt) → include-pinned toggle (its own
+    /// confirm, auto-accepted in automation) → preview → execute. The
+    /// receipt proves preview == execute number-for-number.
+    private func runBulkAutomation(snapshotPath: String) {
+        guard let sheet = dashboardWindowController?.automationBulkSheet else {
+            FileHandle.standardError.write(Data("bulk automation: sheet missing\n".utf8))
+            return
+        }
+        // "Older than 7 days".
+        sheet.performAutomationDateChoice(1)
+        sheet.performAutomationPreview()
+        let previewExemptingPinned = sheet.automationLastPreview
+        let deleteEnabledAfterPreview = sheet.automationDeleteEnabled
+        // Edit invalidates: toggling include-pinned disables Delete until
+        // the next preview.
+        sheet.performAutomationIncludePinned(true)
+        let deleteEnabledAfterEdit = sheet.automationDeleteEnabled
+        sheet.performAutomationPreview()
+        let previewIncludingPinned = sheet.automationLastPreview
+        try? sheet.writeSnapshot(to: URL(fileURLWithPath: snapshotPath))
+        sheet.performAutomationDelete()
+        let executed = sheet.automationLastExecuted
+        let remaining = archiveEventCount()
+
+        let environment = ProcessInfo.processInfo.environment
+        guard let resultPath = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_RESULT_PATH"],
+              !resultPath.isEmpty else {
+            return
+        }
+        func facts(_ result: ClipboardBulkResult?) -> [String: Any] {
+            guard let result else {
+                return [:]
+            }
+            return [
+                "matchedEvents": result.matchedEvents,
+                "reclaimedBytes": Int(result.reclaimedBytes),
+                "deletedBodyFiles": result.deletedBodyFiles,
+                "changedFiles": result.changedFiles,
+                "exemptedPinnedEvents": result.exemptedPinnedEvents,
+                "removedAnnotationHashes": result.removedAnnotationHashes,
+                "dryRun": result.dryRun,
+                "reason": result.reason
+            ]
+        }
+        let parity: Bool
+        if let preview = previewIncludingPinned, let executed {
+            parity = preview.matchedEvents == executed.matchedEvents
+                && preview.reclaimedBytes == executed.reclaimedBytes
+                && preview.deletedBodyFiles == executed.deletedBodyFiles
+                && preview.exemptedPinnedEvents == executed.exemptedPinnedEvents
+        } else {
+            parity = false
+        }
+        let result: [String: Any] = [
+            "previewExemptingPinned": facts(previewExemptingPinned),
+            "previewIncludingPinned": facts(previewIncludingPinned),
+            "executed": facts(executed),
+            "previewMatchesExecute": parity,
+            "deleteEnabledAfterPreview": deleteEnabledAfterPreview,
+            "deleteEnabledAfterEdit": deleteEnabledAfterEdit,
+            "eventsRemaining": remaining,
+            "resultText": sheet.automationResultText
+        ]
+        if let data = try? JSONSerialization.data(
+            withJSONObject: result,
+            options: [.prettyPrinted, .sortedKeys]
+        ) {
+            try? data.write(to: URL(fileURLWithPath: resultPath), options: [.atomic])
+        }
+    }
+
+    /// Private-mode receipt: copies land on the isolated automation
+    /// pasteboard DURING private mode, polls run, and the receipt proves
+    /// {storedDuring: 0, blockedDuring: 0, storedAfterResume: 0} plus a
+    /// normal capture after a genuinely new copy.
+    private func runPrivateModeAutomation(snapshotPath: String) {
+        _ = snapshotPath
+        settings.archiveEnabled = true
+        try? settingsStore.save(settings)
+
+        // Enter private mode through the production menu action path.
+        startPrivateMode(until: Date().addingTimeInterval(15 * 60))
+
+        // Two copies DURING private mode (isolated pasteboard).
+        pasteboard.clearContents()
+        pasteboard.setString("private automation secret one", forType: .string)
+        pollPasteboard()
+        pasteboard.clearContents()
+        pasteboard.setString("private automation secret two", forType: .string)
+        pollPasteboard()
+        let storedDuring = archiveEventCount()
+        let blockedDuring = (try? reader.recentBlockedEvents(since: .distantPast, limit: 100).count) ?? -1
+
+        // Exit through the production End Private Mode path (resync), then
+        // poll twice: the item copied while private must NOT retro-capture.
+        endPrivateMode()
+        pollPasteboard()
+        pollPasteboard()
+        let storedAfterResume = archiveEventCount()
+
+        // A genuinely NEW copy captures normally.
+        pasteboard.clearContents()
+        pasteboard.setString("post-private ordinary automation copy", forType: .string)
+        pollPasteboard()
+        let storedAfterNewCopy = archiveEventCount()
+
+        let environment = ProcessInfo.processInfo.environment
+        if let resultPath = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_RESULT_PATH"],
+           !resultPath.isEmpty {
+            let result: [String: Any] = [
+                "storedDuring": storedDuring,
+                "blockedDuring": blockedDuring,
+                "storedAfterResume": storedAfterResume,
+                "storedAfterNewCopy": storedAfterNewCopy,
+                "privateModeCleared": settings.privateModeUntil == nil
+            ]
+            if let data = try? JSONSerialization.data(
+                withJSONObject: result,
+                options: [.prettyPrinted, .sortedKeys]
+            ) {
+                try? data.write(to: URL(fileURLWithPath: resultPath), options: [.atomic])
+            }
+        }
+        NSApp.terminate(nil)
     }
 
     /// Manufactures the stale-index + ledger-drift condition the design
@@ -878,6 +1352,17 @@ final class ClipboardMenuBarApp: NSObject,
         if !automationRetentionReceipt.isEmpty {
             result["retentionFlow"] = automationRetentionReceipt
         }
+        if !automationSweepReceipt.isEmpty {
+            result["expirySweep"] = automationSweepReceipt
+        }
+        // Restricted receipts (Slice 5): badge exposure plus the live index
+        // row count for the detail hash (0 after mark-restricted).
+        result["restrictedVisibleIDs"] = panelController?.automationRestrictedVisibleIDs ?? []
+        result["detailContentHash"] = panelController?.automationDetailContentHash ?? ""
+        result["indexRowsForDetailHash"] = panelController?.automationIndexRowCountForDetailHash ?? -1
+        result["indexRowsForRestrictedHashes"] = panelController?.automationRestrictedIndexRowCount ?? -1
+        result["row0ShowsRestrictedBadge"] = panelController?.automationRow0ShowsRestrictedBadge ?? false
+        result["expiringEntries"] = annotationsStore.entriesWithExpiry().count
         if let before = automationAnnotationsBytesBefore {
             result["annotationsFileByteIdentical"] = before == annotationsBytesNow
             result["annotationsBytesBefore"] = before.count
@@ -1143,33 +1628,6 @@ final class ClipboardMenuBarApp: NSObject,
         }
     }
 
-    @objc private func showArchiveHealth() {
-        do {
-            let health = try ClipboardArchiveHealthReporter(archiveRoot: archiveRoot).health()
-            let alert = NSAlert()
-            alert.messageText = "Clipboard Archive Health"
-            alert.informativeText = """
-            Stored: \(health.storedEvents)
-            Blocked: \(health.blockedEvents)
-            Deleted: \(health.deletedEvents)
-            Today: \(health.todayStoredEvents)
-            Last 7 days: \(health.lastSevenDaysStoredEvents)
-            Large bodies: \(health.largeBodyFiles)
-            Missing bodies: \(health.missingBodyFiles)
-            Unsafe body paths: \(health.unsafeBodyPaths)
-            Files with broad permissions: \(health.insecureFiles)
-            Invalid JSON: \(health.invalidJSONLines)
-            Archive size: \(formatBytes(health.archiveBytes))
-            Index size: \(formatBytes(health.indexBytes))
-            Index stale: \(health.indexIsStale ? "yes" : "no")
-            """
-            alert.addButton(withTitle: "OK")
-            alert.runModal()
-        } catch {
-            showError("Health check failed: \(error)")
-        }
-    }
-
     @objc private func excludeCurrentApp() {
         let source = detectedSourceApp()
         guard let bundle = source.bundleIdentifier, !bundle.isEmpty else {
@@ -1188,7 +1646,9 @@ final class ClipboardMenuBarApp: NSObject,
 
         let pauseLine = settings.pauseUntil.map { " until \(shortDate($0))" } ?? ""
         let statusTitle: String
-        if isPaused {
+        if settings.isPrivateModeActive, let privateUntil = settings.privateModeUntil {
+            statusTitle = "Private until \(shortTime(privateUntil))"
+        } else if isPaused {
             statusTitle = "Capture Paused\(pauseLine)"
         } else if settings.archiveEnabled {
             statusTitle = settings.retentionMode.storesLongTermHistory ? "Full Archive Active" : "\(settings.retentionMode.displayName) Active"
@@ -1204,6 +1664,16 @@ final class ClipboardMenuBarApp: NSObject,
         let counters = NSMenuItem(title: "\(capturedCount) captured, \(blockedCount) blocked this run", action: nil, keyEquivalent: "")
         counters.isEnabled = false
         menu.addItem(counters)
+        if settings.showBlockedEventStatus, let lastBlockedReason {
+            let blockedLine = NSMenuItem(
+                title: "Last blocked: \(ClipboardBlockedEventExplainer.shortLabel(for: lastBlockedReason))",
+                action: nil,
+                keyEquivalent: ""
+            )
+            blockedLine.isEnabled = false
+            blockedLine.toolTip = ClipboardBlockedEventExplainer.explanation(for: lastBlockedReason)
+            menu.addItem(blockedLine)
+        }
         if shortcutFailureMessage != nil {
             let warning = NSMenuItem(
                 title: "⚠ Quick Picker Shortcut Not Active…",
@@ -1259,7 +1729,7 @@ final class ClipboardMenuBarApp: NSObject,
 
         let maintenance = NSMenuItem(title: "Maintenance", action: nil, keyEquivalent: "")
         let maintenanceSubmenu = NSMenu()
-        maintenanceSubmenu.addItem(NSMenuItem(title: "Archive Health", action: #selector(showArchiveHealth), keyEquivalent: "h"))
+        maintenanceSubmenu.addItem(NSMenuItem(title: "Storage & Health…", action: #selector(openDashboard), keyEquivalent: "h"))
         maintenanceSubmenu.addItem(NSMenuItem(title: "Rebuild Search Index", action: #selector(rebuildIndex), keyEquivalent: ""))
         maintenanceSubmenu.addItem(NSMenuItem(title: "Delete Latest Item...", action: #selector(deleteLatestItem), keyEquivalent: "d"))
         maintenanceSubmenu.addItem(NSMenuItem(title: "Exclude Current App", action: #selector(excludeCurrentApp), keyEquivalent: ""))
@@ -1278,6 +1748,22 @@ final class ClipboardMenuBarApp: NSObject,
         pauseSubmenu.addItem(NSMenuItem(title: "Until Tomorrow", action: #selector(pauseUntilTomorrow), keyEquivalent: ""))
         pauseMenu.submenu = pauseSubmenu
         maintenanceSubmenu.addItem(pauseMenu)
+
+        // Private Mode (Slice 5): unlike pause, NOTHING is read from the
+        // pasteboard while active — no stored events, no blocked-event
+        // metadata lines.
+        let privateMenu = NSMenuItem(title: "Private Mode", action: nil, keyEquivalent: "")
+        privateMenu.image = NSImage(systemSymbolName: "eye.slash", accessibilityDescription: "Private mode")
+        let privateSubmenu = NSMenu()
+        privateSubmenu.addItem(NSMenuItem(title: "For 15 Minutes", action: #selector(privateMode15Minutes), keyEquivalent: ""))
+        privateSubmenu.addItem(NSMenuItem(title: "For 1 Hour", action: #selector(privateModeOneHour), keyEquivalent: ""))
+        privateSubmenu.addItem(NSMenuItem(title: "Until Tomorrow", action: #selector(privateModeUntilTomorrow), keyEquivalent: ""))
+        if settings.isPrivateModeActive {
+            privateSubmenu.addItem(.separator())
+            privateSubmenu.addItem(NSMenuItem(title: "End Private Mode", action: #selector(endPrivateMode), keyEquivalent: ""))
+        }
+        privateMenu.submenu = privateSubmenu
+        maintenanceSubmenu.addItem(privateMenu)
         maintenanceSubmenu.addItem(NSMenuItem(title: "Refresh Menu", action: #selector(refreshMenu), keyEquivalent: "r"))
         maintenanceSubmenu.addItem(NSMenuItem(title: "Open Archive Folder", action: #selector(openArchiveFolder), keyEquivalent: ""))
         maintenance.submenu = maintenanceSubmenu
@@ -1405,6 +1891,12 @@ final class ClipboardMenuBarApp: NSObject,
         return formatter.string(from: date)
     }
 
+    private func shortTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
+    }
+
     private func showError(_ message: String) {
         let alert = NSAlert()
         alert.messageText = "Clipboard Archive"
@@ -1474,7 +1966,14 @@ final class ClipboardMenuBarApp: NSObject,
     }
 
     private func configureStatusIcon() {
-        let symbolName = isPaused || !settings.archiveEnabled ? "pause.circle" : "doc.on.clipboard"
+        let symbolName: String
+        if settings.isPrivateModeActive {
+            symbolName = "eye.slash"
+        } else if isPaused || !settings.archiveEnabled {
+            symbolName = "pause.circle"
+        } else {
+            symbolName = "doc.on.clipboard"
+        }
         if let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "Clipboard Archive") {
             image.isTemplate = true
             statusItem.button?.image = image
@@ -1482,7 +1981,9 @@ final class ClipboardMenuBarApp: NSObject,
         } else {
             statusItem.button?.title = isPaused ? "Archive Paused" : "Archive"
         }
-        if isPaused {
+        if settings.isPrivateModeActive, let until = settings.privateModeUntil {
+            statusItem.button?.toolTip = "Clipboard Archive: private until \(shortTime(until))"
+        } else if isPaused {
             statusItem.button?.toolTip = "Clipboard Archive: paused"
         } else if settings.archiveEnabled {
             statusItem.button?.toolTip = "Clipboard Archive: capturing"

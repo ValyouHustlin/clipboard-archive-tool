@@ -1,5 +1,48 @@
 # Changelog
 
+## Unreleased - 2026-07-30 (bulk management, privacy upgrades, dashboard)
+
+- FIXED PRIVACY BUG (pre-existing): resuming from a pause retroactively
+  captured the last item copied while paused, because the pause exit never
+  resynchronized the pasteboard change tracking. Pause exit — manual and
+  timed — now resyncs without ingesting; the new timed Private Mode uses
+  the same rule.
+- Added timed Private Mode (15 minutes / 1 hour / until tomorrow): the
+  capture loop returns before reading the pasteboard, so nothing is stored
+  and no blocked-event metadata lines are written while it is active.
+- Added per-app privacy rules with three modes: Block, Store don't index,
+  and Normal. Store-don't-index clips are stored with the `restricted`
+  label — visible in History, never searchable. A Normal rule cannot
+  override the built-in password-manager protection. Unknown rule modes
+  from newer builds evaluate as Block (fail closed) and round-trip
+  losslessly.
+- DOWNGRADE NOTE: saving a Store-don't-index rule ALSO keeps the app in the
+  legacy exclusion list, so an older build of Clipboard Archive (which only
+  knows that list) blocks the app outright — stricter, never looser. A
+  Normal rule removes the legacy entry.
+- Added manual "Mark Sensitive" controls: a Restricted toggle (stored,
+  visible, hidden from search — occurrences leave the search index
+  immediately and re-copies stay unindexed via content-hash annotations),
+  expiring sensitive clips (1 hour / 1 day / 7 days; expiry overrides pin
+  protection and says so), and Clear Sensitivity. Expiry is enforced at
+  launch, every 30 minutes, and when history surfaces open.
+- Added a bulk management engine with truthful previews: preview and
+  execute share one code path, so the confirmation's clip count and
+  reclaimed bytes match the run exactly. Criteria: date range, app, type,
+  sensitivity, explicit selection. Pinned clips are exempt unless "include
+  pinned" is separately confirmed. History multi-select delete now routes
+  through the same engine.
+- Added a Storage & Health dashboard window (replacing the health alert):
+  extended overview computed off the main thread, recent blocked items with
+  plain-language explanations, index rebuild with an inline receipt,
+  integrity verification, and preview-first cleanup including the Bulk
+  Cleanup sheet.
+- Added CLI commands `bulk` (with `--dry-run`, `--json`, and criteria
+  flags) and `sweep-expired`; `health` reports the new dashboard fields.
+- Fixed a settings decode inconsistency: persisted ISO 8601 dates (timed
+  pause, private mode, rule timestamps) now load correctly instead of
+  resetting the settings file to defaults.
+
 ## Unreleased - 2026-07-29
 
 - Rebuilt the history window as a searchable split view with rich

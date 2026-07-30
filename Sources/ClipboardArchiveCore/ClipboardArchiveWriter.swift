@@ -16,8 +16,24 @@ public struct ClipboardArchiveWriter: Sendable {
         self.calendar = calendar
     }
 
+    /// Content identity for a capture body, matching the stored
+    /// `contentHash` field exactly (`sha256:<hex>`). Shared so the ingestor
+    /// can consult content-keyed annotations BEFORE the event is written.
+    public static func contentHash(for content: String) -> String {
+        let data = Data(content.utf8)
+        return "sha256:" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Archives one allowed capture. `privacyLabel` defaults to the
+    /// historical `.privateLocal`; per-app `store-no-index` rules pass
+    /// `.restricted` (stored, visible, never searchable — Slice 5).
+    /// `sensitivityFlags` are persisted on the event line.
     @discardableResult
-    public func archiveAllowedCapture(_ capture: ClipboardCapture) throws -> StoredClipboardEvent {
+    public func archiveAllowedCapture(
+        _ capture: ClipboardCapture,
+        privacyLabel: PrivacyLabel = .privateLocal,
+        sensitivityFlags: [String] = []
+    ) throws -> StoredClipboardEvent {
         let contentData = Data(capture.content.utf8)
         let hash = sha256(contentData)
         let id = eventID(capturedAt: capture.capturedAt, hash: hash)
@@ -55,9 +71,11 @@ public struct ClipboardArchiveWriter: Sendable {
             byteCount: contentData.count,
             characterCount: capture.content.count,
             lineCount: capture.content.split(separator: "\n", omittingEmptySubsequences: false).count,
-            privacyLabel: .privateLocal,
-            allowedUse: [.localSearch, .localAnalysis],
-            sensitivityFlags: [],
+            privacyLabel: privacyLabel,
+            allowedUse: privacyLabel == .restricted
+                ? [.archiveOnly]
+                : [.localSearch, .localAnalysis],
+            sensitivityFlags: sensitivityFlags.sorted(),
             uiVisibleUntil: uiVisibleUntil,
             schemaVersion: StoredClipboardEvent.currentSchemaVersion
         )

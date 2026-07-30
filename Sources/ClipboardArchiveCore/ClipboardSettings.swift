@@ -56,9 +56,57 @@ public enum ClipboardHistoryWindow: Int, Codable, CaseIterable, Sendable {
     }
 }
 
+/// One per-app privacy rule (Slice 5). `mode` is a RAW string that
+/// round-trips losslessly: known values are `normal`, `store-no-index`, and
+/// `block`; any UNKNOWN value written by a newer build evaluates as `block`
+/// (fail closed) but re-encodes unchanged so newer settings are never
+/// clobbered.
+public struct ClipboardAppPrivacyRule: Codable, Equatable, Sendable {
+    public static let normalMode = "normal"
+    public static let storeNoIndexMode = "store-no-index"
+    public static let blockMode = "block"
+    public static let knownModes: [String] = [normalMode, storeNoIndexMode, blockMode]
+
+    public var mode: String
+    public var addedAt: Date
+
+    public init(mode: String, addedAt: Date = Date()) {
+        self.mode = mode
+        self.addedAt = addedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case mode
+        case addedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        // A missing mode is indistinguishable from an unknown one and both
+        // must fail closed, so default to the empty string (evaluates as
+        // block) rather than dropping the record.
+        mode = try container.decodeIfPresent(String.self, forKey: .mode) ?? ""
+        addedAt = try container.decodeIfPresent(Date.self, forKey: .addedAt) ?? .distantPast
+    }
+
+    /// Fail-closed evaluation (contract: unknown mode weakens nothing).
+    public var evaluatesAsBlock: Bool {
+        mode != Self.normalMode && mode != Self.storeNoIndexMode
+    }
+
+    public var isStoreNoIndex: Bool {
+        mode == Self.storeNoIndexMode
+    }
+
+    public var isNormal: Bool {
+        mode == Self.normalMode
+    }
+}
+
 public struct ClipboardSettings: Codable, Equatable, Sendable {
     public static let minimumRecentItemLimit = 5
     public static let maximumRecentItemLimit = 10_000
+    public static let currentSettingsVersion = 1
 
     public var excludedBundleIdentifiers: [String]
     public var excludedAppNameFragments: [String]
@@ -80,6 +128,17 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
     /// History window "Group duplicates" toggle (Slice 4). Presentation
     /// only; defaults off so older settings files change nothing.
     public var historyGroupDuplicates: Bool
+    /// Settings semantic version (contract 4). Missing decodes as 1.
+    public var settingsVersion: Int
+    /// Per-app privacy rules keyed by LOWERCASED bundle identifier
+    /// (Slice 5). Unknown modes evaluate as block but round-trip losslessly.
+    public var appPrivacyRules: [String: ClipboardAppPrivacyRule]
+    /// Timed private mode: while set and in the future, the capture loop
+    /// returns before reading the pasteboard — no stored events and no
+    /// blocked-event metadata lines.
+    public var privateModeUntil: Date?
+    /// Opt-in menu status line describing the most recent blocked event.
+    public var showBlockedEventStatus: Bool
 
     private enum CodingKeys: String, CodingKey {
         case excludedBundleIdentifiers
@@ -94,6 +153,10 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         case shortcuts
         case quickPickerDirectPasteEnabled
         case historyGroupDuplicates
+        case settingsVersion
+        case appPrivacyRules
+        case privateModeUntil
+        case showBlockedEventStatus
     }
 
     public init(
@@ -108,7 +171,11 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         hasCompletedOnboarding: Bool = false,
         shortcuts: [String: ClipboardShortcutSetting] = [:],
         quickPickerDirectPasteEnabled: Bool = false,
-        historyGroupDuplicates: Bool = false
+        historyGroupDuplicates: Bool = false,
+        settingsVersion: Int = ClipboardSettings.currentSettingsVersion,
+        appPrivacyRules: [String: ClipboardAppPrivacyRule] = [:],
+        privateModeUntil: Date? = nil,
+        showBlockedEventStatus: Bool = true
     ) {
         self.excludedBundleIdentifiers = excludedBundleIdentifiers
         self.excludedAppNameFragments = excludedAppNameFragments
@@ -122,6 +189,33 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         self.shortcuts = shortcuts
         self.quickPickerDirectPasteEnabled = quickPickerDirectPasteEnabled
         self.historyGroupDuplicates = historyGroupDuplicates
+        self.settingsVersion = settingsVersion
+        self.appPrivacyRules = Self.normalizedRuleKeys(appPrivacyRules)
+        self.privateModeUntil = privateModeUntil
+        self.showBlockedEventStatus = showBlockedEventStatus
+    }
+
+    /// Rule keys are canonically lowercased bundle identifiers. When a
+    /// hand-edited file carries both casings, the lowercased entry wins so
+    /// normalization is deterministic.
+    public static func normalizedRuleKeys(
+        _ rules: [String: ClipboardAppPrivacyRule]
+    ) -> [String: ClipboardAppPrivacyRule] {
+        var normalized: [String: ClipboardAppPrivacyRule] = [:]
+        for (key, rule) in rules.sorted(by: { $0.key < $1.key }) {
+            let lowered = key.lowercased()
+            if normalized[lowered] == nil || key == lowered {
+                normalized[lowered] = rule
+            }
+        }
+        return normalized
+    }
+
+    public var isPrivateModeActive: Bool {
+        guard let privateModeUntil else {
+            return false
+        }
+        return privateModeUntil > Date()
     }
 
     /// The quick picker shortcut, falling back to the disabled ⌥⌘V default
@@ -174,6 +268,19 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
             Bool.self,
             forKey: .historyGroupDuplicates
         ) ?? false
+        settingsVersion = try container.decodeIfPresent(Int.self, forKey: .settingsVersion) ?? 1
+        // One malformed rule entry drops only that entry, never the whole
+        // settings decode (which would reset capture/retention/exclusions).
+        let tolerantRules = try container.decodeIfPresent(
+            [String: FailableDecodable<ClipboardAppPrivacyRule>].self,
+            forKey: .appPrivacyRules
+        ) ?? [:]
+        appPrivacyRules = Self.normalizedRuleKeys(tolerantRules.compactMapValues(\.value))
+        privateModeUntil = try container.decodeIfPresent(Date.self, forKey: .privateModeUntil)
+        showBlockedEventStatus = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .showBlockedEventStatus
+        ) ?? true
     }
 
     public static func clampRecentItemLimit(_ value: Int) -> Int {
@@ -210,8 +317,18 @@ public struct ClipboardSettingsStore: Sendable {
         } catch {
             return ClipboardSettings()
         }
-        guard let data = try? Data(contentsOf: settingsURL),
-              let settings = try? JSONDecoder().decode(ClipboardSettings.self, from: data) else {
+        guard let data = try? Data(contentsOf: settingsURL) else {
+            return ClipboardSettings()
+        }
+        // save() encodes dates as ISO 8601, so load MUST decode them the
+        // same way. The plain-decoder fallback keeps hypothetical files with
+        // numeric dates loading instead of silently resetting to defaults.
+        let isoDecoder = JSONDecoder()
+        isoDecoder.dateDecodingStrategy = .iso8601
+        if let settings = try? isoDecoder.decode(ClipboardSettings.self, from: data) {
+            return settings
+        }
+        guard let settings = try? JSONDecoder().decode(ClipboardSettings.self, from: data) else {
             return ClipboardSettings()
         }
         return settings

@@ -138,9 +138,47 @@ modes physically prune older content after accepted captures.
 
 ## Privacy And Trust Boundaries
 
-Filtering happens before archive writes. The current filter blocks a hard-coded
-set of concealed/transient pasteboard types, password-manager/keychain apps,
-user-configured exclusions, and credential-like text recognized by
+Filtering happens before archive writes, with a fixed precedence (Slice 5):
+1. the concealed/transient pasteboard-type denylist (nothing overrides it),
+2. the built-in password-manager lists (a `normal` per-app rule cannot
+   override them),
+3. explicit per-app privacy rules (`block` / `store-no-index` / `normal`;
+   unknown modes fail closed as `block` and round-trip losslessly),
+4. the legacy user exclusion lists (only when no explicit rule exists),
+5. `SecretDetector` content inspection (runs even for `store-no-index`
+   apps).
+
+`.restricted` label semantics are binding: stored, visible, never
+searchable. `ClipboardSuppression` is still the ONE suppression gate file,
+now with two named predicates — `isSuppressed` (visibility, unchanged) and
+`isIndexExcluded` (tombstone label OR `.restricted` label OR the manual
+"restricted" annotation override). Index writers (capture upsert, rebuild)
+and the CLI archive searcher route through `isIndexExcluded`; readers never
+do. The capture upsert deletes-instead-of-inserts for excluded events so a
+re-copy can never resurrect an index row; manual overrides key on content
+hash in the annotations sidecar so archive lines are never rewritten.
+
+Timed private mode returns from the capture poll BEFORE the pasteboard is
+read — no stored events and no blocked-event lines, structurally. Exiting
+private mode or a pause resynchronizes `lastChangeCount`/`lastContentHash`
+from the current pasteboard without ingesting (the Slice 5 fix for the
+pause retro-capture bug). `ClipboardCaptureGate` in Core is the pure,
+tested decision function behind this.
+
+Bulk deletion composes the single pruner core (`pruneCore`): one compiled
+predicate, an index `delete(eventIDs:)` batched BEFORE tombstoning
+(fail-closed ordering), per-event ledger records with a
+`bulk-<criteria>` reason, and truthful reclaim accounting (stat'ed body
+files plus the signed original-line minus tombstone-line byte delta,
+computed identically in dry-run and execute modes). The expiry sweeper
+(`ClipboardExpirySweeper`) resolves due content hashes to live occurrence
+ids and executes them through the same engine with reason
+`expired-sensitive`; enforcement points are launch, a 30-minute timer, and
+surface opens — never the capture poll and never read-time hiding.
+
+The current filter blocks a hard-coded set of concealed/transient
+pasteboard types, password-manager/keychain apps, user-configured
+exclusions and rules, and credential-like text recognized by
 `SecretDetector`.
 
 This is risk reduction, not a guarantee. Browser password fields, unknown

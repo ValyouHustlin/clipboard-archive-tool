@@ -132,6 +132,12 @@ public struct ClipboardDerivedIndex: Sendable {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             let suppression = try ClipboardSuppression(archiveRoot: archiveRoot).snapshot()
+            // `.restricted` semantics (Slice 5): restricted events — by
+            // stored label or by manual annotation override — are stored
+            // and visible but NEVER enter the index. One annotations read
+            // per rebuild.
+            let restrictedHashes = ClipboardAnnotationsStore(archiveRoot: archiveRoot)
+                .restrictedContentHashes()
             var count = 0
 
             for fileURL in try reader.eventFiles() {
@@ -140,7 +146,13 @@ public struct ClipboardDerivedIndex: Sendable {
                 for line in lines {
                     guard let data = String(line).data(using: .utf8),
                           let event = try? decoder.decode(StoredClipboardEvent.self, from: data),
-                          !suppression.isSuppressed(event) else {
+                          !suppression.isSuppressed(event),
+                          !ClipboardSuppression.isIndexExcluded(
+                              event,
+                              sensitivityOverride: restrictedHashes.contains(event.contentHash)
+                                  ? "restricted"
+                                  : nil
+                          ) else {
                         continue
                     }
                     let body = (try? reader.content(for: event)) ?? event.contentPreview
@@ -183,7 +195,16 @@ public struct ClipboardDerivedIndex: Sendable {
         }
     }
 
-    public func upsert(event: StoredClipboardEvent, body: String) throws {
+    /// Upserts one event. `sensitivityOverride` is the annotation-store
+    /// manual override for the event's content hash: index-excluded events
+    /// (tombstones, `.restricted` labels, manual "restricted" overrides)
+    /// DELETE-instead-of-insert so a re-copy can never resurrect an index
+    /// row (Slice 5 `.restricted` semantics).
+    public func upsert(
+        event: StoredClipboardEvent,
+        body: String,
+        sensitivityOverride: String? = nil
+    ) throws {
         let indexDirectory = indexURL.deletingLastPathComponent()
         try ClipboardPrivateFileSystem.createDirectory(indexDirectory, archiveRoot: indexDirectory)
         // Outside the exclusive lock: ensure/rebuild takes the lock itself
@@ -191,7 +212,7 @@ public struct ClipboardDerivedIndex: Sendable {
         // is an idempotent double rebuild.
         try ensureCurrentSchema()
         try withExclusiveLock {
-            if event.privacyLabel == .doNotIndex {
+            if ClipboardSuppression.isIndexExcluded(event, sensitivityOverride: sensitivityOverride) {
                 _ = try deleteUnlocked(eventID: event.id)
                 return
             }
@@ -227,6 +248,29 @@ public struct ClipboardDerivedIndex: Sendable {
             return false
         }
         return version == Self.currentIndexSchemaVersion
+    }
+
+    /// The index database's `PRAGMA user_version`, or nil when the file is
+    /// missing or unreadable (dashboard/health surface).
+    public func userVersion() -> Int? {
+        guard FileManager.default.fileExists(atPath: indexURL.path) else {
+            return nil
+        }
+        guard let rows = try? runSQLiteJSON(
+            "SELECT user_version AS user_version FROM pragma_user_version;"
+        ) else {
+            return nil
+        }
+        return rows.first?["user_version"] as? Int
+    }
+
+    /// SQLite `PRAGMA quick_check` on the live index file (dashboard
+    /// "Verify Integrity"). Returns true when the database reports "ok".
+    public func quickCheck() -> Bool {
+        guard FileManager.default.fileExists(atPath: indexURL.path) else {
+            return false
+        }
+        return (try? validateIndex(at: indexURL)) != nil
     }
 
     /// Rebuilds the index when it is missing or its schema version does not
