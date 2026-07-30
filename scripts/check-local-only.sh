@@ -15,6 +15,7 @@ production_source_matches="$(
     "$ROOT/Package.swift" \
     2>/dev/null \
     | rg -v 'github\.com/swiftlang/swift-testing\.git' \
+    | rg -v 'https://example\.com/' \
     || true
 )"
 

@@ -58,8 +58,8 @@ do {
     }
 
     try run("allows ordinary url") {
-        // Split literal keeps check-local-only.sh's network-string scan clean.
-        let ordinaryURL = "https" + "://example.com/research/article?topic=clipboard"
+        // example.com fixture URLs are explicitly allowlisted by check-local-only.sh.
+        let ordinaryURL = "https://example.com/research/article?topic=clipboard"
         let result = SecretDetector().inspect(ordinaryURL)
         try expect(!result.isSensitive, "ordinary URL should be allowed")
     }
@@ -103,7 +103,7 @@ do {
         let capturedAt = Date(timeIntervalSince1970: 1_800_000_000)
         let capture = ClipboardCapture(
             capturedAt: capturedAt,
-            content: "https" + "://example.com/a-useful-link",
+            content: "https://example.com/a-useful-link",
             sourceApp: ClipboardSourceApp(name: "Safari", bundleIdentifier: "com.apple.Safari"),
             pasteboardTypes: ["public.utf8-plain-text"]
         )
