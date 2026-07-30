@@ -32,6 +32,30 @@ public enum ClipboardRetentionMode: String, Codable, CaseIterable, Sendable {
     }
 }
 
+public enum ClipboardHistoryWindow: Int, Codable, CaseIterable, Sendable {
+    case oneDay = 1
+    case sevenDays = 7
+    case fourteenDays = 14
+    case thirtyDays = 30
+
+    public var displayName: String {
+        switch self {
+        case .oneDay:
+            return "Last 24 Hours"
+        case .sevenDays:
+            return "Last 7 Days"
+        case .fourteenDays:
+            return "Last 14 Days"
+        case .thirtyDays:
+            return "Last 30 Days"
+        }
+    }
+
+    public var dayCount: Int {
+        rawValue
+    }
+}
+
 public struct ClipboardSettings: Codable, Equatable, Sendable {
     public static let minimumRecentItemLimit = 5
     public static let maximumRecentItemLimit = 10_000
@@ -42,6 +66,7 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
     public var pollIntervalSeconds: TimeInterval
     public var archiveEnabled: Bool
     public var recentItemLimit: Int
+    public var historyWindow: ClipboardHistoryWindow
     public var retentionMode: ClipboardRetentionMode
     public var hasCompletedOnboarding: Bool
 
@@ -52,6 +77,7 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         case pollIntervalSeconds
         case archiveEnabled
         case recentItemLimit
+        case historyWindow
         case retentionMode
         case hasCompletedOnboarding
     }
@@ -63,6 +89,7 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         pollIntervalSeconds: TimeInterval = 0.2,
         archiveEnabled: Bool = false,
         recentItemLimit: Int = 50,
+        historyWindow: ClipboardHistoryWindow = .sevenDays,
         retentionMode: ClipboardRetentionMode = .recent50,
         hasCompletedOnboarding: Bool = false
     ) {
@@ -72,6 +99,7 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         self.pollIntervalSeconds = pollIntervalSeconds
         self.archiveEnabled = archiveEnabled
         self.recentItemLimit = Self.clampRecentItemLimit(recentItemLimit)
+        self.historyWindow = historyWindow
         self.retentionMode = retentionMode
         self.hasCompletedOnboarding = hasCompletedOnboarding
     }
@@ -92,6 +120,10 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         archiveEnabled = try container.decodeIfPresent(Bool.self, forKey: .archiveEnabled) ?? true
         let decodedLimit = try container.decodeIfPresent(Int.self, forKey: .recentItemLimit) ?? 50
         recentItemLimit = Self.clampRecentItemLimit(decodedLimit)
+        historyWindow = try container.decodeIfPresent(
+            ClipboardHistoryWindow.self,
+            forKey: .historyWindow
+        ) ?? .sevenDays
         retentionMode = try container.decodeIfPresent(ClipboardRetentionMode.self, forKey: .retentionMode) ?? (archiveEnabled ? .unlimited : .recent50)
         hasCompletedOnboarding = try container.decodeIfPresent(Bool.self, forKey: .hasCompletedOnboarding) ?? true
     }

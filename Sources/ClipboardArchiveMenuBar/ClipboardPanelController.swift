@@ -14,8 +14,12 @@ final class ClipboardPanelController: NSWindowController,
     private var events: [StoredClipboardEvent] = []
     private var filteredEvents: [StoredClipboardEvent] = []
     private var recentItemLimit: Int
+    private var historyWindow: ClipboardHistoryWindow
+    private var contentTypeFilter: ClipboardContentType?
 
     private let searchField = NSSearchField()
+    private let historySubtitle = NSTextField(labelWithString: "")
+    private let typeFilter = NSSegmentedControl()
     private let tableView = NSTableView()
     private let statusLabel = NSTextField(labelWithString: "")
     private let detailTitle = NSTextField(labelWithString: "Select an item")
@@ -28,12 +32,18 @@ final class ClipboardPanelController: NSWindowController,
     private let deleteButton = NSButton(title: "Delete", target: nil, action: nil)
     private var detailCardHeightConstraint: NSLayoutConstraint?
 
-    init(archiveRoot: URL, pasteboard: NSPasteboard, recentItemLimit: Int) {
+    init(
+        archiveRoot: URL,
+        pasteboard: NSPasteboard,
+        recentItemLimit: Int,
+        historyWindow: ClipboardHistoryWindow
+    ) {
         self.archiveRoot = archiveRoot
         self.reader = ClipboardArchiveReader(archiveRoot: archiveRoot)
         self.redactor = ClipboardArchiveRedactor(archiveRoot: archiveRoot)
         self.pasteboard = pasteboard
         self.recentItemLimit = recentItemLimit
+        self.historyWindow = historyWindow
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 520),
@@ -56,10 +66,12 @@ final class ClipboardPanelController: NSWindowController,
 
     func show(
         recentItemLimit: Int,
+        historyWindow: ClipboardHistoryWindow,
         focusSearch: Bool = false,
         activate: Bool = true
     ) {
         self.recentItemLimit = recentItemLimit
+        self.historyWindow = historyWindow
         reload()
         if activate {
             window?.makeKeyAndOrderFront(nil)
@@ -94,6 +106,7 @@ final class ClipboardPanelController: NSWindowController,
         guard let view = window?.contentView else {
             return
         }
+        view.layoutSubtreeIfNeeded()
         window?.displayIfNeeded()
         guard let representation = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
             return
@@ -108,6 +121,13 @@ final class ClipboardPanelController: NSWindowController,
     func performAutomationSearch(_ query: String) {
         searchField.stringValue = query
         applyFilter()
+    }
+
+    func performAutomationTypeFilter(_ filter: String) {
+        let segment = ["all", "text", "links", "code"]
+            .firstIndex(of: filter.lowercased()) ?? 0
+        typeFilter.selectedSegment = segment
+        typeFilter.performClick(nil)
     }
 #endif
 
@@ -158,11 +178,10 @@ final class ClipboardPanelController: NSWindowController,
         listHeading.spacing = 2
         let title = NSTextField(labelWithString: "History")
         title.font = .systemFont(ofSize: 19, weight: .semibold)
-        let subtitle = NSTextField(labelWithString: "Last 7 days · local to this Mac")
-        subtitle.font = .systemFont(ofSize: 11)
-        subtitle.textColor = .secondaryLabelColor
+        historySubtitle.font = .systemFont(ofSize: 11)
+        historySubtitle.textColor = .secondaryLabelColor
         listHeading.addArrangedSubview(title)
-        listHeading.addArrangedSubview(subtitle)
+        listHeading.addArrangedSubview(historySubtitle)
         listStack.addArrangedSubview(listHeading)
         listHeading.widthAnchor.constraint(
             equalTo: listStack.widthAnchor,
@@ -174,6 +193,22 @@ final class ClipboardPanelController: NSWindowController,
         searchField.sendsSearchStringImmediately = true
         listStack.addArrangedSubview(searchField)
         searchField.widthAnchor.constraint(
+            equalTo: listStack.widthAnchor,
+            constant: -28
+        ).isActive = true
+
+        typeFilter.segmentCount = 4
+        for (segment, label) in ["All", "Text", "Links", "Code"].enumerated() {
+            typeFilter.setLabel(label, forSegment: segment)
+        }
+        typeFilter.segmentStyle = .rounded
+        typeFilter.trackingMode = .selectOne
+        typeFilter.selectedSegment = 0
+        typeFilter.target = self
+        typeFilter.action = #selector(typeFilterChanged)
+        typeFilter.setAccessibilityLabel("Filter history by content type")
+        listStack.addArrangedSubview(typeFilter)
+        typeFilter.widthAnchor.constraint(
             equalTo: listStack.widthAnchor,
             constant: -28
         ).isActive = true
@@ -198,6 +233,22 @@ final class ClipboardPanelController: NSWindowController,
         tableView.delegate = self
         tableView.target = self
         tableView.doubleAction = #selector(copySelected)
+        let contextMenu = NSMenu()
+        let copyItem = NSMenuItem(
+            title: "Copy Selected",
+            action: #selector(copySelected),
+            keyEquivalent: ""
+        )
+        copyItem.target = self
+        contextMenu.addItem(copyItem)
+        let deleteItem = NSMenuItem(
+            title: "Delete Selected…",
+            action: #selector(deleteSelected),
+            keyEquivalent: ""
+        )
+        deleteItem.target = self
+        contextMenu.addItem(deleteItem)
+        tableView.menu = contextMenu
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("clipboard"))
         column.resizingMask = .autoresizingMask
         column.width = 312
@@ -264,8 +315,14 @@ final class ClipboardPanelController: NSWindowController,
 
         copyButton.target = self
         copyButton.action = #selector(copySelected)
-        copyButton.keyEquivalent = "\r"
-        copyButton.bezelStyle = .rounded
+        copyButton.bezelStyle = .texturedRounded
+        copyButton.title = ""
+        copyButton.image = NSImage(
+            systemSymbolName: "doc.on.doc",
+            accessibilityDescription: "Copy selected clips"
+        )
+        copyButton.toolTip = "Copy selected clips"
+        copyButton.setAccessibilityLabel("Copy selected clips")
         deleteButton.target = self
         deleteButton.action = #selector(deleteSelected)
         deleteButton.bezelStyle = .texturedRounded
@@ -442,6 +499,20 @@ final class ClipboardPanelController: NSWindowController,
         statusLabel.stringValue = "History refreshed"
     }
 
+    @objc private func typeFilterChanged() {
+        switch typeFilter.selectedSegment {
+        case 1:
+            contentTypeFilter = .text
+        case 2:
+            contentTypeFilter = .url
+        case 3:
+            contentTypeFilter = .code
+        default:
+            contentTypeFilter = nil
+        }
+        applyFilter()
+    }
+
     @objc private func openArchive() {
         NSWorkspace.shared.open(archiveRoot)
     }
@@ -489,7 +560,12 @@ final class ClipboardPanelController: NSWindowController,
     }
 
     private func reload() {
-        let since = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
+        historySubtitle.stringValue = "\(historyWindow.displayName) · local to this Mac"
+        let since = Calendar.current.date(
+            byAdding: .day,
+            value: -historyWindow.dayCount,
+            to: Date()
+        ) ?? Date()
         events = (try? reader.recentItems(since: since, limit: recentItemLimit)) ?? []
         applyFilter()
     }
@@ -499,15 +575,17 @@ final class ClipboardPanelController: NSWindowController,
         let query = searchField.stringValue
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
-        if query.isEmpty {
-            filteredEvents = events
-        } else {
-            filteredEvents = events.filter { event in
-                [event.contentPreview, event.sourceApp.name, event.contentType.rawValue]
-                    .joined(separator: " ")
-                    .lowercased()
-                    .contains(query)
-            }
+        filteredEvents = events.filter { event in
+            let matchesType = contentTypeFilter.map { event.contentType == $0 } ?? true
+            let matchesQuery = query.isEmpty || [
+                event.contentPreview,
+                event.sourceApp.name,
+                event.contentType.rawValue
+            ]
+            .joined(separator: " ")
+            .lowercased()
+            .contains(query)
+            return matchesType && matchesQuery
         }
         tableView.reloadData()
         if let previousID,
@@ -599,7 +677,8 @@ final class ClipboardPanelController: NSWindowController,
     private func updateStatus() {
         let selectedCount = tableView.selectedRowIndexes.count
         let total = filteredEvents.count
-        let base = searchField.stringValue.isEmpty
+        let isFiltered = !searchField.stringValue.isEmpty || contentTypeFilter != nil
+        let base = !isFiltered
             ? "\(total) clip\(total == 1 ? "" : "s")"
             : "\(total) match\(total == 1 ? "" : "es")"
         statusLabel.stringValue = selectedCount > 1

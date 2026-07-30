@@ -94,8 +94,8 @@ raw/YYYY/MM/YYYY-MM-DD_large-items/
 ```
 
 The event record holds a relative body path, content hash, preview, source-app
-metadata, size counts, privacy label, allowed local uses, and the seven-day UI
-visibility timestamp.
+metadata, size counts, privacy label, allowed local uses, and the original
+seven-day UI visibility timestamp retained for archive-format compatibility.
 
 Blocked events retain timestamp, source-app metadata, and a machine-readable
 reason. They do not include clipboard text.
@@ -112,9 +112,12 @@ files use mode `0600`.
 
 ## Search And Retention
 
-The menu and clipboard window load recent records from the last seven days. The
-window filters the loaded event preview/source/type metadata; it does not search
-the full archive or large-body contents.
+The clipboard window loads recent records from the user-selected working
+window: 1, 7, 14, or 30 days. Its in-memory filters combine a search query with
+All, Text, Links, or Code content-type selection. These controls filter loaded
+event preview/source/type metadata; they do not search the full archive or
+large-body contents. The menu's five quick-copy items remain a short recent
+view.
 
 The CLI's archive search scans NDJSON plus contained body files. The separate
 SQLite FTS index is derived data and stores searchable content in plaintext.
@@ -129,9 +132,9 @@ atomically replaces the prior index only after success. An owner-only
 cross-process lock serializes rebuild, upsert, and deletion operations so an
 external repair cannot replace the database during a capture update.
 
-The seven-day window is a display boundary, not a deletion policy. Storage
-modes can retain 10 items, 50 items, or the full archive. The limited modes
-physically prune older content after accepted captures.
+The selected history window is a display boundary, not a deletion policy.
+Storage modes can retain 10 items, 50 items, or the full archive. The limited
+modes physically prune older content after accepted captures.
 
 ## Privacy And Trust Boundaries
 

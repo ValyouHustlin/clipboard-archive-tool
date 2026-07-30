@@ -306,6 +306,7 @@ do {
         try expect(settings.archiveEnabled, "older settings should default archive tracking on")
         try expect(settings.recentItemLimit == 50, "older settings should default visible item count")
         try expect(settings.retentionMode == .unlimited, "older archive-enabled settings should default to full archive")
+        try expect(settings.historyWindow == .sevenDays, "older settings should default to a seven-day history window")
     }
 
     try run("settings decode archive-off files as recent-only") {

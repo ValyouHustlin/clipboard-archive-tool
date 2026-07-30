@@ -2,9 +2,11 @@
 
 ## Unreleased - 2026-07-29
 
-- Rebuilt the seven-day history window as a searchable split view with rich
+- Rebuilt the history window as a searchable split view with rich
   source/type/time rows, a readable full-content detail pane, multi-selection,
   and clearer copy/delete feedback.
+- Added a configurable 1/7/14/30-day history window, Text/Links/Code filters,
+  and Copy/Delete context-menu actions.
 - Rebalanced the history layout after daily-use review: search and clip status
   now live in a true sidebar, rows align consistently, actions stay with the
   selected clip, and preview height adapts to the amount of content instead of
@@ -13,8 +15,9 @@
   Pause, and Settings actions; moved occasional controls under Maintenance.
 - Reworked first-run setup around a clear local-privacy explanation and three
   understandable retention choices.
-- Reworked Settings into focused capture, timing, exclusion, and local-storage
-  sections.
+- Reworked Settings into a branded, color-coded surface with an app mark,
+  version/build information, properly padded cards, and focused capture,
+  retention, timeline, exclusion, and local-storage sections.
 - Added a debug-only, `/tmp`-guarded synthetic UI fixture and snapshot path so
   the app can be visually tested without opening a real clipboard archive.
 - Kept synthetic UI snapshots from activating the debug app or stealing
@@ -42,7 +45,8 @@
 - Corrected future-date health counts and day-scoped manifest counts.
 - Made SQLite index replacement atomic and failure-preserving.
 - Added isolated settings/lock roots for safe development and UI fixtures.
-- Clarified the seven-day UI search boundary.
+- Clarified that the configurable History window is a display boundary, not a
+  deletion policy.
 - Hardened packaging, checksum verification, update rollback, and live-instance
   guards without changing the installed instance.
 

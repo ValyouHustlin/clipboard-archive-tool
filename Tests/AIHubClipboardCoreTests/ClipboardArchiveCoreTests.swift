@@ -140,6 +140,7 @@ struct ClipboardArchiveCoreTests {
 
         #expect(!settings.archiveEnabled)
         #expect(settings.retentionMode == .recent50)
+        #expect(settings.historyWindow == .sevenDays)
     }
 
     @Test
@@ -618,6 +619,17 @@ struct ClipboardArchiveCoreTests {
         #expect(settings.archiveEnabled)
         #expect(settings.retentionMode == .unlimited)
         #expect(settings.hasCompletedOnboarding)
+        #expect(settings.historyWindow == .sevenDays)
+    }
+
+    @Test
+    func testSettingsRoundTripHistoryWindow() throws {
+        let original = ClipboardSettings(historyWindow: .thirtyDays)
+        let encoded = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(ClipboardSettings.self, from: encoded)
+
+        #expect(decoded.historyWindow == .thirtyDays)
+        #expect(decoded.historyWindow.dayCount == 30)
     }
 
     @Test

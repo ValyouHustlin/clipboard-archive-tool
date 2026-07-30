@@ -15,9 +15,9 @@ ordinary Mac users still needs Developer ID signing/notarization and a tested
 GitHub Release artifact; source builds and explicitly trusted unsigned builds
 remain viable for technical users.
 
-The installed build has run continuously for 22 days and archive metadata
-showed current writes. That is useful durability evidence, not external product
-validation.
+An earlier 2026-07-29 review observed a continuously running installed build
+and current archive-write metadata. That is useful durability evidence, not
+external product validation; the UI pass below did not re-read that state.
 
 No clipboard record or export content was read, printed, searched, sampled, or
 summarized for this review. Live checks were limited to process state, settings
@@ -55,18 +55,51 @@ archive/search/privacy check used synthetic fixtures authored by this lane.
 - Clipboard-mutating stress scripts refuse to run while a Clipboard Archive
   process exists unless a deliberate override is supplied.
 - The history window is now the product's home surface: rich recent rows,
-  in-window search, full-content detail, multi-select copy, and local deletion.
+  in-window search, Text/Links/Code filters, full-content detail, multi-select
+  copy, local deletion, and a configurable 1/7/14/30-day working window.
 - Menu search now focuses the history window instead of opening a second modal
   search flow; the menu shows five quick-copy clips and moves occasional
   controls under Maintenance.
 - First-run and Settings were rewritten around understandable privacy,
-  retention, exclusion, and local-storage choices.
+  retention, timeline, exclusion, and local-storage choices. Settings now has
+  a branded header, app/build version, color-coded sections, and explicit inner
+  card padding.
 - Debug UI automation refuses non-`/tmp` archive/support roots and authors only
   synthetic fixtures.
 
 ## Verification Receipts
 
-Final UI-polish test run:
+Current settings/history redesign test run:
+
+```text
+/usr/bin/xcrun swift build
+Build complete! (1.82s)
+
+/usr/bin/xcrun swift test
+✔ Test testSettingsRoundTripHistoryWindow() passed after 0.003 seconds.
+✔ Suite "Clipboard Archive Core" passed after 0.239 seconds.
+✔ Test run with 26 tests in 1 suite passed after 0.239 seconds.
+
+/usr/bin/xcrun swift run clipboard-archive-checks
+26 named checks printed "ok"
+all checks passed
+
+./scripts/validate-release.sh releases/ClipboardArchive-0.1.2-macos-arm64
+release validation ok
+
+./scripts/check-local-only.sh releases/ClipboardArchive-0.1.2-macos-arm64
+local-only check ok
+
+./scripts/test-install-rollback.sh releases/ClipboardArchive-0.1.2-macos-arm64
+install rollback test ok
+```
+
+The exact complete `swift test` output was captured in the 2026-07-29 lane
+receipt. The run includes the legacy seven-day default and a persisted
+30-day round trip in addition to the privacy, containment, redaction, health,
+manifest, and index tests.
+
+Historical baseline UI-polish test run:
 
 ```text
 /usr/bin/xcrun swift test
@@ -336,6 +369,18 @@ The 50-capture synthetic burst produced 50 unique index rows, left
 clipboard value or real archive content was used.
 
 ## UI Observation
+
+The final Settings redesign rendered at 860×660 points from isolated synthetic
+settings. Visual inspection confirmed an app mark, development/version badge,
+blue brand header, color-coded Capture, Exclusions, History, and Storage cards,
+18-point card insets, and a persistent action footer. The previously
+wall-aligned helper copy now sits inside the card padding.
+
+The final History render used the same isolated five-clip synthetic fixture.
+An in-process `NSSegmentedControl.performClick` selected Links; the visible
+result showed one URL match, the selected Links segment, a 14-day subtitle, and
+folder/delete/copy actions with accessible tooltips. The debug app did not
+activate; `ghostty` was observed as the frontmost application after the render.
 
 On 2026-07-29, all three primary surfaces were driven in isolated debug
 instances using separate `/tmp` archive, index, settings, lock, and preference

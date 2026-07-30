@@ -17,6 +17,7 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
 
     private let archiveEnabledButton = NSButton(checkboxWithTitle: "Capture clipboard history", target: nil, action: nil)
     private let retentionModePopup = NSPopUpButton()
+    private let historyWindowPopup = NSPopUpButton()
     private let recentLimitField = NSTextField()
     private let recentLimitStepper = NSStepper()
     private let pollIntervalField = NSTextField()
@@ -31,13 +32,14 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         self.archiveRoot = archiveRoot
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 720, height: 560),
+            contentRect: NSRect(x: 0, y: 0, width: 860, height: 660),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "Clipboard Archive"
-        window.minSize = NSSize(width: 680, height: 520)
+        window.title = "Clipboard Archive Settings"
+        window.minSize = NSSize(width: 760, height: 560)
+        window.setFrameAutosaveName("ClipboardSettingsWindowV2")
         super.init(window: window)
         buildUI()
         loadSettingsIntoControls()
@@ -64,6 +66,7 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         guard let view = window?.contentView else {
             return
         }
+        view.layoutSubtreeIfNeeded()
         window?.displayIfNeeded()
         guard let representation = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
             return
@@ -81,105 +84,230 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
             return
         }
 
-        let root = NSStackView()
-        root.orientation = .vertical
-        root.alignment = .width
-        root.spacing = 16
-        root.edgeInsets = NSEdgeInsets(top: 22, left: 24, bottom: 20, right: 24)
-        root.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(root)
-        NSLayoutConstraint.activate([
-            root.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            root.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            root.topAnchor.constraint(equalTo: contentView.topAnchor),
-            root.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
-        ])
-
-        let headingText = NSStackView()
-        headingText.orientation = .vertical
-        headingText.spacing = 3
-        let title = NSTextField(labelWithString: "Clipboard Archive")
-        title.font = .systemFont(ofSize: 22, weight: .semibold)
-        let subtitle = NSTextField(labelWithString: "Choose what gets remembered—and what never should.")
-        subtitle.font = .systemFont(ofSize: 12)
-        subtitle.textColor = .secondaryLabelColor
-        headingText.addArrangedSubview(title)
-        headingText.addArrangedSubview(subtitle)
-        root.addArrangedSubview(headingText)
-
         configureGeneralControls()
         configurePrivacyControls()
+
+        let header = brandedHeader()
+        let footer = actionFooter()
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+
+        let document = NSView()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = document
 
         let columns = NSStackView()
         columns.orientation = .horizontal
         columns.distribution = .fillEqually
         columns.alignment = .top
-        columns.spacing = 14
+        columns.spacing = 18
+        columns.translatesAutoresizingMaskIntoConstraints = false
+        document.addSubview(columns)
 
-        let generalColumn = NSStackView()
-        generalColumn.orientation = .vertical
-        generalColumn.spacing = 14
-        generalColumn.addArrangedSubview(
-            sectionCard(
-                title: "Remember Clipboard Text",
-                subtitle: "Accepted text stays on this Mac. Pause anytime from the menu bar.",
-                views: [
-                    archiveEnabledButton,
-                    formRow(label: "Keep", control: retentionModePopup),
-                    formRow(label: "Clips loaded", control: recentLimitField, trailing: recentLimitStepper)
-                ]
-            )
-        )
-        generalColumn.addArrangedSubview(
-            sectionCard(
-                title: "Capture Timing",
-                subtitle: "Lower values notice new copies sooner but wake the app more often.",
-                views: [
-                    formRow(label: "Check every", control: pollIntervalField, suffix: "seconds")
-                ]
-            )
+        let captureCard = sectionCard(
+            title: "Capture & Retention",
+            subtitle: "Control what Clipboard Archive remembers and how long stored content remains.",
+            symbol: "doc.on.clipboard.fill",
+            tint: .systemBlue,
+            views: [
+                archiveEnabledButton,
+                separatorView(),
+                settingRow(
+                    title: "Archive retention",
+                    detail: "Older content is pruned automatically in limited modes.",
+                    control: retentionModePopup
+                ),
+                settingRow(
+                    title: "Capture frequency",
+                    detail: "Lower values notice copies sooner.",
+                    control: intervalControl()
+                )
+            ]
         )
 
-        let privacyViews = privacyControls()
+        let historyCard = sectionCard(
+            title: "History Window",
+            subtitle: "Choose the timeline shown in History. This changes the working view, not your archive.",
+            symbol: "clock.arrow.circlepath",
+            tint: .systemPurple,
+            views: [
+                settingRow(
+                    title: "Show clips from",
+                    detail: "Adjust the timeline available for browsing and filtering.",
+                    control: historyWindowPopup
+                ),
+                settingRow(
+                    title: "Maximum clips loaded",
+                    detail: "Limits memory use when opening History.",
+                    control: recentLimitControl()
+                )
+            ]
+        )
+
         let privacyCard = sectionCard(
-            title: "Never Capture From These Apps",
-            subtitle: "Password managers are blocked automatically. Add other sensitive apps by bundle identifier.",
-            views: privacyViews
+            title: "Private App Exclusions",
+            subtitle: "Password managers are blocked automatically. Add any other app by bundle identifier.",
+            symbol: "hand.raised.fill",
+            tint: .systemRed,
+            views: privacyControls()
         )
-        columns.addArrangedSubview(generalColumn)
-        columns.addArrangedSubview(privacyCard)
-        root.addArrangedSubview(columns)
 
-        let storage = NSStackView()
-        storage.orientation = .horizontal
-        storage.spacing = 8
-        storage.alignment = .centerY
-        let localLabel = NSTextField(labelWithString: "Stored locally")
-        localLabel.font = .systemFont(ofSize: 11, weight: .semibold)
-        let path = NSTextField(labelWithString: "Everything stays in your local archive.")
-        path.font = .systemFont(ofSize: 11)
-        path.textColor = .secondaryLabelColor
-        path.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        storage.addArrangedSubview(localLabel)
-        storage.addArrangedSubview(path)
-        storage.addArrangedSubview(
-            NSButton(title: "Show in Finder", target: self, action: #selector(showArchiveInFinder))
+        let storageCard = sectionCard(
+            title: "Local Storage",
+            subtitle: "Accepted clips and the search index stay on this Mac in owner-only files.",
+            symbol: "internaldrive.fill",
+            tint: .systemGreen,
+            views: [storageControls()]
         )
-        root.addArrangedSubview(storage)
+
+        let leftColumn = NSStackView()
+        leftColumn.orientation = .vertical
+        leftColumn.alignment = .width
+        leftColumn.spacing = 18
+        leftColumn.addArrangedSubview(captureCard)
+        leftColumn.addArrangedSubview(historyCard)
+
+        let rightColumn = NSStackView()
+        rightColumn.orientation = .vertical
+        rightColumn.alignment = .width
+        rightColumn.spacing = 18
+        rightColumn.addArrangedSubview(privacyCard)
+        rightColumn.addArrangedSubview(storageCard)
+
+        columns.addArrangedSubview(leftColumn)
+        columns.addArrangedSubview(rightColumn)
+
+        header.translatesAutoresizingMaskIntoConstraints = false
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        footer.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(header)
+        contentView.addSubview(scroll)
+        contentView.addSubview(footer)
+        NSLayoutConstraint.activate([
+            header.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            header.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            header.topAnchor.constraint(equalTo: contentView.topAnchor),
+            header.heightAnchor.constraint(equalToConstant: 112),
+
+            scroll.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: header.bottomAnchor),
+            scroll.bottomAnchor.constraint(equalTo: footer.topAnchor),
+
+            footer.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            footer.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            footer.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            footer.heightAnchor.constraint(equalToConstant: 64),
+
+            document.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
+            document.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
+            document.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+
+            columns.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 26),
+            columns.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -26),
+            columns.topAnchor.constraint(equalTo: document.topAnchor, constant: 24),
+            columns.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -24)
+        ])
+    }
+
+    private func brandedHeader() -> NSView {
+        let header = NSView()
+        header.wantsLayer = true
+        header.layer?.backgroundColor = NSColor.controlAccentColor
+            .withAlphaComponent(0.09)
+            .cgColor
+
+        let mark = iconTile(
+            symbol: "doc.on.clipboard.fill",
+            tint: .systemBlue,
+            size: 54
+        )
+
+        let eyebrow = NSTextField(labelWithString: "SETTINGS")
+        eyebrow.font = .systemFont(ofSize: 10, weight: .bold)
+        eyebrow.textColor = .controlAccentColor
+        let title = NSTextField(labelWithString: "Clipboard Archive")
+        title.font = .systemFont(ofSize: 23, weight: .bold)
+        let subtitle = NSTextField(
+            labelWithString: "Shape your local clipboard memory, timeline, and privacy boundaries."
+        )
+        subtitle.font = .systemFont(ofSize: 12)
+        subtitle.textColor = .secondaryLabelColor
+
+        let text = NSStackView(views: [eyebrow, title, subtitle])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 3
+
+        let version = NSTextField(labelWithString: versionText())
+        version.font = .monospacedSystemFont(ofSize: 10, weight: .medium)
+        version.textColor = .secondaryLabelColor
+        version.drawsBackground = true
+        version.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.75)
+        version.isBezeled = false
+        version.isEditable = false
+        version.alignment = .center
+        version.wantsLayer = true
+        version.layer?.cornerRadius = 8
+        version.widthAnchor.constraint(greaterThanOrEqualToConstant: 124).isActive = true
+        version.heightAnchor.constraint(equalToConstant: 28).isActive = true
+
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 16
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.addArrangedSubview(mark)
+        row.addArrangedSubview(text)
+        row.addArrangedSubview(NSView())
+        row.addArrangedSubview(version)
+        header.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 28),
+            row.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -28),
+            row.centerYAnchor.constraint(equalTo: header.centerYAnchor)
+        ])
+        return header
+    }
+
+    private func actionFooter() -> NSView {
+        let footer = NSView()
+        footer.wantsLayer = true
+        footer.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+
+        let separator = separatorView()
+        separator.translatesAutoresizingMaskIntoConstraints = false
+        footer.addSubview(separator)
 
         let buttons = NSStackView()
         buttons.orientation = .horizontal
-        buttons.spacing = 8
+        buttons.spacing = 9
         buttons.alignment = .centerY
-        statusLabel.font = .systemFont(ofSize: 11)
+        buttons.translatesAutoresizingMaskIntoConstraints = false
+        statusLabel.font = .systemFont(ofSize: 11, weight: .medium)
         statusLabel.textColor = .secondaryLabelColor
         buttons.addArrangedSubview(statusLabel)
         buttons.addArrangedSubview(NSView())
         buttons.addArrangedSubview(NSButton(title: "Cancel", target: self, action: #selector(cancel)))
         let saveButton = NSButton(title: "Save Changes", target: self, action: #selector(save))
         saveButton.keyEquivalent = "\r"
+        saveButton.bezelStyle = .rounded
+        saveButton.contentTintColor = .controlAccentColor
         buttons.addArrangedSubview(saveButton)
-        root.addArrangedSubview(buttons)
+        footer.addSubview(buttons)
+
+        NSLayoutConstraint.activate([
+            separator.leadingAnchor.constraint(equalTo: footer.leadingAnchor),
+            separator.trailingAnchor.constraint(equalTo: footer.trailingAnchor),
+            separator.topAnchor.constraint(equalTo: footer.topAnchor),
+            buttons.leadingAnchor.constraint(equalTo: footer.leadingAnchor, constant: 28),
+            buttons.trailingAnchor.constraint(equalTo: footer.trailingAnchor, constant: -28),
+            buttons.centerYAnchor.constraint(equalTo: footer.centerYAnchor)
+        ])
+        return footer
     }
 
     private func configureGeneralControls() {
@@ -192,10 +320,17 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         }
         retentionModePopup.target = self
         retentionModePopup.action = #selector(retentionModeChanged)
+        retentionModePopup.setAccessibilityLabel("Archive retention")
+        for historyWindow in ClipboardHistoryWindow.allCases {
+            historyWindowPopup.addItem(withTitle: historyWindow.displayName)
+            historyWindowPopup.lastItem?.representedObject = historyWindow.rawValue
+        }
+        historyWindowPopup.setAccessibilityLabel("History time range")
         recentLimitField.alignment = .right
         recentLimitField.formatter = integerFormatter()
         recentLimitField.target = self
         recentLimitField.action = #selector(recentLimitChanged)
+        recentLimitField.setAccessibilityLabel("Maximum clips loaded")
         recentLimitStepper.minValue = 5
         recentLimitStepper.maxValue = Double(ClipboardSettings.maximumRecentItemLimit)
         recentLimitStepper.increment = 50
@@ -203,17 +338,20 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         recentLimitStepper.action = #selector(recentStepperChanged)
         pollIntervalField.alignment = .right
         pollIntervalField.formatter = decimalFormatter()
+        pollIntervalField.setAccessibilityLabel("Capture frequency in seconds")
     }
 
     private func configurePrivacyControls() {
         excludedBundleField.placeholderString = "com.example.sensitive-app"
         excludedBundleField.target = self
         excludedBundleField.action = #selector(addExcludedBundle)
+        excludedBundleField.setAccessibilityLabel("App bundle identifier to exclude")
         excludedBundlesList.headerView = nil
         excludedBundlesList.rowHeight = 28
         excludedBundlesList.usesAlternatingRowBackgroundColors = true
         excludedBundlesList.dataSource = self
         excludedBundlesList.delegate = self
+        excludedBundlesList.setAccessibilityLabel("Excluded applications")
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("bundle"))
         column.resizingMask = .autoresizingMask
         excludedBundlesList.addTableColumn(column)
@@ -224,17 +362,17 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         let addRow = NSStackView()
         addRow.orientation = .horizontal
         addRow.spacing = 7
+        addRow.alignment = .centerY
         addRow.addArrangedSubview(excludedBundleField)
-        addRow.addArrangedSubview(
-            NSButton(title: "Add", target: self, action: #selector(addExcludedBundle))
-        )
+        let addButton = NSButton(title: "Add App", target: self, action: #selector(addExcludedBundle))
+        addRow.addArrangedSubview(addButton)
 
         let excludedScroll = NSScrollView()
         excludedScroll.hasVerticalScroller = true
         excludedScroll.borderType = .bezelBorder
         excludedBundlesList.frame = excludedScroll.contentView.bounds
         excludedScroll.documentView = excludedBundlesList
-        excludedScroll.heightAnchor.constraint(equalToConstant: 150).isActive = true
+        excludedScroll.heightAnchor.constraint(equalToConstant: 128).isActive = true
 
         let remove = NSButton(
             title: "Remove Selected",
@@ -245,42 +383,199 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         return [addRow, excludedScroll, remove]
     }
 
-    private func sectionCard(title: String, subtitle: String, views: [NSView]) -> NSView {
+    private func sectionCard(
+        title: String,
+        subtitle: String,
+        symbol: String,
+        tint: NSColor,
+        views: [NSView]
+    ) -> NSView {
         let card = NSVisualEffectView()
         card.material = .contentBackground
         card.blendingMode = .withinWindow
         card.state = .active
         card.wantsLayer = true
-        card.layer?.cornerRadius = 10
+        card.layer?.cornerRadius = 12
+        card.layer?.borderWidth = 1
+        card.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.45).cgColor
 
         let stack = NSStackView()
         stack.orientation = .vertical
-        stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+        stack.alignment = .leading
+        stack.spacing = 13
         stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let heading = NSStackView()
+        heading.orientation = .horizontal
+        heading.alignment = .centerY
+        heading.spacing = 11
+        let headingIcon = iconTile(symbol: symbol, tint: tint, size: 38)
+        let headingText = NSStackView()
+        headingText.orientation = .vertical
+        headingText.alignment = .leading
+        headingText.spacing = 3
         let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
+        titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
         let subtitleLabel = wrappingLabel(subtitle)
         subtitleLabel.font = .systemFont(ofSize: 11)
         subtitleLabel.textColor = .secondaryLabelColor
-        stack.addArrangedSubview(titleLabel)
-        stack.addArrangedSubview(subtitleLabel)
+        headingText.addArrangedSubview(titleLabel)
+        headingText.addArrangedSubview(subtitleLabel)
+        heading.addArrangedSubview(headingIcon)
+        heading.addArrangedSubview(headingText)
+        stack.addArrangedSubview(heading)
         for view in views {
             stack.addArrangedSubview(view)
         }
         card.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: card.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: card.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: card.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: card.bottomAnchor)
+            stack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 18),
+            stack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -18),
+            stack.topAnchor.constraint(equalTo: card.topAnchor, constant: 18),
+            stack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -18),
+            heading.widthAnchor.constraint(equalTo: stack.widthAnchor)
         ])
+        for view in views {
+            view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+        subtitleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return card
+    }
+
+    private func settingRow(title: String, detail: String, control: NSView) -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 12
+
+        let labels = NSStackView()
+        labels.orientation = .vertical
+        labels.alignment = .leading
+        labels.spacing = 2
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        let detailLabel = wrappingLabel(detail)
+        detailLabel.font = .systemFont(ofSize: 10)
+        detailLabel.textColor = .tertiaryLabelColor
+        labels.addArrangedSubview(titleLabel)
+        labels.addArrangedSubview(detailLabel)
+        labels.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        row.addArrangedSubview(labels)
+        row.addArrangedSubview(NSView())
+        row.addArrangedSubview(control)
+        return row
+    }
+
+    private func recentLimitControl() -> NSView {
+        let controls = NSStackView()
+        controls.orientation = .horizontal
+        controls.alignment = .centerY
+        controls.spacing = 5
+        recentLimitField.widthAnchor.constraint(equalToConstant: 68).isActive = true
+        controls.addArrangedSubview(recentLimitField)
+        controls.addArrangedSubview(recentLimitStepper)
+        return controls
+    }
+
+    private func intervalControl() -> NSView {
+        let controls = NSStackView()
+        controls.orientation = .horizontal
+        controls.alignment = .centerY
+        controls.spacing = 6
+        pollIntervalField.widthAnchor.constraint(equalToConstant: 64).isActive = true
+        let seconds = NSTextField(labelWithString: "sec")
+        seconds.font = .systemFont(ofSize: 11)
+        seconds.textColor = .secondaryLabelColor
+        controls.addArrangedSubview(pollIntervalField)
+        controls.addArrangedSubview(seconds)
+        return controls
+    }
+
+    private func storageControls() -> NSView {
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 9
+
+        let privacy = NSStackView()
+        privacy.orientation = .horizontal
+        privacy.alignment = .centerY
+        privacy.spacing = 7
+        let lock = NSImageView()
+        lock.image = NSImage(
+            systemSymbolName: "lock.fill",
+            accessibilityDescription: "Owner-only local storage"
+        )
+        lock.contentTintColor = .systemGreen
+        let privacyText = NSTextField(labelWithString: "Owner-only files · no cloud sync")
+        privacyText.font = .systemFont(ofSize: 11, weight: .medium)
+        privacy.addArrangedSubview(lock)
+        privacy.addArrangedSubview(privacyText)
+
+        let path = wrappingLabel(archiveRoot.path)
+        path.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
+        path.textColor = .tertiaryLabelColor
+        let reveal = NSButton(
+            title: "Show Archive in Finder",
+            target: self,
+            action: #selector(showArchiveInFinder)
+        )
+        stack.addArrangedSubview(privacy)
+        stack.addArrangedSubview(path)
+        stack.addArrangedSubview(reveal)
+        return stack
+    }
+
+    private func iconTile(symbol: String, tint: NSColor, size: CGFloat) -> NSView {
+        let tile = NSView()
+        tile.wantsLayer = true
+        tile.layer?.backgroundColor = tint.cgColor
+        tile.layer?.cornerRadius = size * 0.24
+        tile.translatesAutoresizingMaskIntoConstraints = false
+
+        let image = NSImageView()
+        image.image = NSImage(
+            systemSymbolName: symbol,
+            accessibilityDescription: nil
+        )
+        image.contentTintColor = .white
+        image.symbolConfiguration = NSImage.SymbolConfiguration(
+            pointSize: size * 0.42,
+            weight: .semibold
+        )
+        image.translatesAutoresizingMaskIntoConstraints = false
+        tile.addSubview(image)
+        NSLayoutConstraint.activate([
+            tile.widthAnchor.constraint(equalToConstant: size),
+            tile.heightAnchor.constraint(equalToConstant: size),
+            image.centerXAnchor.constraint(equalTo: tile.centerXAnchor),
+            image.centerYAnchor.constraint(equalTo: tile.centerYAnchor)
+        ])
+        return tile
+    }
+
+    private func separatorView() -> NSView {
+        let separator = NSView()
+        separator.wantsLayer = true
+        separator.layer?.backgroundColor = NSColor.separatorColor.cgColor
+        separator.heightAnchor.constraint(equalToConstant: 1).isActive = true
+        return separator
+    }
+
+    private func versionText() -> String {
+        let info = Bundle.main.infoDictionary
+        guard let version = info?["CFBundleShortVersionString"] as? String else {
+            return "Development build"
+        }
+        let build = info?["CFBundleVersion"] as? String
+        return build.map { "Version \(version) (\($0))" } ?? "Version \(version)"
     }
 
     private func loadSettingsIntoControls() {
         archiveEnabledButton.state = settings.archiveEnabled ? .on : .off
         selectRetentionMode(settings.retentionMode)
+        selectHistoryWindow(settings.historyWindow)
         recentLimitField.integerValue = settings.recentItemLimit
         recentLimitStepper.integerValue = settings.recentItemLimit
         pollIntervalField.doubleValue = settings.pollIntervalSeconds
@@ -352,6 +647,7 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         settings.archiveEnabled = archiveEnabledButton.state == .on
         settings.retentionMode = mode
         settings.recentItemLimit = limit
+        settings.historyWindow = selectedHistoryWindow()
         settings.pollIntervalSeconds = poll
         settings.excludedBundleIdentifiers = Array(Set(excludedBundleIdentifiers)).sorted()
         settings.hasCompletedOnboarding = true
@@ -364,35 +660,6 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         } catch {
             statusLabel.stringValue = "Save failed"
         }
-    }
-
-    private func formRow(
-        label: String,
-        control: NSControl,
-        trailing: NSView? = nil,
-        suffix: String? = nil
-    ) -> NSStackView {
-        let row = NSStackView()
-        row.orientation = .horizontal
-        row.spacing = 7
-        row.alignment = .centerY
-        let text = NSTextField(labelWithString: label)
-        text.alignment = .right
-        text.textColor = .secondaryLabelColor
-        text.widthAnchor.constraint(equalToConstant: 82).isActive = true
-        control.widthAnchor.constraint(equalToConstant: control is NSPopUpButton ? 150 : 70).isActive = true
-        row.addArrangedSubview(text)
-        row.addArrangedSubview(control)
-        if let trailing {
-            row.addArrangedSubview(trailing)
-        }
-        if let suffix {
-            let suffixLabel = NSTextField(labelWithString: suffix)
-            suffixLabel.textColor = .secondaryLabelColor
-            row.addArrangedSubview(suffixLabel)
-        }
-        row.addArrangedSubview(NSView())
-        return row
     }
 
     private func selectedRetentionMode() -> ClipboardRetentionMode {
@@ -409,6 +676,23 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
             return
         }
         retentionModePopup.selectItem(at: ClipboardRetentionMode.allCases.firstIndex(of: .unlimited) ?? 0)
+    }
+
+    private func selectedHistoryWindow() -> ClipboardHistoryWindow {
+        guard let rawValue = historyWindowPopup.selectedItem?.representedObject as? Int,
+              let historyWindow = ClipboardHistoryWindow(rawValue: rawValue) else {
+            return .sevenDays
+        }
+        return historyWindow
+    }
+
+    private func selectHistoryWindow(_ historyWindow: ClipboardHistoryWindow) {
+        for item in historyWindowPopup.itemArray
+            where item.representedObject as? Int == historyWindow.rawValue {
+            historyWindowPopup.select(item)
+            return
+        }
+        historyWindowPopup.selectItem(at: 1)
     }
 
     private func updateRetentionStatus() {

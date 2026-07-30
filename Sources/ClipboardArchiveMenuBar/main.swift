@@ -198,11 +198,13 @@ final class ClipboardMenuBarApp: NSObject,
             panelController = ClipboardPanelController(
                 archiveRoot: archiveRoot,
                 pasteboard: pasteboard,
-                recentItemLimit: settings.recentItemLimit
+                recentItemLimit: settings.recentItemLimit,
+                historyWindow: settings.historyWindow
             )
         }
         panelController?.show(
             recentItemLimit: settings.recentItemLimit,
+            historyWindow: settings.historyWindow,
             focusSearch: focusSearch,
             activate: activate
         )
@@ -283,6 +285,7 @@ final class ClipboardMenuBarApp: NSObject,
             pollIntervalSeconds: 0.2,
             archiveEnabled: false,
             recentItemLimit: 50,
+            historyWindow: .fourteenDays,
             retentionMode: .recent50,
             hasCompletedOnboarding: true
         )
@@ -294,6 +297,9 @@ final class ClipboardMenuBarApp: NSObject,
                 showClipboardWindow(focusSearch: false, activate: false)
                 panelController?.performAutomationSearch(
                     environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_QUERY"] ?? ""
+                )
+                panelController?.performAutomationTypeFilter(
+                    environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_TYPE_FILTER"] ?? "all"
                 )
             } else if screen == "settings" {
                 showSettingsWindow(activate: false)
@@ -312,7 +318,7 @@ final class ClipboardMenuBarApp: NSObject,
             return true
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
             let url = URL(fileURLWithPath: snapshotPath)
             do {
                 switch screen {

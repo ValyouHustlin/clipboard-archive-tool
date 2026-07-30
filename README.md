@@ -6,22 +6,23 @@ clipboard history without sending clipboard contents to cloud services.
 It is intentionally a focused open-source tool, not a hosted service or a
 subscription product. It has two jobs:
 
-1. Keep a calm, searchable 7-day working view in the app.
+1. Keep a calm, searchable working view in the app, configurable from the last
+   24 hours through the last 30 days.
 2. Preserve accepted clipboard events indefinitely in a durable local archive
    that AI agents or local tools can search later.
 
 ## Features
 
 - Native macOS menu bar app.
-- Split-view history window with fast filtering, rich clip rows, full-text
-  preview, multi-select copy, and local delete/redact controls.
+- Split-view history window with search and Text/Links/Code filters, rich clip
+  rows, full-text preview, multi-select copy, and local delete/redact controls.
 - First-run privacy disclosure with capture-off, last-50, or full-archive
   choices before the first item can be stored.
 - Continuous local text clipboard capture.
 - Search, recent items, copy-back, manual delete/redact, pause/resume, and app
   exclusions.
-- Focused settings for capture, retention, history size, polling, and excluded
-  apps.
+- Branded, color-coded settings for capture, retention, a 1/7/14/30-day history
+  window, history size, polling, excluded apps, and local-storage details.
 - Password-manager and credential-like content blocking.
 - Append-oriented NDJSON archive with metadata.
 - Large clipboard bodies stored as separate local files.
