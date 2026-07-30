@@ -20,7 +20,7 @@ for copying to another Mac.
 Validate a staged release before handoff:
 
 ```bash
-./scripts/validate-release.sh releases/ClipboardArchive-0.1.2-macos-arm64
+./scripts/validate-release.sh releases/ClipboardArchive-0.2.0-macos-arm64
 ```
 
 Packaging builds into `.build/clipboard-archive-package/ClipboardArchive.app`;
@@ -38,7 +38,7 @@ ships beside the artifact it does not establish publisher identity.
 ## Versioning
 
 ```bash
-CLIPBOARD_ARCHIVE_VERSION=0.1.1 CLIPBOARD_ARCHIVE_BUILD=2 ./scripts/package-release.sh
+CLIPBOARD_ARCHIVE_VERSION=0.2.0 CLIPBOARD_ARCHIVE_BUILD=2 ./scripts/package-release.sh
 ```
 
 ## Sharing To Another Mac

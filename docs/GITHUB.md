@@ -18,21 +18,21 @@ without adding any network behavior to the installed app.
 From the development Mac:
 
 ```bash
-CLIPBOARD_ARCHIVE_VERSION=0.1.1 CLIPBOARD_ARCHIVE_BUILD=2 ./scripts/package-release.sh
-./scripts/validate-release.sh releases/ClipboardArchive-0.1.1-macos-arm64
+CLIPBOARD_ARCHIVE_VERSION=0.2.0 CLIPBOARD_ARCHIVE_BUILD=2 ./scripts/package-release.sh
+./scripts/validate-release.sh releases/ClipboardArchive-0.2.0-macos-arm64
 ```
 
 Create a GitHub Release tag such as:
 
 ```text
-v0.1.1
+v0.2.0
 ```
 
 Attach these files:
 
 ```text
-releases/ClipboardArchive-0.1.1-macos-arm64.zip
-releases/ClipboardArchive-0.1.1-macos-arm64.tar.gz
+releases/ClipboardArchive-0.2.0-macos-arm64.zip
+releases/ClipboardArchive-0.2.0-macos-arm64.tar.gz
 ```
 
 ## Update Another Mac
@@ -40,8 +40,8 @@ releases/ClipboardArchive-0.1.1-macos-arm64.tar.gz
 Manual file handoff still works:
 
 ```bash
-unzip ClipboardArchive-0.1.1-macos-arm64.zip
-cd ClipboardArchive-0.1.1-macos-arm64
+unzip ClipboardArchive-0.2.0-macos-arm64.zip
+cd ClipboardArchive-0.2.0-macos-arm64
 ./install.sh
 ```
 
@@ -58,7 +58,7 @@ history/settings, and reloads the login item.
 Pinned version:
 
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ValyouHustlin/clipboard-archive-tool/main/scripts/install-latest-github-release.sh)" -- ValyouHustlin/clipboard-archive-tool v0.1.1
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ValyouHustlin/clipboard-archive-tool/main/scripts/install-latest-github-release.sh)" -- ValyouHustlin/clipboard-archive-tool v0.2.0
 ```
 
 The updater downloads the release zip, verifies `SHA256SUMS`, runs the bundled

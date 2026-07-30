@@ -149,7 +149,7 @@ releases/ClipboardArchive-<version>-macos-<arch>.zip
 Versioned build:
 
 ```bash
-CLIPBOARD_ARCHIVE_VERSION=0.1.1 CLIPBOARD_ARCHIVE_BUILD=2 ./scripts/package-release.sh
+CLIPBOARD_ARCHIVE_VERSION=0.2.0 CLIPBOARD_ARCHIVE_BUILD=6 ./scripts/package-release.sh
 ```
 
 See [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md).

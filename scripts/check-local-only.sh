@@ -16,14 +16,16 @@ production_source_matches="$(
     2>/dev/null \
     | rg -v 'github\.com/swiftlang/swift-testing\.git' \
     | rg -v 'https://example\.com/' \
-    | rg -v 'https://github\.com/ValyouHustlin/clipboard-archive-tool/releases' \
+    | rg -v '^[^:]*:[0-9]+: *"https://github\.com/ValyouHustlin/clipboard-archive-tool/releases"$' \
     || true
 )"
 # Allowlist note: the single release-page constant
 # (ClipboardVersionInfo.releasePageURLString) is a display/copy/open-in-
 # browser string for the Settings About section — never fetched by the app.
-# It mirrors the https://example.com/ fixture precedent above; any OTHER
-# URL or network API in production sources still fails this gate.
+# The exemption is ANCHORED to a line that contains NOTHING but the quoted
+# literal (the constant's continuation line), so a future line mixing this
+# URL with real network code still fails the gate. Any OTHER URL or network
+# API in production sources fails as before.
 
 if [ -n "$production_source_matches" ]; then
   echo "local-only check failed: production source references network/update APIs" >&2
