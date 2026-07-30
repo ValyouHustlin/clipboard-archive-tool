@@ -3,6 +3,11 @@ import Foundation
 public struct SecretDetection: Equatable, Sendable {
     public var isSensitive: Bool
     public var flags: [String]
+
+    public init(isSensitive: Bool, flags: [String]) {
+        self.isSensitive = isSensitive
+        self.flags = flags
+    }
 }
 
 public struct SecretDetector: Sendable {

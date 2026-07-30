@@ -108,6 +108,39 @@ public struct ClipboardArchiveReader: Sendable {
         return items
     }
 
+    /// Raw rich body bytes (Slice 6): the image/RTF payload or the spilled
+    /// full file list. Returns nil when the event has no rich body; throws
+    /// on a containment-escaping path (`ClipboardArchivePathError`) — a
+    /// crafted `bodyPath` must never read outside the archive root.
+    public func richBody(for event: StoredClipboardEvent) throws -> Data? {
+        guard let bodyPath = event.richContent?.bodyPath else {
+            return nil
+        }
+        let bodyURL = try ClipboardArchivePath.containedURL(
+            relativePath: bodyPath,
+            archiveRoot: archiveRoot
+        )
+        return try Data(contentsOf: bodyURL)
+    }
+
+    /// The COMPLETE file list for a file-reference event: the inline
+    /// entries, or the spilled `<id>.json` body when the list was truncated
+    /// (falls back to the inline first-100 if the body is unreadable).
+    public func fileList(for event: StoredClipboardEvent) -> [ClipboardRichFileReference] {
+        guard let rich = event.richContent, rich.kind == ClipboardRichContent.fileListKind else {
+            return []
+        }
+        let inline = rich.files ?? []
+        guard rich.filesTruncated == true else {
+            return inline
+        }
+        guard let data = try? richBody(for: event),
+              let full = try? JSONDecoder().decode([ClipboardRichFileReference].self, from: data) else {
+            return inline
+        }
+        return full
+    }
+
     public func content(for event: StoredClipboardEvent) throws -> String {
         if let contentInline = event.contentInline {
             return contentInline

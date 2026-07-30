@@ -117,12 +117,16 @@ final class ClipboardPanelController: NSWindowController,
     /// delegate owns the settings file; the panel never writes it directly).
     private let onGroupDuplicatesChanged: (Bool) -> Void
     private let derivedIndex: ClipboardDerivedIndex
-    /// Shared copy-back path owned by the app delegate
-    /// (`copyToPasteboardWithoutRecapture` in main.swift). It sets the
-    /// pasteboard AND updates the capture dedup state so a copy from this
-    /// window is not re-captured as a new event. The panel must never write
-    /// to the pasteboard directly.
-    private let copyToPasteboard: (String) -> Void
+    /// Shared copy-back paths owned by the app delegate (main.swift). Both
+    /// set the pasteboard AND update the capture dedup state so a copy from
+    /// this window is not re-captured as a new event. The panel must never
+    /// write to the pasteboard directly.
+    /// Event-based (Slice 6): single-clip copies restore original rich
+    /// representations (image bytes, RTF, file URLs, colors, titled links).
+    private let copyEventToPasteboard: (StoredClipboardEvent) -> Void
+    /// Plain-text path: multi-select joins stay plain text (documented —
+    /// joining rich representations has no meaningful pasteboard shape).
+    private let copyPlainTextToPasteboard: (String) -> Void
     private var events: [StoredClipboardEvent] = []
     private var filteredEvents: [StoredClipboardEvent] = []
     private var recentItemLimit: Int
@@ -194,6 +198,15 @@ final class ClipboardPanelController: NSWindowController,
     private let detailTitle = NSTextField(labelWithString: "Select an item")
     private let detailMetadata = NSTextField(labelWithString: "Choose a clip to preview its full text.")
     private let detailTextView = NSTextView()
+    /// Rich detail surfaces (Slice 6): image thumbnails and color swatches
+    /// render here; the text scroll hides while this is visible.
+    private let detailImageView = NSImageView()
+    private let detailScrollView = NSScrollView()
+    /// Generation guard for async thumbnail fetches: only the newest
+    /// generation's completion may touch the image view.
+    private var richDetailGeneration = 0
+    /// True while a thumbnail fetch is in flight (harness settling).
+    private var richDetailPending = false
     private let detailCapturedValue = NSTextField(labelWithString: "—")
     private let detailFormatValue = NSTextField(labelWithString: "—")
     private let detailSizeValue = NSTextField(labelWithString: "—")
@@ -210,7 +223,8 @@ final class ClipboardPanelController: NSWindowController,
         recentItemLimit: Int,
         historyWindow: ClipboardHistoryWindow,
         groupDuplicates: Bool = false,
-        copyToPasteboard: @escaping (String) -> Void,
+        copyEventToPasteboard: @escaping (StoredClipboardEvent) -> Void,
+        copyPlainTextToPasteboard: @escaping (String) -> Void,
         onArchiveMutation: @escaping (ArchiveMutation) -> Void = { _ in },
         onGroupDuplicatesChanged: @escaping (Bool) -> Void = { _ in }
     ) {
@@ -220,7 +234,8 @@ final class ClipboardPanelController: NSWindowController,
         self.annotations = ClipboardAnnotationsStore(archiveRoot: archiveRoot)
         self.occurrenceResolver = ClipboardOccurrenceResolver(archiveRoot: archiveRoot)
         self.derivedIndex = ClipboardDerivedIndex(archiveRoot: archiveRoot)
-        self.copyToPasteboard = copyToPasteboard
+        self.copyEventToPasteboard = copyEventToPasteboard
+        self.copyPlainTextToPasteboard = copyPlainTextToPasteboard
         self.onArchiveMutation = onArchiveMutation
         self.onGroupDuplicatesChanged = onGroupDuplicatesChanged
         self.recentItemLimit = recentItemLimit
@@ -324,7 +339,7 @@ final class ClipboardPanelController: NSWindowController,
     }
 
     func performAutomationTypeFilter(_ filter: String) {
-        let segment = ["all", "text", "links", "code"]
+        let segment = ["all", "text", "links", "code", "images", "files"]
             .firstIndex(of: filter.lowercased()) ?? 0
         typeFilter.selectedSegment = segment
         typeFilter.performClick(nil)
@@ -403,6 +418,12 @@ final class ClipboardPanelController: NSWindowController,
             refreshAnnotationState()
             onArchiveMutation(.annotationsChanged(pinRemoved: false))
             refreshAfterAnnotationChange()
+        case let gesture where gesture.hasPrefix("select-index:"):
+            // Rich-detail receipts (Slice 6): select an arbitrary row so
+            // the harness can capture one detail render per kind.
+            if let index = Int(gesture.dropFirst("select-index:".count)) {
+                selectDisplayRow(index)
+            }
         default:
             break
         }
@@ -471,6 +492,10 @@ final class ClipboardPanelController: NSWindowController,
     /// The harness polls this (0.1 s steps, 5 s cap) instead of sleeping a
     /// fixed interval.
     var automationIsSettled: Bool {
+        // A pending image-thumbnail fetch is unsettled in EITHER scope.
+        if richDetailPending {
+            return false
+        }
         guard scope == .allHistory else {
             return true
         }
@@ -654,8 +679,10 @@ final class ClipboardPanelController: NSWindowController,
             constant: -28
         ).isActive = true
 
-        typeFilter.segmentCount = 4
-        for (segment, label) in ["All", "Text", "Links", "Code"].enumerated() {
+        // 6 segments (Slice 6). `.richText` surfaces under All — documented:
+        // the equality filter cannot OR content types.
+        typeFilter.segmentCount = 6
+        for (segment, label) in ["All", "Text", "Links", "Code", "Images", "Files"].enumerated() {
             typeFilter.setLabel(label, forSegment: segment)
         }
         typeFilter.segmentStyle = .rounded
@@ -880,7 +907,7 @@ final class ClipboardPanelController: NSWindowController,
             constant: -52
         ).isActive = true
 
-        let detailScroll = NSScrollView()
+        let detailScroll = detailScrollView
         detailScroll.hasVerticalScroller = true
         detailScroll.borderType = .noBorder
         detailScroll.drawsBackground = false
@@ -907,6 +934,12 @@ final class ClipboardPanelController: NSWindowController,
         contentCard.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.45).cgColor
         detailScroll.translatesAutoresizingMaskIntoConstraints = false
         contentCard.addSubview(detailScroll)
+        // Rich detail surface (Slice 6): same slot as the text scroll; one
+        // of the two is hidden at a time.
+        detailImageView.imageScaling = .scaleProportionallyUpOrDown
+        detailImageView.isHidden = true
+        detailImageView.translatesAutoresizingMaskIntoConstraints = false
+        contentCard.addSubview(detailImageView)
         let detailCardHeight = contentCard.heightAnchor.constraint(equalToConstant: 150)
         detailCardHeightConstraint = detailCardHeight
         NSLayoutConstraint.activate([
@@ -914,6 +947,10 @@ final class ClipboardPanelController: NSWindowController,
             detailScroll.trailingAnchor.constraint(equalTo: contentCard.trailingAnchor, constant: -18),
             detailScroll.topAnchor.constraint(equalTo: contentCard.topAnchor, constant: 12),
             detailScroll.bottomAnchor.constraint(equalTo: contentCard.bottomAnchor, constant: -12),
+            detailImageView.leadingAnchor.constraint(equalTo: contentCard.leadingAnchor, constant: 18),
+            detailImageView.trailingAnchor.constraint(equalTo: contentCard.trailingAnchor, constant: -18),
+            detailImageView.topAnchor.constraint(equalTo: contentCard.topAnchor, constant: 12),
+            detailImageView.bottomAnchor.constraint(equalTo: contentCard.bottomAnchor, constant: -12),
             detailCardHeight
         ])
         detailStack.addArrangedSubview(contentCard)
@@ -1057,6 +1094,10 @@ final class ClipboardPanelController: NSWindowController,
             contentTypeFilter = .url
         case 3:
             contentTypeFilter = .code
+        case 4:
+            contentTypeFilter = .image
+        case 5:
+            contentTypeFilter = .fileReference
         default:
             contentTypeFilter = nil
         }
@@ -2075,6 +2116,7 @@ final class ClipboardPanelController: NSWindowController,
                         self.archiveDetailEvent = nil
                         self.archiveDetailContent = nil
                         self.copyButton.isEnabled = false
+                        self.showPlainDetailSurface()
                         self.detailTitle.stringValue = "Clip unavailable"
                         self.detailMetadata.stringValue = "This clip is no longer in the archive."
                         self.detailTextView.string = "This clip is no longer in the archive."
@@ -2089,16 +2131,13 @@ final class ClipboardPanelController: NSWindowController,
         detailTitle.stringValue = event.sourceApp.name
         detailMetadata.stringValue = "Copied \(relativeDate(event.capturedAt))"
         detailCapturedValue.stringValue = fullDate(event.capturedAt)
-        detailFormatValue.stringValue = event.contentType.rawValue.capitalized
+        detailFormatValue.stringValue = formatLabel(for: event)
         detailSizeValue.stringValue = ByteCountFormatter.string(
             fromByteCount: Int64(event.byteCount),
             countStyle: .file
         )
         detailCardHeightConstraint?.constant = preferredDetailCardHeight(for: event)
-        detailTextView.font = event.contentType == .code
-            ? .monospacedSystemFont(ofSize: 13, weight: .regular)
-            : .systemFont(ofSize: 15)
-        detailTextView.string = content
+        renderDetailContent(for: event, plainContent: content)
         copyButton.isEnabled = true
     }
 
@@ -2106,9 +2145,8 @@ final class ClipboardPanelController: NSWindowController,
         guard let result = selectedArchiveResult() else {
             return
         }
-        if let event = archiveDetailEvent, event.id == result.id,
-           let content = archiveDetailContent {
-            copyToPasteboard(content)
+        if let event = archiveDetailEvent, event.id == result.id {
+            copyEventToPasteboard(event)
             statusLabel.stringValue = "Copied to clipboard"
             return
         }
@@ -2116,16 +2154,15 @@ final class ClipboardPanelController: NSWindowController,
         let id = result.id
         archiveQueue.async { @Sendable [weak self] in
             let event = try? reader.event(withID: id)
-            let content = event.flatMap { try? reader.content(for: $0) }
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self else {
                         return
                     }
-                    if let content {
+                    if let event {
                         // Same shared no-re-capture path as every copy
-                        // surface.
-                        self.copyToPasteboard(content)
+                        // surface (event-based since Slice 6).
+                        self.copyEventToPasteboard(event)
                         self.statusLabel.stringValue = "Copied to clipboard"
                     } else {
                         self.statusLabel.stringValue = "This clip is no longer in the archive."
@@ -2181,14 +2218,21 @@ final class ClipboardPanelController: NSWindowController,
         guard !selected.isEmpty else {
             return
         }
+        if selected.count == 1, let event = selected.first {
+            // Single selection: event-based copy restores original rich
+            // representations (Slice 6).
+            copyEventToPasteboard(event)
+            statusLabel.stringValue = "Copied to clipboard"
+            return
+        }
         let contents = selected.compactMap { try? reader.content(for: $0) }
         guard !contents.isEmpty else {
             statusLabel.stringValue = "Could not read the selected item"
             return
         }
-        let content = contents.count == 1 ? contents[0] : contents.joined(separator: "\n\n")
-        copyToPasteboard(content)
-        statusLabel.stringValue = contents.count == 1 ? "Copied to clipboard" : "Copied \(contents.count) items"
+        // Multi-select stays a plain-text join of the fallbacks (documented).
+        copyPlainTextToPasteboard(contents.joined(separator: "\n\n"))
+        statusLabel.stringValue = "Copied \(contents.count) items"
     }
 
     @objc private func deleteSelected() {
@@ -2949,6 +2993,7 @@ final class ClipboardPanelController: NSWindowController,
         guard let result = selectedArchiveResult() else {
             copyButton.isEnabled = false
             updateAnnotationControls(contentHash: nil)
+            showPlainDetailSurface()
             detailTextView.string = ""
             switch allHistoryState {
             case .preparingIndex:
@@ -2990,6 +3035,7 @@ final class ClipboardPanelController: NSWindowController,
             fromByteCount: Int64(result.byteCount),
             countStyle: .file
         )
+        showPlainDetailSurface()
         detailTextView.string = "Loading clip…"
         fetchArchiveDetail(for: result)
     }
@@ -3014,6 +3060,7 @@ final class ClipboardPanelController: NSWindowController,
 
         guard selected.count == 1, let event = selected.first else {
             updateAnnotationControls(contentHash: nil)
+            showPlainDetailSurface()
             if selected.count > 1 {
                 detailTitle.stringValue = "\(selected.count) clips selected"
                 detailMetadata.stringValue = "Copy combines them with a blank line between each clip."
@@ -3038,37 +3085,193 @@ final class ClipboardPanelController: NSWindowController,
         }
         detailMetadata.stringValue = metadataText
         detailCapturedValue.stringValue = fullDate(event.capturedAt)
-        detailFormatValue.stringValue = event.contentType.rawValue.capitalized
+        detailFormatValue.stringValue = formatLabel(for: event)
         detailSizeValue.stringValue = ByteCountFormatter.string(
             fromByteCount: Int64(event.byteCount),
             countStyle: .file
         )
         detailCardHeightConstraint?.constant = preferredDetailCardHeight(for: event)
-        detailTextView.font = event.contentType == .code
-            ? .monospacedSystemFont(ofSize: 13, weight: .regular)
-            : .systemFont(ofSize: 15)
-        detailTextView.string = (try? reader.content(for: event)) ?? event.contentPreview
+        renderDetailContent(
+            for: event,
+            plainContent: (try? reader.content(for: event)) ?? event.contentPreview
+        )
     }
 
     private func preferredDetailCardHeight(for event: StoredClipboardEvent) -> CGFloat {
+        switch event.richContent?.kind {
+        case ClipboardRichContent.imageKind:
+            return 280
+        case ClipboardRichContent.colorKind:
+            return 190
+        default:
+            break
+        }
         let wrappedLineEstimate = Int(ceil(Double(event.characterCount) / 64.0))
         let visibleLines = max(event.lineCount, wrappedLineEstimate)
         return min(220, max(112, CGFloat(68 + min(visibleLines, 7) * 22)))
     }
 
-    private func symbolName(for contentType: ClipboardContentType) -> String {
-        switch contentType {
-        case .url:
-            return "link"
-        case .code:
-            return "chevron.left.forwardslash.chevron.right"
-        case .blocked:
-            return "hand.raised.fill"
-        case .text:
-            return "doc.text"
-        case .other:
-            return "questionmark.square.dashed"
+    // MARK: - Rich detail rendering (Slice 6)
+
+    /// Restores the plain-text detail surface and invalidates any in-flight
+    /// thumbnail fetch (generation guard).
+    private func showPlainDetailSurface() {
+        richDetailGeneration += 1
+        richDetailPending = false
+        detailImageView.isHidden = true
+        detailImageView.image = nil
+        detailScrollView.isHidden = false
+    }
+
+    /// Per-kind detail rendering shared by BOTH scopes. `plainContent` is
+    /// the already-loaded plain-text fallback.
+    private func renderDetailContent(for event: StoredClipboardEvent, plainContent: String) {
+        showPlainDetailSurface()
+        detailTextView.font = event.contentType == .code
+            ? .monospacedSystemFont(ofSize: 13, weight: .regular)
+            : .systemFont(ofSize: 15)
+
+        guard let rich = event.richContent else {
+            detailTextView.string = plainContent
+            return
         }
+
+        switch rich.kind {
+        case ClipboardRichContent.imageKind:
+            detailScrollView.isHidden = true
+            detailImageView.isHidden = false
+            if let cached = RichThumbnailProvider.shared.cachedThumbnail(forEventID: event.id) {
+                detailImageView.image = cached
+                return
+            }
+            let generation = richDetailGeneration
+            richDetailPending = true
+            RichThumbnailProvider.shared.thumbnail(for: event, reader: reader) { [weak self] image in
+                guard let self, self.richDetailGeneration == generation else {
+                    // Stale completion: leave `richDetailPending` alone — a
+                    // newer render owns it (every new render resets it in
+                    // showPlainDetailSurface()).
+                    return
+                }
+                self.richDetailPending = false
+                if let image {
+                    self.detailImageView.image = image
+                } else {
+                    // Unreadable/undecodable body: fall back to text.
+                    self.detailImageView.isHidden = true
+                    self.detailScrollView.isHidden = false
+                    self.detailTextView.string = event.contentPreview
+                }
+            }
+
+        case ClipboardRichContent.rtfKind:
+            if let data = try? reader.richBody(for: event),
+               let attributed = NSAttributedString(rtf: data, documentAttributes: nil) {
+                detailTextView.textStorage?.setAttributedString(attributed)
+            } else {
+                // Parse or read failure: the plain fallback is the content.
+                detailTextView.string = plainContent
+            }
+
+        case ClipboardRichContent.fileListKind:
+            detailTextView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+            detailTextView.string = Self.fileListDetailText(
+                files: reader.fileList(for: event),
+                totalCount: event.richContent?.fileCount
+            )
+
+        case ClipboardRichContent.colorKind:
+            let hex = rich.colorHex ?? ""
+            let space = rich.colorSpace ?? "sRGB"
+            detailScrollView.isHidden = true
+            detailImageView.isHidden = false
+            detailImageView.imageScaling = .scaleProportionallyUpOrDown
+            detailImageView.image = RichThumbnailProvider.colorSwatch(
+                hex: hex,
+                colorSpace: space,
+                fill: Self.swatchColor(fromHex: hex)
+            )
+
+        case ClipboardRichContent.linkKind:
+            detailTextView.string = [rich.linkTitle, rich.linkURL]
+                .compactMap { $0 }
+                .joined(separator: "\n")
+
+        default:
+            // Unknown rich kind from a newer build: plain fallback.
+            detailTextView.string = plainContent.isEmpty ? event.contentPreview : plainContent
+        }
+    }
+
+    /// Monospaced name · size · path listing with "(missing)" annotations.
+    private static func fileListDetailText(
+        files: [ClipboardRichFileReference],
+        totalCount: Int?
+    ) -> String {
+        guard !files.isEmpty else {
+            return "No file entries recorded."
+        }
+        var lines = files.map { file -> String in
+            var parts = [file.name]
+            if let byteCount = file.byteCount {
+                parts.append(ByteCountFormatter.string(fromByteCount: Int64(byteCount), countStyle: .file))
+            }
+            parts.append(file.path)
+            var line = parts.joined(separator: " · ")
+            if !FileManager.default.fileExists(atPath: file.path) {
+                line += " (missing)"
+            }
+            return line
+        }
+        if let totalCount, totalCount > files.count {
+            lines.append("… and \(totalCount - files.count) more (full list stored with the clip)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func swatchColor(fromHex hex: String) -> NSColor {
+        var value = hex
+        if value.hasPrefix("#") {
+            value.removeFirst()
+        }
+        guard value.count == 6, let rgb = UInt32(value, radix: 16) else {
+            return .gray
+        }
+        return NSColor(
+            srgbRed: CGFloat((rgb >> 16) & 0xFF) / 255,
+            green: CGFloat((rgb >> 8) & 0xFF) / 255,
+            blue: CGFloat(rgb & 0xFF) / 255,
+            alpha: 1
+        )
+    }
+
+    /// Friendly Format labels for the details row.
+    private func formatLabel(for event: StoredClipboardEvent) -> String {
+        if event.richContent?.kind == ClipboardRichContent.linkKind {
+            return "Link"
+        }
+        switch event.contentType {
+        case .image:
+            if let width = event.richContent?.imagePixelWidth,
+               let height = event.richContent?.imagePixelHeight {
+                return "Image \(width)×\(height)"
+            }
+            return "Image"
+        case .fileReference:
+            return "Files"
+        case .richText:
+            return "Rich Text"
+        case .color:
+            return "Color"
+        default:
+            return event.contentType.rawValue.capitalized
+        }
+    }
+
+    /// Icon mapping lives on `ClipboardContentType.systemSymbolName` in
+    /// Core (Slice 6) — one shared source for the panel and the picker.
+    private func symbolName(for contentType: ClipboardContentType) -> String {
+        contentType.systemSymbolName
     }
 
     private func singleLine(_ value: String) -> String {

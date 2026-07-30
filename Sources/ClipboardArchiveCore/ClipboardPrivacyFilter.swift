@@ -116,8 +116,18 @@ public struct ClipboardPrivacyFilter: Sendable {
             }
         }
 
-        // 5. Secret detector — runs even for store-no-index apps.
-        let detection = secretDetector.inspect(capture.content)
+        // 5. Secret detector — runs even for store-no-index apps. It always
+        //    inspects the plain fallback (rtf fallback, link url+title,
+        //    file-list joined paths, color hex — Slice 6).
+        var detection = secretDetector.inspect(capture.content)
+        if case .fileList = capture.rich {
+            // File paths are structurally single high-entropy tokens, so
+            // the bare-token entropy heuristic would block ordinary
+            // single-file copies. Pattern-based flags (tokens/keys INSIDE a
+            // path or file name) still block.
+            let flags = detection.flags.filter { $0 != "single-high-entropy-value" }
+            detection = SecretDetection(isSensitive: !flags.isEmpty, flags: flags)
+        }
         if detection.isSensitive {
             let flags = detection.flags.joined(separator: ",")
             return .block(reason: "secret_detector:\(flags)")

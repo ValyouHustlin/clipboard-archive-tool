@@ -2,6 +2,8 @@ import ClipboardArchiveCore
 import AppKit
 import ApplicationServices
 import Foundation
+import ImageIO
+import UniformTypeIdentifiers
 
 private let archiveRoot = ClipboardDefaults.archiveRoot()
 
@@ -29,7 +31,8 @@ final class ClipboardMenuBarApp: NSObject,
     private lazy var ingestor = ClipboardIngestor(
         filter: ClipboardPrivacyFilter(settings: settings),
         archiveWriter: archiveWriter,
-        derivedIndex: derivedIndex
+        derivedIndex: derivedIndex,
+        richImageMaxBytes: settings.richImageMaxBytes
     )
     private let reader = ClipboardArchiveReader(archiveRoot: archiveRoot)
     private let redactor = ClipboardArchiveRedactor(archiveRoot: archiveRoot)
@@ -198,7 +201,10 @@ final class ClipboardMenuBarApp: NSObject,
         }
         lastChangeCount = changeCount
 
-        guard let content = pasteboard.string(forType: .string), !content.isEmpty else {
+        // Rich classification (Slice 6) runs only AFTER every capture gate
+        // above allowed reading the pasteboard, and only when the setting
+        // is on; otherwise the original text-only read is unchanged.
+        guard let read = readCaptureFromPasteboard() else {
             return
         }
 
@@ -208,18 +214,20 @@ final class ClipboardMenuBarApp: NSObject,
             return
         }
 
-        let contentHash = content.hashValue
-        guard contentHash != lastContentHash else {
+        // Per-kind dedup shared with every copy-back path (Slice 6).
+        let dedupValue = ClipboardCaptureDedup.value(content: read.content, rich: read.rich)
+        guard dedupValue != lastContentHash else {
             return
         }
-        lastContentHash = contentHash
+        lastContentHash = dedupValue
 
         let sourceApp = detectedSourceApp()
         let capture = ClipboardCapture(
             capturedAt: Date(),
-            content: content,
+            content: read.content,
             sourceApp: sourceApp,
-            pasteboardTypes: pasteboard.types?.map(\.rawValue) ?? []
+            pasteboardTypes: pasteboard.types?.map(\.rawValue) ?? [],
+            rich: read.rich
         )
 
         do {
@@ -235,7 +243,11 @@ final class ClipboardMenuBarApp: NSObject,
             case let .blocked(reason):
                 blockedCount += 1
                 lastBlockedReason = reason
-                lastStatus = "Blocked sensitive item \(shortDate(Date()))"
+                // Cap-blocked images are a size decision, not a sensitivity
+                // one — the status wording keys off the reason prefix.
+                lastStatus = reason.hasPrefix("image_exceeds_size_cap")
+                    ? "Image too large to store \(shortDate(Date()))"
+                    : "Blocked sensitive item \(shortDate(Date()))"
             }
             rebuildMenu()
         } catch {
@@ -264,9 +276,125 @@ final class ClipboardMenuBarApp: NSObject,
     /// with the CURRENT pasteboard without ingesting, so whatever was
     /// copied during private mode or a pause never becomes an archive
     /// event. Only a NEW copy (a fresh change count) captures afterwards.
+    /// Uses the SAME classification + dedup derivation as the capture poll
+    /// (Slice 6) so rich content copied during a gate is also never
+    /// retro-captured.
     private func resyncPasteboardStateWithoutIngesting() {
         lastChangeCount = pasteboard.changeCount
-        lastContentHash = pasteboard.string(forType: .string)?.hashValue
+        lastContentHash = readCaptureFromPasteboard().map {
+            ClipboardCaptureDedup.value(content: $0.content, rich: $0.rich)
+        }
+    }
+
+    // MARK: - Rich pasteboard classification (Slice 6)
+
+    private struct PasteboardRead {
+        var content: String
+        var rich: ClipboardRichPayload?
+    }
+
+    /// One pasteboard read for the capture poll: rich classification when
+    /// the setting is on, otherwise the original text-only read unchanged.
+    /// `content` is ALWAYS the plain-text fallback (empty for images) —
+    /// the filter/secret-detector/FTS substrate.
+    private func readCaptureFromPasteboard() -> PasteboardRead? {
+        if settings.captureRichContent, let rich = readRichPayload() {
+            return rich
+        }
+        guard let content = pasteboard.string(forType: .string), !content.isEmpty else {
+            return nil
+        }
+        return PasteboardRead(content: content, rich: nil)
+    }
+
+    /// Rich classification priority (design): fileURL > png/tiff > rtf >
+    /// color > public.url+url-name > plain string. Returns nil when no rich
+    /// representation applies (the caller falls through to plain text).
+    private func readRichPayload() -> PasteboardRead? {
+        guard let types = pasteboard.types, !types.isEmpty else {
+            return nil
+        }
+
+        // 1. File references: metadata ONLY, never file contents.
+        if types.contains(.fileURL),
+           let urls = pasteboard.readObjects(
+               forClasses: [NSURL.self],
+               options: [.urlReadingFileURLsOnly: true]
+           ) as? [URL],
+           !urls.isEmpty {
+            let files = urls.map { url -> ClipboardRichFileReference in
+                let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+                return ClipboardRichFileReference(
+                    name: url.lastPathComponent,
+                    path: url.path,
+                    byteCount: (attributes?[.size] as? NSNumber)?.intValue,
+                    uti: UTType(filenameExtension: url.pathExtension)?.identifier
+                )
+            }
+            return PasteboardRead(
+                content: files.map(\.path).joined(separator: "\n"),
+                rich: .fileList(files)
+            )
+        }
+
+        // 2. Images: size check on data.count BEFORE any header parse —
+        //    an over-cap payload is never decoded, not even for dimensions.
+        for (type, uti) in [
+            (NSPasteboard.PasteboardType.png, "public.png"),
+            (NSPasteboard.PasteboardType.tiff, "public.tiff")
+        ] where types.contains(type) {
+            guard let data = pasteboard.data(forType: type), !data.isEmpty else {
+                continue
+            }
+            var pixelWidth: Int?
+            var pixelHeight: Int?
+            if data.count <= settings.richImageMaxBytes,
+               let source = CGImageSourceCreateWithData(
+                   data as CFData,
+                   [kCGImageSourceShouldCache: false] as CFDictionary
+               ),
+               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] {
+                // Header-only parse: dimensions without a pixel decode.
+                pixelWidth = properties[kCGImagePropertyPixelWidth] as? Int
+                pixelHeight = properties[kCGImagePropertyPixelHeight] as? Int
+            }
+            return PasteboardRead(
+                content: "",
+                rich: .image(data: data, uti: uti, pixelWidth: pixelWidth, pixelHeight: pixelHeight)
+            )
+        }
+
+        // 3. RTF with its plain-text fallback (secret-detector substrate).
+        if types.contains(.rtf), let data = pasteboard.data(forType: .rtf), !data.isEmpty {
+            let fallback = pasteboard.string(forType: .string)
+                ?? NSAttributedString(rtf: data, documentAttributes: nil)?.string
+                ?? ""
+            return PasteboardRead(content: fallback, rich: .rtf(data: data))
+        }
+
+        // 4. Colors.
+        if types.contains(.color), let color = NSColor(from: pasteboard),
+           let converted = color.usingColorSpace(.sRGB) {
+            let hex = String(
+                format: "#%02X%02X%02X",
+                Int(round(converted.redComponent * 255)),
+                Int(round(converted.greenComponent * 255)),
+                Int(round(converted.blueComponent * 255))
+            )
+            return PasteboardRead(content: hex, rich: .color(hex: hex, colorSpace: "sRGB"))
+        }
+
+        // 5. Titled links: BOTH public.url and public.url-name present.
+        //    Untitled URLs stay on the plain string path (the writer's
+        //    text-based URL inference is unchanged).
+        let urlNameType = NSPasteboard.PasteboardType("public.url-name")
+        if types.contains(.URL), types.contains(urlNameType),
+           let url = pasteboard.string(forType: .URL), !url.isEmpty,
+           let title = pasteboard.string(forType: urlNameType), !title.isEmpty {
+            return PasteboardRead(content: url + "\n" + title, rich: .link(url: url, title: title))
+        }
+
+        return nil
     }
 
     // MARK: - Timed private mode (Slice 5)
@@ -416,7 +544,13 @@ final class ClipboardMenuBarApp: NSObject,
                 recentItemLimit: settings.recentItemLimit,
                 historyWindow: settings.historyWindow,
                 groupDuplicates: settings.historyGroupDuplicates,
-                copyToPasteboard: { [weak self] content in
+                copyEventToPasteboard: { [weak self] event in
+                    // Event-based copy-back (Slice 6): original rich
+                    // representations through the ONE no-re-capture path.
+                    self?.copyEventToPasteboardWithoutRecapture(event)
+                },
+                copyPlainTextToPasteboard: { [weak self] content in
+                    // Multi-select joins stay plain text (documented).
                     self?.copyToPasteboardWithoutRecapture(content)
                 },
                 onArchiveMutation: { [weak self] mutation in
@@ -479,12 +613,14 @@ final class ClipboardMenuBarApp: NSObject,
                         self?.quickPickerSnippets() ?? []
                     },
                     copyToPasteboard: { [weak self] event in
-                        // Wraps the ONE shared no-re-capture copy path.
+                        // Wraps the ONE shared no-re-capture copy path
+                        // (event-based since Slice 6: rich events restore
+                        // their original representations).
                         guard let self,
                               let content = try? self.reader.content(for: event) else {
                             return nil
                         }
-                        self.copyToPasteboardWithoutRecapture(content)
+                        self.copyEventToPasteboardWithoutRecapture(event)
                         return content
                     },
                     commitSnippet: { [weak self] snippet in
@@ -676,7 +812,8 @@ final class ClipboardMenuBarApp: NSObject,
         ingestor = ClipboardIngestor(
             filter: ClipboardPrivacyFilter(settings: settings),
             archiveWriter: archiveWriter,
-            derivedIndex: derivedIndex
+            derivedIndex: derivedIndex,
+            richImageMaxBytes: settings.richImageMaxBytes
         )
         if previousInterval != settings.pollIntervalSeconds {
             restartTimer()
@@ -782,6 +919,10 @@ final class ClipboardMenuBarApp: NSObject,
                     // seeding (14 events, pin the 2 oldest, enforce a
                     // limit of 10) so the counts in the receipt are exact.
                     try runPinPruneRetentionFlow()
+                } else if environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_SEED_RICH"] == "1" {
+                    // Rich-format render receipts (Slice 6): ONLY the five
+                    // per-kind rich fixtures, newest-first image→link.
+                    try seedSyntheticRichFixtures()
                 } else {
                     try seedSyntheticUIFixtures()
                 }
@@ -845,8 +986,19 @@ final class ClipboardMenuBarApp: NSObject,
                 // archive while private, including blocked-event lines.
                 runPrivateModeAutomation(snapshotPath: snapshotPath)
                 return true
+            } else if screen == "richcapture" {
+                // Slice 6: synthetic multi-representation items on the
+                // isolated automation pasteboard → one poll tick →
+                // machine-readable receipt (kind stored, counts, body file,
+                // copy-back byte equality, no re-capture).
+                runRichCaptureAutomation()
+                return true
             } else if screen == "quickpicker" {
-                try seedSyntheticUIFixtures()
+                if environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_SEED_RICH"] == "1" {
+                    try seedSyntheticRichFixtures()
+                } else {
+                    try seedSyntheticUIFixtures()
+                }
                 if environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_SEED_SNIPPET"] == "1",
                    let newest = try reader.recentItems(since: .distantPast, limit: 1).first {
                     // Snippet fixture for the picker's top section: mark
@@ -911,19 +1063,28 @@ final class ClipboardMenuBarApp: NSObject,
                         ]
                         self.panelController?.reloadFromExternalMutation()
                     }
-                    self.pollPasteboard()
-                    let eventCountAfter = self.archiveEventCount()
-                    let url = URL(fileURLWithPath: snapshotPath)
-                    do {
-                        try self.panelController?.writeSnapshot(to: url)
-                    } catch {
-                        FileHandle.standardError.write(Data("UI snapshot failed: \(error)\n".utf8))
+                    // Second settle pass (Slice 6): a gesture can select an
+                    // image clip whose detail thumbnail renders async; wait
+                    // for it so per-kind detail PNGs show the real render.
+                    let postGestureDeadline = Date().addingTimeInterval(5.0)
+                    self.pollHistoryAutomationSettled(deadline: postGestureDeadline) { [weak self] in
+                        guard let self else {
+                            return
+                        }
+                        self.pollPasteboard()
+                        let eventCountAfter = self.archiveEventCount()
+                        let url = URL(fileURLWithPath: snapshotPath)
+                        do {
+                            try self.panelController?.writeSnapshot(to: url)
+                        } catch {
+                            FileHandle.standardError.write(Data("UI snapshot failed: \(error)\n".utf8))
+                        }
+                        self.writeHistoryAutomationResult(
+                            eventCountBefore: eventCountBefore,
+                            eventCountAfter: eventCountAfter
+                        )
+                        NSApp.terminate(nil)
                     }
-                    self.writeHistoryAutomationResult(
-                        eventCountBefore: eventCountBefore,
-                        eventCountAfter: eventCountAfter
-                    )
-                    NSApp.terminate(nil)
                 }
             }
             return true
@@ -1529,6 +1690,239 @@ final class ClipboardMenuBarApp: NSObject,
         return (try? reader.recentItems(since: epoch, limit: Int.max))?.count ?? -1
     }
 
+    // MARK: - Rich-format automation (Slice 6)
+
+    /// 1×1 red PNG (~70 bytes) — authored synthetic fixture bytes.
+    private static func tinyPNGData() -> Data {
+        Data(base64Encoded:
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        ) ?? Data()
+    }
+
+    private static func tinyRTFData() -> Data {
+        Data("{\\rtf1\\ansi {\\b Synthetic bold} rich fixture}".utf8)
+    }
+
+    private static let automationURLNameType = NSPasteboard.PasteboardType("public.url-name")
+
+    /// Seeds ONE clip per rich kind (newest first: image, files, rtf,
+    /// color, link) through the production writer so history/picker/detail
+    /// renders show every kind.
+    private func seedSyntheticRichFixtures() throws {
+        let now = Date()
+        let filesDirectory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("clipboard-rich-fixture-files-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: filesDirectory, withIntermediateDirectories: true)
+        let invoiceURL = filesDirectory.appendingPathComponent("synthetic-invoice.pdf")
+        try Data("synthetic invoice fixture".utf8).write(to: invoiceURL)
+        let files = [
+            ClipboardRichFileReference(
+                name: invoiceURL.lastPathComponent,
+                path: invoiceURL.path,
+                byteCount: 25,
+                uti: "com.adobe.pdf"
+            ),
+            ClipboardRichFileReference(
+                name: "missing-notes.txt",
+                path: filesDirectory.appendingPathComponent("missing-notes.txt").path,
+                byteCount: nil,
+                uti: "public.plain-text"
+            )
+        ]
+        let fixtures: [(minutesAgo: TimeInterval, content: String, types: [String], rich: ClipboardRichPayload, app: ClipboardSourceApp)] = [
+            (
+                2,
+                "",
+                ["public.png"],
+                .image(data: Self.tinyPNGData(), uti: "public.png", pixelWidth: 1, pixelHeight: 1),
+                ClipboardSourceApp(name: "Preview", bundleIdentifier: "com.apple.Preview")
+            ),
+            (
+                9,
+                files.map(\.path).joined(separator: "\n"),
+                ["public.file-url"],
+                .fileList(files),
+                ClipboardSourceApp(name: "Finder", bundleIdentifier: "com.apple.finder")
+            ),
+            (
+                21,
+                "Synthetic bold rich fixture",
+                ["public.rtf", "public.utf8-plain-text"],
+                .rtf(data: Self.tinyRTFData()),
+                ClipboardSourceApp(name: "TextEdit", bundleIdentifier: "com.apple.TextEdit")
+            ),
+            (
+                34,
+                "#3A7BFF",
+                ["com.apple.cocoa.pasteboard.color"],
+                .color(hex: "#3A7BFF", colorSpace: "sRGB"),
+                ClipboardSourceApp(name: "Xcode", bundleIdentifier: "com.apple.dt.Xcode")
+            ),
+            (
+                48,
+                "https://example.com/rich-link\nRich Link Fixture",
+                ["public.url", "public.url-name"],
+                .link(url: "https://example.com/rich-link", title: "Rich Link Fixture"),
+                ClipboardSourceApp(name: "Safari", bundleIdentifier: "com.apple.Safari")
+            )
+        ]
+        // Append OLDEST first: recentItems derives order from append order
+        // within a day file, matching how live capture writes.
+        for fixture in fixtures.reversed() {
+            _ = try archiveWriter.archiveAllowedCapture(
+                ClipboardCapture(
+                    capturedAt: now.addingTimeInterval(-fixture.minutesAgo * 60),
+                    content: fixture.content,
+                    sourceApp: fixture.app,
+                    pasteboardTypes: fixture.types,
+                    rich: fixture.rich
+                )
+            )
+        }
+    }
+
+    /// Synthetic rich-capture matrix: writes one kind's representations to
+    /// the isolated automation pasteboard, runs one production poll tick,
+    /// then copy-back + a second tick — the receipt proves what was stored,
+    /// that the body file exists, byte-equal copy-back, and no re-capture.
+    private func runRichCaptureAutomation() {
+        let environment = ProcessInfo.processInfo.environment
+        let kind = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_RICH_CAPTURE"] ?? "image"
+        let capBlock = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_RICH_CAP_BLOCK"] == "1"
+        settings.archiveEnabled = true
+        settings.captureRichContent = true
+        if capBlock {
+            // Clamp floor (64 KiB): the oversized fixture below is ~80 KB.
+            settings.richImageMaxBytes = 64 * 1024
+        }
+        try? settingsStore.save(settings)
+        ingestor = ClipboardIngestor(
+            filter: ClipboardPrivacyFilter(settings: settings),
+            archiveWriter: archiveWriter,
+            derivedIndex: derivedIndex,
+            richImageMaxBytes: settings.richImageMaxBytes
+        )
+
+        var originalData: Data?
+        var originalReadType: NSPasteboard.PasteboardType?
+        var expectedString: String?
+        pasteboard.clearContents()
+        switch kind {
+        case "image":
+            let data: Data
+            if capBlock {
+                // Random bytes never get decoded: the cap check fires on
+                // data.count alone (the receipt proves nothing stored).
+                data = Data((0..<80_000).map { _ in UInt8.random(in: 0...255) })
+            } else {
+                data = Self.tinyPNGData()
+            }
+            originalData = data
+            originalReadType = .png
+            pasteboard.setData(data, forType: .png)
+        case "files":
+            let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("clipboard-rich-capture-\(UUID().uuidString)")
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let invoice = directory.appendingPathComponent("synthetic-invoice.pdf")
+            let notes = directory.appendingPathComponent("synthetic-notes.txt")
+            try? Data("synthetic invoice".utf8).write(to: invoice)
+            try? Data("synthetic notes".utf8).write(to: notes)
+            pasteboard.writeObjects([invoice as NSURL, notes as NSURL])
+            expectedString = [invoice.path, notes.path].joined(separator: "\n")
+        case "rtf":
+            let data = Self.tinyRTFData()
+            originalData = data
+            originalReadType = .rtf
+            pasteboard.setData(data, forType: .rtf)
+            pasteboard.setString("Synthetic bold rich fixture", forType: .string)
+        case "color":
+            pasteboard.writeObjects([NSColor(srgbRed: 58.0 / 255, green: 123.0 / 255, blue: 1, alpha: 1)])
+            expectedString = "#3A7BFF"
+        case "link":
+            pasteboard.declareTypes([.URL, Self.automationURLNameType, .string], owner: nil)
+            pasteboard.setString("https://example.com/rich-link", forType: .URL)
+            pasteboard.setString("Rich Link Fixture", forType: Self.automationURLNameType)
+            pasteboard.setString("https://example.com/rich-link", forType: .string)
+            expectedString = "https://example.com/rich-link"
+        default:
+            break
+        }
+
+        pollPasteboard()
+        let storedEvents = (try? reader.recentItems(since: .distantPast, limit: 10)) ?? []
+        let newest = storedEvents.first
+        var bodyFileExists = false
+        if let bodyPath = newest?.richContent?.bodyPath,
+           let bodyURL = try? ClipboardArchivePath.containedURL(
+               relativePath: bodyPath,
+               archiveRoot: archiveRoot
+           ) {
+            bodyFileExists = FileManager.default.fileExists(atPath: bodyURL.path)
+        }
+        // Cap-block receipt: prove NO rich body file exists anywhere.
+        let richBodyFilesOnDisk = (FileManager.default.enumerator(
+            at: archiveRoot.appendingPathComponent("raw"),
+            includingPropertiesForKeys: nil
+        )?.compactMap { $0 as? URL } ?? [])
+            .filter { ["png", "tiff", "rtf", "json"].contains($0.pathExtension) }
+            .count
+        let blocked = (try? reader.recentBlockedEvents(since: .distantPast, limit: 5)) ?? []
+
+        // Copy-back: original representations + dedup sync, then one more
+        // poll tick proves no re-capture.
+        var copyBackByteEqual: Bool?
+        var pasteboardStringAfterCopyBack = ""
+        var eventCountAfterCopyBack = -1
+        if let newest {
+            copyEventToPasteboardWithoutRecapture(newest)
+            if let originalData, let originalReadType {
+                copyBackByteEqual = pasteboard.data(forType: originalReadType) == originalData
+            } else if let expectedString {
+                copyBackByteEqual = pasteboard.string(forType: .string) == expectedString
+            }
+            pasteboardStringAfterCopyBack = pasteboard.string(forType: .string) ?? ""
+            pollPasteboard()
+            eventCountAfterCopyBack = archiveEventCount()
+        }
+
+        if let resultPath = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_RESULT_PATH"],
+           !resultPath.isEmpty {
+            var result: [String: Any] = [
+                "requestedKind": kind,
+                "capBlock": capBlock,
+                "eventCount": storedEvents.count,
+                "kindStored": newest?.contentType.rawValue ?? "",
+                "richKind": newest?.richContent?.kind ?? "",
+                "preview": newest?.contentPreview ?? "",
+                "schemaVersion": newest?.schemaVersion ?? -1,
+                "bodyFileExists": bodyFileExists,
+                "richBodyFilesOnDisk": richBodyFilesOnDisk,
+                "blockedCount": blocked.count,
+                "blockedReason": blocked.first?.reason ?? "",
+                "eventCountAfterCopyBack": eventCountAfterCopyBack,
+                "pasteboardStringPrefix": String(pasteboardStringAfterCopyBack.prefix(48))
+            ]
+            if let copyBackByteEqual {
+                result["copyBackByteEqual"] = copyBackByteEqual
+            }
+            if let files = newest?.richContent?.files {
+                result["fileNames"] = files.map(\.name)
+            }
+            if let width = newest?.richContent?.imagePixelWidth,
+               let height = newest?.richContent?.imagePixelHeight {
+                result["pixelSize"] = "\(width)x\(height)"
+            }
+            if let data = try? JSONSerialization.data(
+                withJSONObject: result,
+                options: [.prettyPrinted, .sortedKeys]
+            ) {
+                try? data.write(to: URL(fileURLWithPath: resultPath), options: [.atomic])
+            }
+        }
+        NSApp.terminate(nil)
+    }
+
     private func seedSyntheticUIFixtures() throws {
         let fixtures: [(minutesAgo: TimeInterval, content: String, app: ClipboardSourceApp)] = [
             (
@@ -1824,12 +2218,13 @@ final class ClipboardMenuBarApp: NSObject,
 
     @objc private func copyEvent(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String,
-              let event = try? reader.recentItems(since: sevenDaysAgo(), limit: 200).first(where: { $0.id == id }),
-              let content = try? reader.content(for: event) else {
+              let event = try? reader.recentItems(since: sevenDaysAgo(), limit: 200).first(where: { $0.id == id }) else {
             return
         }
 
-        copyToPasteboardWithoutRecapture(content)
+        // Event-based copy (Slice 6): restores original rich
+        // representations; plain text is unchanged.
+        copyEventToPasteboardWithoutRecapture(event)
     }
 
     /// The ONE copy-back path (expansion contract 2): sets the pasteboard
@@ -1842,8 +2237,127 @@ final class ClipboardMenuBarApp: NSObject,
     private func copyToPasteboardWithoutRecapture(_ content: String) {
         pasteboard.clearContents()
         pasteboard.setString(content, forType: .string)
-        lastContentHash = content.hashValue
+        lastContentHash = ClipboardCaptureDedup.value(content: content, rich: nil)
         lastChangeCount = pasteboard.changeCount
+    }
+
+    /// Event-based copy-back (Slice 6): writes the ORIGINAL rich
+    /// representations back to the pasteboard, then syncs the dedup state
+    /// using the SAME per-kind `ClipboardCaptureDedup` value the capture
+    /// poll computes — so neither the copy-back nor a genuine re-copy of
+    /// identical rich content is re-captured. Plain-text events (and any
+    /// rich event whose body is unreadable) degrade to the plain path.
+    private func copyEventToPasteboardWithoutRecapture(_ event: StoredClipboardEvent) {
+        let content = (try? reader.content(for: event)) ?? event.contentPreview
+        guard let rich = event.richContent else {
+            copyToPasteboardWithoutRecapture(content)
+            return
+        }
+
+        switch rich.kind {
+        case ClipboardRichContent.imageKind:
+            guard let data = try? reader.richBody(for: event) else {
+                copyToPasteboardWithoutRecapture(content)
+                return
+            }
+            let storedType: NSPasteboard.PasteboardType = rich.bodyType == "public.tiff" ? .tiff : .png
+            pasteboard.clearContents()
+            pasteboard.setData(data, forType: storedType)
+            // Derived second representation for apps that only read the
+            // other type. This decode happens only on an explicit copy
+            // action, never during browsing.
+            if let representation = NSBitmapImageRep(data: data) {
+                if storedType == .png, let tiff = representation.tiffRepresentation {
+                    pasteboard.setData(tiff, forType: .tiff)
+                } else if storedType == .tiff,
+                          let png = representation.representation(using: .png, properties: [:]) {
+                    pasteboard.setData(png, forType: .png)
+                }
+            }
+            lastContentHash = ClipboardCaptureDedup.value(
+                content: "",
+                rich: .image(
+                    data: data,
+                    uti: rich.bodyType ?? "public.png",
+                    pixelWidth: rich.imagePixelWidth,
+                    pixelHeight: rich.imagePixelHeight
+                )
+            )
+
+        case ClipboardRichContent.rtfKind:
+            guard let data = try? reader.richBody(for: event) else {
+                copyToPasteboardWithoutRecapture(content)
+                return
+            }
+            pasteboard.clearContents()
+            pasteboard.setData(data, forType: .rtf)
+            pasteboard.setString(content, forType: .string)
+            lastContentHash = ClipboardCaptureDedup.value(content: content, rich: .rtf(data: data))
+
+        case ClipboardRichContent.fileListKind:
+            let files = reader.fileList(for: event)
+            guard !files.isEmpty else {
+                copyToPasteboardWithoutRecapture(content)
+                return
+            }
+            pasteboard.clearContents()
+            pasteboard.writeObjects(files.map { NSURL(fileURLWithPath: $0.path) })
+            pasteboard.setString(content, forType: .string)
+            lastContentHash = ClipboardCaptureDedup.value(content: content, rich: .fileList(files))
+
+        case ClipboardRichContent.colorKind:
+            guard let hex = rich.colorHex, let color = Self.color(fromHex: hex) else {
+                copyToPasteboardWithoutRecapture(content)
+                return
+            }
+            pasteboard.clearContents()
+            pasteboard.writeObjects([color])
+            pasteboard.setString(hex, forType: .string)
+            lastContentHash = ClipboardCaptureDedup.value(
+                content: hex,
+                rich: .color(hex: hex, colorSpace: rich.colorSpace ?? "sRGB")
+            )
+
+        case ClipboardRichContent.linkKind:
+            guard let url = rich.linkURL, let title = rich.linkTitle else {
+                copyToPasteboardWithoutRecapture(content)
+                return
+            }
+            pasteboard.clearContents()
+            pasteboard.declareTypes(
+                [.URL, NSPasteboard.PasteboardType("public.url-name"), .string],
+                owner: nil
+            )
+            pasteboard.setString(url, forType: .URL)
+            pasteboard.setString(title, forType: NSPasteboard.PasteboardType("public.url-name"))
+            pasteboard.setString(url, forType: .string)
+            lastContentHash = ClipboardCaptureDedup.value(
+                content: content,
+                rich: .link(url: url, title: title)
+            )
+
+        default:
+            // Unknown rich kind from a newer build: plain fallback.
+            copyToPasteboardWithoutRecapture(content)
+            return
+        }
+        lastChangeCount = pasteboard.changeCount
+    }
+
+    private static func color(fromHex hex: String) -> NSColor? {
+        var value = hex
+        if value.hasPrefix("#") {
+            value.removeFirst()
+        }
+        guard value.count == 6, let rgb = UInt32(value, radix: 16) else {
+            return nil
+        }
+        return NSColor(
+            srgbRed: CGFloat((rgb >> 16) & 0xFF) / 255,
+            green: CGFloat((rgb >> 8) & 0xFF) / 255,
+            blue: CGFloat(rgb & 0xFF) / 255,
+            alpha: 1
+        )
     }
 
     @objc private func deleteEvent(_ sender: NSMenuItem) {

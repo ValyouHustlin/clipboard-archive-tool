@@ -86,6 +86,33 @@ public struct ClipboardDerivedIndex: Sendable {
         self.sqliteExecutableURL = sqliteExecutableURL
     }
 
+    /// Per-kind FTS body derivation (Slice 6), shared BY CONSTRUCTION
+    /// between the capture upsert and `rebuild()` so the two writers can
+    /// never index different text for the same event (pinned by a parity
+    /// test):
+    /// - image → the stored preview text ("Image 1920×1080 (2.1 MB)"),
+    /// - file lists → file NAMES only (full paths stay event-metadata-only;
+    ///   "invoice.pdf" is searchable, directory structure never enters
+    ///   snippets),
+    /// - everything else (rtf fallback, color hex, link url+title, text) →
+    ///   the plain-text fallback unchanged.
+    public static func indexBody(for event: StoredClipboardEvent, plainContent: String) -> String {
+        guard let rich = event.richContent else {
+            return plainContent
+        }
+        switch rich.kind {
+        case ClipboardRichContent.imageKind:
+            return event.contentPreview
+        case ClipboardRichContent.fileListKind:
+            guard let files = rich.files, !files.isEmpty else {
+                return event.contentPreview
+            }
+            return files.map(\.name).joined(separator: "\n")
+        default:
+            return plainContent
+        }
+    }
+
     public func rebuild() throws -> Int {
         let indexDirectory = indexURL.deletingLastPathComponent()
         try ClipboardPrivateFileSystem.createDirectory(indexDirectory, archiveRoot: indexDirectory)
@@ -155,7 +182,12 @@ public struct ClipboardDerivedIndex: Sendable {
                           ) else {
                         continue
                     }
-                    let body = (try? reader.content(for: event)) ?? event.contentPreview
+                    // Same per-kind derivation the upsert path uses
+                    // (parity by construction — Slice 6).
+                    let body = Self.indexBody(
+                        for: event,
+                        plainContent: (try? reader.content(for: event)) ?? event.contentPreview
+                    )
                     try writeSQL("""
 
                     INSERT INTO clipboard_fts(id,captured_at,source_app,content_type,preview,body) VALUES('\(escape(event.id))','\(escape(iso(event.capturedAt)))','\(escape(event.sourceApp.name))','\(escape(event.contentType.rawValue))','\(escape(event.contentPreview))','\(escape(body))');

@@ -33,6 +33,14 @@ public struct ClipboardArchiveHealth: Codable, Equatable, Sendable {
     /// is missing or unreadable.
     public var indexUserVersion: Int?
     public var annotationsBytes: Int64
+    // Slice 6 rich-format extensions.
+    /// Live events carrying rich content (image/rtf/file-list/color/link).
+    public var richContentEvents: Int = 0
+    /// Rich-extension body files under `raw/` referenced by NO live event
+    /// line. The known producer is an OLD build redacting a v2 event: it
+    /// drops `richContent` from the rewritten line without deleting the
+    /// body (documented forward-compat gap; recovery = manual cleanup).
+    public var orphanedRichBodyFiles: Int = 0
 }
 
 public struct ClipboardDailyManifest: Codable, Equatable, Sendable {
@@ -112,8 +120,31 @@ public struct ClipboardArchiveHealthReporter: Sendable {
             expiringItems: annotationsDocument.annotations.filter { $0.value.expiresAt != nil }.count,
             indexUserVersion: ClipboardDerivedIndex(archiveRoot: archiveRoot, indexURL: indexURL)
                 .userVersion(),
-            annotationsBytes: fileSize(annotationsStore.annotationsFileURL)
+            annotationsBytes: fileSize(annotationsStore.annotationsFileURL),
+            richContentEvents: metrics.richContentEvents,
+            orphanedRichBodyFiles: orphanedRichBodyCount(
+                referencedBodyPaths: metrics.referencedBodyRelativePaths
+            )
         )
+    }
+
+    /// Rich-extension files under `raw/` not referenced by any event line
+    /// (Slice 6). Text bodies (.code/.txt) are excluded: pre-Slice-6
+    /// tombstones already handled them, so counting them here would flag
+    /// history noise instead of the old-build rich-body orphaning gap.
+    private func orphanedRichBodyCount(referencedBodyPaths: Set<String>) -> Int {
+        let root = archiveRoot.standardizedFileURL
+        return regularFiles(under: root.appendingPathComponent("raw"))
+            .filter { ["png", "tiff", "rtf", "json"].contains($0.pathExtension) }
+            .filter { url in
+                let path = url.standardizedFileURL.path
+                guard path.hasPrefix(root.path + "/") else {
+                    return false
+                }
+                let relativePath = String(path.dropFirst(root.path.count + 1))
+                return !referencedBodyPaths.contains(relativePath)
+            }
+            .count
     }
 
     public func writeDailyManifest(for date: Date = Date(), calendar: Calendar = .current) throws -> URL {
@@ -160,6 +191,10 @@ public struct ClipboardArchiveHealthReporter: Sendable {
         var latestCapturedAt: Date?
         var oldestCapturedAt: Date?
         var restrictedEvents = 0
+        var richContentEvents = 0
+        /// Every body path referenced by ANY decoded line (interval-
+        /// independent), for the orphaned-rich-body diff.
+        var referencedBodyRelativePaths: Set<String> = []
     }
 
     private func scanEvents(
@@ -189,6 +224,14 @@ public struct ClipboardArchiveHealthReporter: Sendable {
                     metrics.invalidJSONLines += 1
                     continue
                 }
+                // Interval-independent: paths referenced by ANY line (live
+                // or out of window) so the orphan diff never miscounts.
+                if let rawContentPath = event.rawContentPath {
+                    metrics.referencedBodyRelativePaths.insert(rawContentPath)
+                }
+                if let richBodyPath = event.richContent?.bodyPath {
+                    metrics.referencedBodyRelativePaths.insert(richBodyPath)
+                }
                 guard interval.map({ $0.contains(event.capturedAt) }) ?? true else {
                     continue
                 }
@@ -199,12 +242,20 @@ public struct ClipboardArchiveHealthReporter: Sendable {
                 if event.privacyLabel == .restricted || restrictedHashes.contains(event.contentHash) {
                     metrics.restrictedEvents += 1
                 }
+                if event.richContent != nil {
+                    metrics.richContentEvents += 1
+                }
 
-                if let rawContentPath = event.rawContentPath {
+                // Plain-text body plus the rich body (Slice 6): both are
+                // containment-checked and both count toward missing/unsafe.
+                for bodyPath in [event.rawContentPath, event.richContent?.bodyPath] {
+                    guard let bodyPath else {
+                        continue
+                    }
                     metrics.referencedBodyFiles += 1
                     do {
                         let bodyURL = try ClipboardArchivePath.containedURL(
-                            relativePath: rawContentPath,
+                            relativePath: bodyPath,
                             archiveRoot: archiveRoot
                         )
                         if !FileManager.default.fileExists(atPath: bodyURL.path) {
@@ -262,16 +313,20 @@ public struct ClipboardArchiveHealthReporter: Sendable {
         )?.compactMap { $0 as? URL } ?? []
         return try urls.filter { url in
             let values = try url.resourceValues(forKeys: [.isRegularFileKey])
-            return values.isRegularFile == true && ["code", "txt"].contains(url.pathExtension)
+            return values.isRegularFile == true && Self.bodyFileExtensions.contains(url.pathExtension)
         }.count
     }
 
+    /// Body-file extensions under `raw/`: text bodies plus the Slice 6 rich
+    /// bodies (image/RTF/spilled-file-list).
+    static let bodyFileExtensions: Set<String> = ["code", "txt", "png", "tiff", "rtf", "json"]
+
     /// Total bytes of large-item body files under `raw/` (Slice 5
-    /// dashboard). Counting matches `countBodyFiles` (code/txt extensions).
+    /// dashboard). Counting matches `countBodyFiles` (same extensions).
     private func bodyFileBytes() -> Int64 {
         let root = archiveRoot.appendingPathComponent("raw")
         return regularFiles(under: root)
-            .filter { ["code", "txt"].contains($0.pathExtension) }
+            .filter { Self.bodyFileExtensions.contains($0.pathExtension) }
             .reduce(Int64(0)) { total, url in
                 guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize else {
                     return total

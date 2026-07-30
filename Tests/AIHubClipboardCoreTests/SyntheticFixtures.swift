@@ -52,10 +52,11 @@ enum SyntheticFixtures {
     }
 
     /// A line as a hypothetical future build might write it: higher
-    /// `schemaVersion`, an unknown `contentType` raw value ("image"), and an
+    /// `schemaVersion`, an unknown `contentType` raw value ("hologram" —
+    /// retargeted in Slice 6 because "image" became first-class), and an
     /// extra unknown top-level field. Current code must decode it tolerantly.
     static func futureVersionLine() -> String {
-        #"{"allowedUse":["local-search"],"byteCount":12,"capturedAt":"2027-01-15T09:00:00Z","characterCount":12,"contentHash":"sha256:futurefixture","contentImageMetadata":{"pixelHeight":480,"pixelWidth":640},"contentInline":"future-inline","contentPreview":"future-inline","contentType":"image","id":"clip_20270115T090000Z_futurefixtur_cd34ef56","lineCount":1,"pasteboardTypes":["public.png"],"privacyLabel":"private-local","schemaVersion":2,"sensitivityFlags":[],"sourceApp":{"bundleIdentifier":"com.apple.Preview","name":"Preview"},"uiVisibleUntil":"2027-01-22T09:00:00Z"}"#
+        #"{"allowedUse":["local-search"],"byteCount":12,"capturedAt":"2027-01-15T09:00:00Z","characterCount":12,"contentHash":"sha256:futurefixture","contentHologramMetadata":{"depthLayers":12},"contentInline":"future-inline","contentPreview":"future-inline","contentType":"hologram","id":"clip_20270115T090000Z_futurefixtur_cd34ef56","lineCount":1,"pasteboardTypes":["public.hologram"],"privacyLabel":"private-local","schemaVersion":3,"sensitivityFlags":[],"sourceApp":{"bundleIdentifier":"com.apple.Preview","name":"Preview"},"uiVisibleUntil":"2027-01-22T09:00:00Z"}"#
     }
 
     /// A structurally broken line that must fail decoding and be skipped by
