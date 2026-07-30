@@ -18,6 +18,10 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
     weak var delegate: ClipboardSettingsWindowControllerDelegate?
     /// Opens the Storage & Health dashboard (owned by the app delegate).
     var onOpenDashboard: (() -> Void)?
+    /// Backup/restore flows (Slice 8, owned by the app delegate's
+    /// ClipboardBackupUIController).
+    var onBackupArchive: (() -> Void)?
+    var onRestoreArchive: (() -> Void)?
 
     private let settingsStore: ClipboardSettingsStore
     private let archiveRoot: URL
@@ -680,14 +684,38 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         let buttons = NSStackView(views: [reveal, dashboard])
         buttons.orientation = .horizontal
         buttons.spacing = 8
+        let backup = NSButton(
+            title: "Back Up Archive…",
+            target: self,
+            action: #selector(backupArchiveClicked)
+        )
+        backup.setAccessibilityLabel("Create an encrypted backup of the archive")
+        let restore = NSButton(
+            title: "Restore from Backup…",
+            target: self,
+            action: #selector(restoreFromBackupClicked)
+        )
+        restore.setAccessibilityLabel("Restore the archive from an encrypted backup")
+        let backupButtons = NSStackView(views: [backup, restore])
+        backupButtons.orientation = .horizontal
+        backupButtons.spacing = 8
         stack.addArrangedSubview(privacy)
         stack.addArrangedSubview(path)
         stack.addArrangedSubview(buttons)
+        stack.addArrangedSubview(backupButtons)
         return stack
     }
 
     @objc private func openDashboardClicked() {
         onOpenDashboard?()
+    }
+
+    @objc private func backupArchiveClicked() {
+        onBackupArchive?()
+    }
+
+    @objc private func restoreFromBackupClicked() {
+        onRestoreArchive?()
     }
 
     private func iconTile(symbol: String, tint: NSColor, size: CGFloat) -> NSView {
