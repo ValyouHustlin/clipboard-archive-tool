@@ -143,56 +143,51 @@ final class ClipboardMenuBarApp: NSObject,
     }
 
     private func pollPasteboard() {
-        // Timed private mode (Slice 5): return BEFORE reading the
-        // pasteboard. Nothing is evaluated, stored, or recorded as a
-        // blocked-event line — guaranteed structurally, not by filtering.
-        if settings.isPrivateModeActive {
+        // ONE gate: the pure, unit-tested ClipboardCaptureGate decides
+        // whether this poll may touch the pasteboard. The poll loop must
+        // never reimplement gating inline — the fast suite covers the
+        // decision table, and this switch only performs the side effects.
+        switch ClipboardCaptureGate.decision(
+            now: Date(),
+            privateModeUntil: settings.privateModeUntil,
+            pauseUntil: settings.pauseUntil,
+            manuallyPaused: isPaused,
+            wasGatedLastPoll: captureGateWasActive
+        ) {
+        case .skipPrivateMode:
+            // Nothing is evaluated, stored, or recorded as a blocked-event
+            // line during private mode — guaranteed structurally.
             captureGateWasActive = true
             return
-        }
-        if settings.privateModeUntil != nil {
-            // Private mode just expired on its own: clear it and resync
-            // the dedup state WITHOUT ingesting so the last item copied
-            // while private is never retro-captured.
-            settings.privateModeUntil = nil
-            try? settingsStore.save(settings)
-            resyncPasteboardStateWithoutIngesting()
+        case .skipPaused:
+            if settings.isTemporarilyPaused, !isPaused {
+                isPaused = true
+                configureStatusIcon()
+            }
+            captureGateWasActive = true
+            return
+        case .resyncWithoutIngesting:
+            // The gate just lifted (timed expiry or manual resume). Clear
+            // any expired timed state, then sync dedup WITHOUT ingesting so
+            // the last item copied while gated is never retro-captured.
+            if settings.privateModeUntil != nil {
+                settings.privateModeUntil = nil
+                try? settingsStore.save(settings)
+                lastStatus = "Private mode ended"
+            }
+            if settings.pauseUntil != nil {
+                settings.pauseUntil = nil
+                try? settingsStore.save(settings)
+                isPaused = false
+                lastStatus = "Capture resumed"
+            }
             captureGateWasActive = false
-            lastStatus = "Private mode ended"
+            resyncPasteboardStateWithoutIngesting()
             configureStatusIcon()
             rebuildMenu()
-        }
-
-        if settings.isTemporarilyPaused {
-            isPaused = true
-            captureGateWasActive = true
-            configureStatusIcon()
             return
-        } else if isPaused, settings.pauseUntil != nil {
-            settings.pauseUntil = nil
-            try? settingsStore.save(settings)
-            isPaused = false
-            // FIX (pre-existing privacy bug): without this resync the last
-            // item copied DURING the pause was retro-captured on resume.
-            resyncPasteboardStateWithoutIngesting()
-            captureGateWasActive = false
-            configureStatusIcon()
-            lastStatus = "Capture resumed"
-            rebuildMenu()
-        }
-
-        guard !isPaused else {
-            captureGateWasActive = true
-            return
-        }
-
-        if captureGateWasActive {
-            // First ungated poll after ANY gate (manual pause end handles
-            // its own resync too, but this is the safety net for every
-            // exit path): sync dedup state, ingest nothing this pass.
-            captureGateWasActive = false
-            resyncPasteboardStateWithoutIngesting()
-            return
+        case .proceed:
+            break
         }
 
         let changeCount = pasteboard.changeCount
@@ -670,6 +665,9 @@ final class ClipboardMenuBarApp: NSObject,
                         }
                         self.copyToPasteboardWithoutRecapture(content)
                         return content
+                    },
+                    isRestricted: { [weak self] event in
+                        self?.eventIsRestricted(event) ?? false
                     },
                     directPasteAllowed: { [weak self] in
                         guard let self else {
@@ -2229,6 +2227,23 @@ final class ClipboardMenuBarApp: NSObject,
         rebuildMenu()
     }
 
+    /// Restricted display state (stored label OR manual annotation
+    /// override). The annotations read rides the store's stat-validated
+    /// cache, so per-menu-rebuild cost is one stat when clean.
+    private func eventIsRestricted(_ event: StoredClipboardEvent) -> Bool {
+        event.privacyLabel == .restricted
+            || ClipboardAnnotationsStore(archiveRoot: archiveRoot)
+                .restrictedContentHashes()
+                .contains(event.contentHash)
+    }
+
+    private func applyRestrictedBadge(_ item: NSMenuItem, for event: StoredClipboardEvent) {
+        guard eventIsRestricted(event) else {
+            return
+        }
+        item.image = NSImage(systemSymbolName: "eye.slash", accessibilityDescription: "Restricted")
+    }
+
     private func quickCopyMenuItem(for event: StoredClipboardEvent) -> NSMenuItem {
         let item = NSMenuItem(
             title: "\(shortDate(event.capturedAt))  \(trimmedPreview(event.contentPreview))",
@@ -2236,11 +2251,13 @@ final class ClipboardMenuBarApp: NSObject,
             keyEquivalent: ""
         )
         item.representedObject = event.id
+        applyRestrictedBadge(item, for: event)
         return item
     }
 
     private func menuItem(for event: StoredClipboardEvent) -> NSMenuItem {
         let item = NSMenuItem(title: "\(shortDate(event.capturedAt))  \(trimmedPreview(event.contentPreview))", action: nil, keyEquivalent: "")
+        applyRestrictedBadge(item, for: event)
         let submenu = NSMenu()
 
         let copy = NSMenuItem(title: "Copy", action: #selector(copyEvent(_:)), keyEquivalent: "")

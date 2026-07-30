@@ -73,6 +73,10 @@ final class QuickPickerPanelController: NSObject,
         /// content → shared no-re-capture copy path. Returns the copied
         /// content, or nil when no live occurrence remains.
         var commitSnippet: (SnippetItem) -> String?
+        /// Restricted display state (stored label OR manual annotation
+        /// override) — restricted clips stay usable here but must be
+        /// labeled on every reader surface.
+        var isRestricted: (StoredClipboardEvent) -> Bool
         /// Whether direct paste may run right now (setting enabled AND
         /// Accessibility trusted — re-checked at every use).
         var directPasteAllowed: () -> Bool
@@ -500,13 +504,23 @@ final class QuickPickerPanelController: NSObject,
         preview.lineBreakMode = .byTruncatingTail
         preview.translatesAutoresizingMaskIntoConstraints = false
 
+        let restricted = dependencies.isRestricted(event)
         let metadata = NSTextField(
-            labelWithString: "\(event.sourceApp.name)  ·  \(relativeDate(event.capturedAt))"
+            labelWithString: restricted
+                ? "\(event.sourceApp.name)  ·  \(relativeDate(event.capturedAt))  ·  Restricted"
+                : "\(event.sourceApp.name)  ·  \(relativeDate(event.capturedAt))"
         )
         metadata.font = .systemFont(ofSize: 10, weight: .medium)
         metadata.textColor = .secondaryLabelColor
         metadata.lineBreakMode = .byTruncatingTail
         metadata.translatesAutoresizingMaskIntoConstraints = false
+        if restricted {
+            icon.image = NSImage(
+                systemSymbolName: "eye.slash",
+                accessibilityDescription: "Restricted"
+            )
+            icon.contentTintColor = .systemOrange
+        }
 
         cell.addSubview(icon)
         cell.addSubview(preview)
