@@ -480,6 +480,8 @@ case "health":
         print("expiring_items: \(health.expiringItems)")
         print("index_user_version: \(health.indexUserVersion.map(String.init) ?? "none")")
         print("annotations_bytes: \(health.annotationsBytes)")
+        print("rich_content_events: \(health.richContentEvents)")
+        print("orphaned_rich_bodies: \(health.orphanedRichBodyFiles)")
         if let oldest = health.oldestCapturedAt {
             print("oldest_captured_at: \(ISO8601DateFormatter().string(from: oldest))")
         }

@@ -615,19 +615,10 @@ final class QuickPickerPanelController: NSObject,
         panel.contentView = background
     }
 
+    /// Icon mapping lives on `ClipboardContentType.systemSymbolName` in
+    /// Core (Slice 6) — one shared source for the panel and the picker.
     private func symbolName(for contentType: ClipboardContentType) -> String {
-        switch contentType {
-        case .url:
-            return "link"
-        case .code:
-            return "chevron.left.forwardslash.chevron.right"
-        case .blocked:
-            return "hand.raised.fill"
-        case .text:
-            return "doc.text"
-        case .other:
-            return "questionmark.square.dashed"
-        }
+        contentType.systemSymbolName
     }
 
     private func singleLine(_ value: String) -> String {

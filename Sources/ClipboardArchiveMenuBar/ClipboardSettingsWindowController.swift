@@ -42,6 +42,13 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
     private var appRuleRows: [AppRuleRow] = []
 
     private let archiveEnabledButton = NSButton(checkboxWithTitle: "Capture clipboard history", target: nil, action: nil)
+    /// Rich-format capture toggle (Slice 6): images, files, RTF, colors,
+    /// titled links. Off restores text-only capture.
+    private let captureRichContentButton = NSButton(
+        checkboxWithTitle: "Capture images, files, and rich text",
+        target: nil,
+        action: nil
+    )
     private let retentionModePopup = NSPopUpButton()
     private let historyWindowPopup = NSPopUpButton()
     private let recentLimitField = NSTextField()
@@ -158,6 +165,7 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
             tint: .systemBlue,
             views: [
                 archiveEnabledButton,
+                captureRichContentButton,
                 separatorView(),
                 settingRow(
                     title: "Archive retention",
@@ -368,6 +376,10 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         archiveEnabledButton.target = self
         archiveEnabledButton.action = #selector(toggleArchiveEnabled)
         archiveEnabledButton.font = .systemFont(ofSize: 13, weight: .medium)
+        captureRichContentButton.font = .systemFont(ofSize: 12)
+        captureRichContentButton.toolTip =
+            "Also capture copied images, file references, formatted text, colors, and titled links. Images above the size cap are blocked with a visible reason."
+        captureRichContentButton.setAccessibilityLabel("Capture images, files, and rich text")
         for mode in ClipboardRetentionMode.allCases {
             retentionModePopup.addItem(withTitle: mode.displayName)
             retentionModePopup.lastItem?.representedObject = mode.rawValue
@@ -765,6 +777,7 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
 
     private func loadSettingsIntoControls() {
         archiveEnabledButton.state = settings.archiveEnabled ? .on : .off
+        captureRichContentButton.state = settings.captureRichContent ? .on : .off
         selectRetentionMode(settings.retentionMode)
         selectHistoryWindow(settings.historyWindow)
         recentLimitField.integerValue = settings.recentItemLimit
@@ -894,6 +907,7 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         let mode = selectedRetentionMode()
         let limit = mode.retainedItemLimit ?? ClipboardSettings.clampRecentItemLimit(recentLimitField.integerValue)
         settings.archiveEnabled = archiveEnabledButton.state == .on
+        settings.captureRichContent = captureRichContentButton.state == .on
         settings.retentionMode = mode
         settings.recentItemLimit = limit
         settings.historyWindow = selectedHistoryWindow()

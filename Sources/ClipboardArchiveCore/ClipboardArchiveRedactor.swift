@@ -85,9 +85,29 @@ public struct ClipboardArchiveRedactor: Sendable {
                     }
                 }
 
+                // Rich body deletion (Slice 6): the image/RTF/file-list
+                // body is content too — same containment rules, same
+                // unsafe-path reporting as the plain body above.
+                if let richBodyPath = event.richContent?.bodyPath {
+                    if let bodyURL = try? ClipboardArchivePath.containedURL(
+                        relativePath: richBodyPath,
+                        archiveRoot: archiveRoot
+                    ) {
+                        if FileManager.default.fileExists(atPath: bodyURL.path) {
+                            try FileManager.default.removeItem(at: bodyURL)
+                        }
+                        if deletedBodyFile == nil {
+                            deletedBodyFile = richBodyPath
+                        }
+                    } else {
+                        skippedUnsafeBodyPath = true
+                    }
+                }
+
                 event.contentPreview = "[deleted]"
                 event.contentInline = nil
                 event.rawContentPath = nil
+                event.richContent = nil
                 event.privacyLabel = .doNotIndex
                 event.allowedUse = [.doNotIndex]
                 event.sensitivityFlags = Array(Set(event.sensitivityFlags + ["manually-deleted", reason])).sorted()

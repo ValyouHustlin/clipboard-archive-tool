@@ -494,19 +494,21 @@ do {
     }
 
     try run("tolerates unknown content type") {
-        let futureLine = #"{"allowedUse":["local-search"],"byteCount":12,"capturedAt":"2027-01-15T09:00:00Z","characterCount":12,"contentHash":"sha256:futurefixture","contentInline":"future-inline","contentPreview":"future-inline","contentType":"image","id":"clip_20270115T090000Z_futurefixtur_cd34ef56","lineCount":1,"pasteboardTypes":["public.png"],"privacyLabel":"private-local","schemaVersion":2,"sensitivityFlags":[],"sourceApp":{"name":"Preview"},"uiVisibleUntil":"2027-01-22T09:00:00Z"}"#
+        // Retargeted for Slice 6: "image" is a first-class type now, so the
+        // unknown-type fixture uses "hologram" (still unknown).
+        let futureLine = #"{"allowedUse":["local-search"],"byteCount":12,"capturedAt":"2027-01-15T09:00:00Z","characterCount":12,"contentHash":"sha256:futurefixture","contentInline":"future-inline","contentPreview":"future-inline","contentType":"hologram","id":"clip_20270115T090000Z_futurefixtur_cd34ef56","lineCount":1,"pasteboardTypes":["public.hologram"],"privacyLabel":"private-local","schemaVersion":3,"sensitivityFlags":[],"sourceApp":{"name":"Preview"},"uiVisibleUntil":"2027-01-22T09:00:00Z"}"#
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let event = try decoder.decode(StoredClipboardEvent.self, from: Data(futureLine.utf8))
-        try expect(event.contentType == .other("image"), "unknown content type should decode as .other")
-        try expect(event.contentType.rawValue == "image", "unknown content type should keep its raw value")
-        try expect(event.schemaVersion == 2, "future schema version should survive decode")
+        try expect(event.contentType == .other("hologram"), "unknown content type should decode as .other")
+        try expect(event.contentType.rawValue == "hologram", "unknown content type should keep its raw value")
+        try expect(event.schemaVersion == 3, "future schema version should survive decode")
 
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         let reencoded = String(data: try encoder.encode(event), encoding: .utf8) ?? ""
-        try expect(reencoded.contains("\"contentType\":\"image\""), "unknown content type should re-encode losslessly")
+        try expect(reencoded.contains("\"contentType\":\"hologram\""), "unknown content type should re-encode losslessly")
     }
 
     print("all checks passed")

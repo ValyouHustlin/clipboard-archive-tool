@@ -25,6 +25,18 @@ public enum ClipboardBlockedEventExplainer {
             let flags = value.split(separator: ",").joined(separator: ", ")
             return "Content looked like a credential (\(flags))."
         }
+        if reason.hasPrefix("image_exceeds_size_cap") {
+            // Reason shape: image_exceeds_size_cap:<n>b:limit:<cap>b
+            let parts = reason.split(separator: ":")
+            if parts.count >= 4,
+               let bytes = Int(parts[1].dropLast()),
+               let cap = Int(parts[3].dropLast()) {
+                let size = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+                let limit = ByteCountFormatter.string(fromByteCount: Int64(cap), countStyle: .file)
+                return "Image (\(size)) was larger than the rich-image size cap (\(limit))."
+            }
+            return "Image was larger than the rich-image size cap."
+        }
         return "Blocked: \(reason)"
     }
 
@@ -46,6 +58,9 @@ public enum ClipboardBlockedEventExplainer {
         }
         if reason.hasPrefix("secret_detector") {
             return "credential detector"
+        }
+        if reason.hasPrefix("image_exceeds_size_cap") {
+            return "image over size cap"
         }
         return "privacy filter"
     }

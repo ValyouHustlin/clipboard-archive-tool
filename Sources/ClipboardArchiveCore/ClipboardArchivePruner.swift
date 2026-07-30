@@ -262,15 +262,20 @@ public struct ClipboardArchivePruner: Sendable {
                 prunedIDsByFile[eventFile, default: []].insert(event.id)
                 prunedContentHashes.insert(event.contentHash)
 
-                if let rawContentPath = event.rawContentPath,
-                   let bodyURL = try? ClipboardArchivePath.containedURL(
-                       relativePath: rawContentPath,
-                       archiveRoot: archiveRoot
-                   ),
-                   let attributes = try? FileManager.default.attributesOfItem(atPath: bodyURL.path) {
-                    // Same stat call site in both modes: only bodies that
-                    // still exist count, and their true on-disk size is
-                    // what gets reported.
+                // Plain-text body plus the rich body (Slice 6): both are
+                // content, both count toward the truthful reclaim numbers.
+                // Same stat call site in both modes: only bodies that
+                // still exist count, and their true on-disk size is what
+                // gets reported.
+                for bodyPath in [event.rawContentPath, event.richContent?.bodyPath] {
+                    guard let bodyPath,
+                          let bodyURL = try? ClipboardArchivePath.containedURL(
+                              relativePath: bodyPath,
+                              archiveRoot: archiveRoot
+                          ),
+                          let attributes = try? FileManager.default.attributesOfItem(atPath: bodyURL.path) else {
+                        continue
+                    }
                     deletedBodyFiles += 1
                     reclaimedBytes += (attributes[.size] as? NSNumber)?.int64Value ?? 0
                     bodyPathsToDelete.append(bodyURL)
@@ -386,6 +391,7 @@ public struct ClipboardArchivePruner: Sendable {
         tombstone.contentPreview = "[pruned]"
         tombstone.contentInline = nil
         tombstone.rawContentPath = nil
+        tombstone.richContent = nil
         tombstone.privacyLabel = .doNotIndex
         tombstone.allowedUse = [.doNotIndex]
         tombstone.sensitivityFlags = Array(
@@ -604,11 +610,15 @@ public struct ClipboardArchivePruner: Sendable {
                     continue
                 }
 
-                if let rawContentPath = event.rawContentPath,
-                   let bodyURL = try? ClipboardArchivePath.containedURL(
-                       relativePath: rawContentPath,
-                       archiveRoot: archiveRoot
-                   ) {
+                // Plain-text body plus the rich body (Slice 6).
+                for bodyPath in [event.rawContentPath, event.richContent?.bodyPath] {
+                    guard let bodyPath,
+                          let bodyURL = try? ClipboardArchivePath.containedURL(
+                              relativePath: bodyPath,
+                              archiveRoot: archiveRoot
+                          ) else {
+                        continue
+                    }
                     if FileManager.default.fileExists(atPath: bodyURL.path) {
                         try FileManager.default.removeItem(at: bodyURL)
                         deletedBodyFiles += 1
@@ -618,6 +628,7 @@ public struct ClipboardArchivePruner: Sendable {
                 event.contentPreview = "[pruned]"
                 event.contentInline = nil
                 event.rawContentPath = nil
+                event.richContent = nil
                 event.privacyLabel = .doNotIndex
                 event.allowedUse = [.doNotIndex]
                 event.sensitivityFlags = Array(Set(event.sensitivityFlags + ["manually-pruned", reason])).sorted()

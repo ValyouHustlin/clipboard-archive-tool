@@ -117,6 +117,9 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
     public static let minimumRecentItemLimit = 5
     public static let maximumRecentItemLimit = 10_000
     public static let currentSettingsVersion = 1
+    /// Default cap for stored image payloads (Slice 6, contract 7):
+    /// larger images become a visible blocked event instead of a body file.
+    public static let defaultRichImageMaxBytes = 10 * 1024 * 1024
 
     public var excludedBundleIdentifiers: [String]
     public var excludedAppNameFragments: [String]
@@ -149,6 +152,13 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
     public var privateModeUntil: Date?
     /// Opt-in menu status line describing the most recent blocked event.
     public var showBlockedEventStatus: Bool
+    /// Rich-format capture (Slice 6): images, file references, RTF, colors,
+    /// and titled links. Default ON per the approved rich-formats design
+    /// (lead decision 2026-07-30); turning it off restores text-only capture.
+    public var captureRichContent: Bool
+    /// Size cap for stored image payloads; larger images are blocked with a
+    /// visible `image_exceeds_size_cap` reason (contract 7).
+    public var richImageMaxBytes: Int
 
     private enum CodingKeys: String, CodingKey {
         case excludedBundleIdentifiers
@@ -167,6 +177,8 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         case appPrivacyRules
         case privateModeUntil
         case showBlockedEventStatus
+        case captureRichContent
+        case richImageMaxBytes
     }
 
     public init(
@@ -185,7 +197,9 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         settingsVersion: Int = ClipboardSettings.currentSettingsVersion,
         appPrivacyRules: [String: ClipboardAppPrivacyRule] = [:],
         privateModeUntil: Date? = nil,
-        showBlockedEventStatus: Bool = true
+        showBlockedEventStatus: Bool = true,
+        captureRichContent: Bool = true,
+        richImageMaxBytes: Int = ClipboardSettings.defaultRichImageMaxBytes
     ) {
         self.excludedBundleIdentifiers = excludedBundleIdentifiers
         self.excludedAppNameFragments = excludedAppNameFragments
@@ -203,6 +217,8 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         self.appPrivacyRules = Self.normalizedRuleKeys(appPrivacyRules)
         self.privateModeUntil = privateModeUntil
         self.showBlockedEventStatus = showBlockedEventStatus
+        self.captureRichContent = captureRichContent
+        self.richImageMaxBytes = Self.clampRichImageMaxBytes(richImageMaxBytes)
     }
 
     /// Rule keys are canonically lowercased bundle identifiers. When a
@@ -291,6 +307,14 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
             Bool.self,
             forKey: .showBlockedEventStatus
         ) ?? true
+        captureRichContent = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .captureRichContent
+        ) ?? true
+        richImageMaxBytes = Self.clampRichImageMaxBytes(
+            try container.decodeIfPresent(Int.self, forKey: .richImageMaxBytes)
+                ?? Self.defaultRichImageMaxBytes
+        )
     }
 
     public static func clampRecentItemLimit(_ value: Int) -> Int {
@@ -317,6 +341,13 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
             return Date(timeIntervalSinceReferenceDate: seconds)
         }
         return nil
+    }
+
+    /// Keeps a hand-edited cap sane: at least 64 KiB so screenshots do not
+    /// silently vanish, at most 512 MiB so a typo cannot disable the cap's
+    /// memory protection entirely.
+    public static func clampRichImageMaxBytes(_ value: Int) -> Int {
+        max(64 * 1024, min(512 * 1024 * 1024, value))
     }
 }
 

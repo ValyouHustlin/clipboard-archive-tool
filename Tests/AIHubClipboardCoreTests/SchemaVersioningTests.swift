@@ -71,13 +71,13 @@ struct SchemaVersioningTests {
             from: Data(SyntheticFixtures.futureVersionLine().utf8)
         )
 
-        #expect(event.schemaVersion == 2)
-        #expect(event.contentType == .other("image"))
-        #expect(event.contentType.rawValue == "image")
+        #expect(event.schemaVersion == 3)
+        #expect(event.contentType == .other("hologram"))
+        #expect(event.contentType.rawValue == "hologram")
 
         let reencoded = String(data: try archiveEncoder().encode(event), encoding: .utf8) ?? ""
-        #expect(reencoded.contains("\"contentType\":\"image\""))
-        #expect(reencoded.contains("\"schemaVersion\":2"))
+        #expect(reencoded.contains("\"contentType\":\"hologram\""))
+        #expect(reencoded.contains("\"schemaVersion\":3"))
     }
 
     @Test
