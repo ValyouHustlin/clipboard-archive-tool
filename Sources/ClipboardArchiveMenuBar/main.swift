@@ -1,5 +1,6 @@
 import ClipboardArchiveCore
 import AppKit
+import ApplicationServices
 import Foundation
 
 private let archiveRoot = ClipboardDefaults.archiveRoot()
@@ -19,7 +20,10 @@ final class ClipboardMenuBarApp: NSObject,
     private var isPaused = false
     private var lastChangeCount = NSPasteboard.general.changeCount
     private var lastContentHash: Int?
-    private let pasteboard = NSPasteboard.general
+    /// The one pasteboard the app touches. In DEBUG UI automation this is
+    /// swapped for a private named pasteboard so gestures never clobber the
+    /// real clipboard; production always uses `NSPasteboard.general`.
+    private var pasteboard = NSPasteboard.general
     private let archiveWriter = ClipboardArchiveWriter(archiveRoot: archiveRoot)
     private let derivedIndex = ClipboardDerivedIndex(archiveRoot: archiveRoot)
     private lazy var ingestor = ClipboardIngestor(
@@ -42,6 +46,20 @@ final class ClipboardMenuBarApp: NSObject,
     private var panelController: ClipboardPanelController?
     private var settingsWindowController: ClipboardSettingsWindowController?
     private var onboardingWindowController: ClipboardOnboardingWindowController?
+    private static let quickPickerHotKeyID: UInt32 = 1
+    private let hotKeyManager = GlobalHotKeyManager()
+    private var quickPickerController: QuickPickerPanelController?
+    /// Warm event list for the quick picker. Invalidated (dirty flag) at
+    /// every archive mutation — store, delete, prune, settings save — so
+    /// repeat opens are O(1) and a cold open does one `recentItems` scan.
+    private var quickPickerCache: [StoredClipboardEvent] = []
+    private var quickPickerCacheDirty = true
+#if DEBUG
+    /// True when the DEBUG UI automation harness drives this instance.
+    /// Automation NEVER registers the Carbon hotkey (a dev instance must not
+    /// grab system combos while the live app runs) and never posts CGEvents.
+    private var isAutomationMode = false
+#endif
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         isPaused = userDefaults.bool(forKey: "capturePaused")
@@ -56,12 +74,19 @@ final class ClipboardMenuBarApp: NSObject,
             name: NSWorkspace.didActivateApplicationNotification,
             object: nil
         )
+        hotKeyManager.onHotKey = { [weak self] id in
+            guard id == Self.quickPickerHotKeyID else {
+                return
+            }
+            self?.toggleQuickPicker()
+        }
         rebuildMenu()
 #if DEBUG
         if runUIAutomationIfRequested() {
             return
         }
 #endif
+        applyQuickPickerShortcut()
         // Seed the live-event estimate with one startup scan so per-capture
         // retention checks stay in memory afterwards.
         applyRetentionLimitIfNeeded()
@@ -129,6 +154,7 @@ final class ClipboardMenuBarApp: NSObject,
                     ? "Captured; index update pending"
                     : "Captured \(shortDate(Date()))"
                 liveEventCountEstimate = liveEventCountEstimate.map { $0 + 1 }
+                markQuickPickerCacheDirty()
                 applyRetentionLimitIfNeeded()
             case .blocked:
                 blockedCount += 1
@@ -226,6 +252,136 @@ final class ClipboardMenuBarApp: NSObject,
         showSettingsWindow(activate: true)
     }
 
+    // MARK: - Quick picker (expansion contract 8)
+
+    @objc private func openQuickPicker() {
+        toggleQuickPicker()
+    }
+
+    /// The one entry point for the picker: invoked by the global hotkey, the
+    /// menu item, and the DEBUG automation harness.
+    private func toggleQuickPicker() {
+        if quickPickerController == nil {
+            quickPickerController = QuickPickerPanelController(
+                dependencies: QuickPickerPanelController.Dependencies(
+                    loadEvents: { [weak self] in
+                        self?.quickPickerEvents() ?? []
+                    },
+                    copyToPasteboard: { [weak self] event in
+                        // Wraps the ONE shared no-re-capture copy path.
+                        guard let self,
+                              let content = try? self.reader.content(for: event) else {
+                            return nil
+                        }
+                        self.copyToPasteboardWithoutRecapture(content)
+                        return content
+                    },
+                    directPasteAllowed: { [weak self] in
+                        guard let self else {
+                            return false
+                        }
+#if DEBUG
+                        if self.isAutomationMode {
+                            return false
+                        }
+#endif
+                        return self.settings.quickPickerDirectPasteEnabled && AXIsProcessTrusted()
+                    },
+                    performDirectPaste: { [weak self] in
+                        self?.performDirectPaste()
+                    }
+                )
+            )
+        }
+        quickPickerController?.toggle()
+    }
+
+    /// Picker event loader: warm cache when clean, one bounded
+    /// `recentItems` scan when dirty.
+    private func quickPickerEvents() -> [StoredClipboardEvent] {
+        if !quickPickerCacheDirty {
+            return quickPickerCache
+        }
+        let since = Calendar.current.date(
+            byAdding: .day,
+            value: -settings.historyWindow.dayCount,
+            to: Date()
+        ) ?? Date()
+        quickPickerCache = (try? reader.recentItems(
+            since: since,
+            limit: settings.recentItemLimit
+        )) ?? []
+        quickPickerCacheDirty = false
+        return quickPickerCache
+    }
+
+    private func markQuickPickerCacheDirty() {
+        quickPickerCacheDirty = true
+    }
+
+    /// Registers (or clears) the quick picker hotkey from settings. Called
+    /// on launch, after every settings save, and when shortcut recording
+    /// ends. Registration failures surface in Settings and the menu — the
+    /// shortcut stays saved but is reported as not active.
+    private func applyQuickPickerShortcut() {
+#if DEBUG
+        guard !isAutomationMode else {
+            return
+        }
+#endif
+        hotKeyManager.unregister(id: Self.quickPickerHotKeyID)
+        settingsWindowController?.showShortcutRegistrationFailure(nil)
+        let shortcut = settings.quickPickerShortcut
+        guard shortcut.enabled, shortcut.isValid else {
+            return
+        }
+        switch hotKeyManager.register(
+            id: Self.quickPickerHotKeyID,
+            keyCode: UInt32(shortcut.keyCode),
+            carbonModifiers: shortcut.carbonModifierFlags
+        ) {
+        case .registered:
+            break
+        case let .conflict(status):
+            surfaceShortcutFailure(
+                "\(shortcut.displayString) is already in use by another app (error \(status)). The shortcut is saved but not active."
+            )
+        case let .failed(status):
+            surfaceShortcutFailure(
+                "Could not register \(shortcut.displayString) (error \(status)). The shortcut is saved but not active."
+            )
+        }
+    }
+
+    private func surfaceShortcutFailure(_ message: String) {
+        lastStatus = "Quick picker shortcut not active"
+        settingsWindowController?.showShortcutRegistrationFailure(message)
+        rebuildMenu()
+    }
+
+    /// Direct paste: opt-in, re-checks the setting AND Accessibility trust
+    /// on every call, and degrades to plain copy-back silently (never a
+    /// dialog). Posts ⌘V (virtual key 9) to the HID event tap.
+    private func performDirectPaste() {
+#if DEBUG
+        guard !isAutomationMode else {
+            return
+        }
+#endif
+        guard settings.quickPickerDirectPasteEnabled, AXIsProcessTrusted() else {
+            return
+        }
+        let source = CGEventSource(stateID: .combinedSessionState)
+        guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else {
+            return
+        }
+        keyDown.flags = .maskCommand
+        keyUp.flags = .maskCommand
+        keyDown.post(tap: .cghidEventTap)
+        keyUp.post(tap: .cghidEventTap)
+    }
+
     private func showSettingsWindow(activate: Bool) {
         if settingsWindowController == nil {
             let controller = ClipboardSettingsWindowController(
@@ -253,8 +409,20 @@ final class ClipboardMenuBarApp: NSObject,
         if previousInterval != settings.pollIntervalSeconds {
             restartTimer()
         }
+        markQuickPickerCacheDirty()
+        applyQuickPickerShortcut()
         lastStatus = settings.archiveEnabled ? "Settings saved" : "Archive tracking off"
         rebuildMenu()
+    }
+
+    func clipboardSettingsWindowWillBeginShortcutRecording(_ controller: ClipboardSettingsWindowController) {
+        // Suspend the live registration so pressing the current combo
+        // records it instead of opening the picker.
+        hotKeyManager.unregister(id: Self.quickPickerHotKeyID)
+    }
+
+    func clipboardSettingsWindowDidEndShortcutRecording(_ controller: ClipboardSettingsWindowController) {
+        applyQuickPickerShortcut()
     }
 
     private func showOnboarding(activate: Bool = true) {
@@ -295,10 +463,18 @@ final class ClipboardMenuBarApp: NSObject,
             return true
         }
 
+        isAutomationMode = true
+        // Pasteboard isolation: automation commits copy to a private named
+        // pasteboard so gestures never clobber the real clipboard. The
+        // capture-poll dedup state is reseeded against the same pasteboard
+        // so the no-re-capture receipt exercises the production path.
+        pasteboard = NSPasteboard(name: NSPasteboard.Name("app.clipboardarchive.ui-automation"))
+        lastChangeCount = pasteboard.changeCount
+
         settings = ClipboardSettings(
             excludedBundleIdentifiers: ["com.example.passwords"],
             pollIntervalSeconds: 0.2,
-            archiveEnabled: false,
+            archiveEnabled: environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_ARCHIVE_ENABLED"] == "1",
             recentItemLimit: 50,
             historyWindow: .fourteenDays,
             retentionMode: .recent50,
@@ -320,6 +496,15 @@ final class ClipboardMenuBarApp: NSObject,
                 showSettingsWindow(activate: false)
             } else if screen == "onboarding" {
                 showOnboarding(activate: false)
+            } else if screen == "quickpicker" {
+                try seedSyntheticUIFixtures()
+                // Same entry point the global hotkey invokes; automation
+                // mode never registers the Carbon hotkey itself.
+                toggleQuickPicker()
+                if let query = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_QUERY"],
+                   !query.isEmpty {
+                    quickPickerController?.performAutomationQuery(query)
+                }
             } else {
                 throw NSError(
                     domain: "ClipboardArchiveUIAutomation",
@@ -343,6 +528,8 @@ final class ClipboardMenuBarApp: NSObject,
                     try self?.settingsWindowController?.writeSnapshot(to: url)
                 case "onboarding":
                     try self?.onboardingWindowController?.writeSnapshot(to: url)
+                case "quickpicker":
+                    self?.runQuickPickerAutomation(snapshotURL: url)
                 default:
                     break
                 }
@@ -352,6 +539,58 @@ final class ClipboardMenuBarApp: NSObject,
             NSApp.terminate(nil)
         }
         return true
+    }
+
+    /// Applies the requested gesture list through the picker's production
+    /// key handlers, runs one capture-poll tick (the no-re-capture receipt),
+    /// then writes the snapshot PNG and the machine-readable result JSON.
+    private func runQuickPickerAutomation(snapshotURL: URL) {
+        let environment = ProcessInfo.processInfo.environment
+        let eventCountBefore = archiveEventCount()
+
+        if let gestures = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_GESTURES"],
+           !gestures.isEmpty {
+            for gesture in gestures.split(separator: ",") {
+                quickPickerController?.performAutomationGesture(String(gesture))
+            }
+        }
+
+        // One poll tick: with archiveEnabled=true this asserts that a picker
+        // commit is NOT re-captured as a new archive event (the shared copy
+        // helper already synced the dedup state).
+        pollPasteboard()
+        let eventCountAfter = archiveEventCount()
+
+        try? quickPickerController?.writeSnapshot(to: snapshotURL)
+
+        if let resultPath = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_RESULT_PATH"],
+           !resultPath.isEmpty {
+            let committed = quickPickerController?.automationLastCommittedContent
+            let pasteboardString = pasteboard.string(forType: .string)
+            let result: [String: Any] = [
+                "filteredCount": quickPickerController?.automationFilteredCount ?? -1,
+                "selectedPreviewPrefix": String(
+                    (quickPickerController?.automationLastSelectedPreview ?? "").prefix(24)
+                ),
+                "pasteboardMatchesSelection": committed != nil && pasteboardString == committed,
+                "pickerVisibleAfterGestures": quickPickerController?.isVisible ?? false,
+                "openElapsedMilliseconds":
+                    quickPickerController?.automationLastOpenElapsedMilliseconds ?? -1,
+                "eventCountBefore": eventCountBefore,
+                "eventCountAfter": eventCountAfter
+            ]
+            if let data = try? JSONSerialization.data(
+                withJSONObject: result,
+                options: [.prettyPrinted, .sortedKeys]
+            ) {
+                try? data.write(to: URL(fileURLWithPath: resultPath), options: [.atomic])
+            }
+        }
+    }
+
+    private func archiveEventCount() -> Int {
+        let epoch = Date(timeIntervalSince1970: 0)
+        return (try? reader.recentItems(since: epoch, limit: Int.max))?.count ?? -1
     }
 
     private func seedSyntheticUIFixtures() throws {
@@ -434,6 +673,7 @@ final class ClipboardMenuBarApp: NSObject,
             liveEventCountEstimate = result.keptEvents
             if result.prunedEvents > 0 {
                 lastStatus = "Kept latest \(limit), pruned \(result.prunedEvents)"
+                markQuickPickerCacheDirty()
             }
         } catch {
             lastStatus = "Retention prune failed"
@@ -518,6 +758,7 @@ final class ClipboardMenuBarApp: NSObject,
         }
         menu.addItem(NSMenuItem.separator())
 
+        menu.addItem(NSMenuItem(title: "Quick Picker", action: #selector(openQuickPicker), keyEquivalent: "p"))
         menu.addItem(NSMenuItem(title: "Clipboard History…", action: #selector(openClipboardWindow), keyEquivalent: "o"))
         menu.addItem(NSMenuItem(title: "Search History…", action: #selector(openClipboardSearch), keyEquivalent: "f"))
         menu.addItem(NSMenuItem(title: isPaused ? "Resume Capture" : "Pause Capture", action: #selector(togglePause), keyEquivalent: ""))
@@ -588,6 +829,7 @@ final class ClipboardMenuBarApp: NSObject,
         settings.archiveEnabled = true
         settings.hasCompletedOnboarding = true
         try? settingsStore.save(settings)
+        markQuickPickerCacheDirty()
         rebuildMenu()
     }
 
@@ -655,6 +897,7 @@ final class ClipboardMenuBarApp: NSObject,
         do {
             try redactor.redact(eventID: id)
             lastStatus = "Deleted item \(shortDate(Date()))"
+            markQuickPickerCacheDirty()
             rebuildMenu()
         } catch {
             showError("Delete failed: \(error)")
@@ -672,6 +915,7 @@ final class ClipboardMenuBarApp: NSObject,
         do {
             try redactor.redact(eventID: event.id)
             lastStatus = "Deleted latest item \(shortDate(Date()))"
+            markQuickPickerCacheDirty()
             rebuildMenu()
         } catch {
             showError("Delete failed: \(error)")
@@ -745,6 +989,8 @@ final class ClipboardMenuBarApp: NSObject,
                 derivedIndex: derivedIndex
             )
             userDefaults.set(isPaused, forKey: "capturePaused")
+            markQuickPickerCacheDirty()
+            applyQuickPickerShortcut()
             lastStatus = status
             restartTimer()
             configureStatusIcon()

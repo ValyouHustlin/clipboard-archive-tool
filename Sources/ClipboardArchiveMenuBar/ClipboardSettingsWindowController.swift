@@ -1,10 +1,16 @@
 import ClipboardArchiveCore
 import AppKit
+import ApplicationServices
 import Foundation
 
 @MainActor
 protocol ClipboardSettingsWindowControllerDelegate: AnyObject {
     func clipboardSettingsWindow(_ controller: ClipboardSettingsWindowController, didSave settings: ClipboardSettings)
+    /// The app delegate suspends the live hotkey registration while the
+    /// recorder captures keys, so pressing the current combo re-records it
+    /// instead of opening the picker.
+    func clipboardSettingsWindowWillBeginShortcutRecording(_ controller: ClipboardSettingsWindowController)
+    func clipboardSettingsWindowDidEndShortcutRecording(_ controller: ClipboardSettingsWindowController)
 }
 
 @MainActor
@@ -25,6 +31,23 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
     private let excludedBundlesList = NSTableView()
     private let statusLabel = NSTextField(labelWithString: "")
     private var excludedBundleIdentifiers: [String] = []
+    private let shortcutEnabledButton = NSButton(
+        checkboxWithTitle: "Enable quick picker shortcut",
+        target: nil,
+        action: nil
+    )
+    private let shortcutRecorder = ShortcutRecorderView()
+    private let shortcutConflictLabel = NSTextField(wrappingLabelWithString: "")
+    private let directPasteButton = NSButton(
+        checkboxWithTitle: "Paste directly into the active app after picking (⌘↩)",
+        target: nil,
+        action: nil
+    )
+    private let accessibilityStatusLabel = NSTextField(wrappingLabelWithString: "")
+    private let openAccessibilityButton = NSButton(title: "Open System Settings", target: nil, action: nil)
+    /// The Accessibility permission prompt fires only on the FIRST direct-
+    /// paste enable in this session — never from the picker at paste time.
+    private var hasPromptedForAccessibility = false
 
     init(settings: ClipboardSettings, settingsStore: ClipboardSettingsStore, archiveRoot: URL) {
         self.settings = settings
@@ -52,6 +75,7 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
     func show(settings: ClipboardSettings, activate: Bool = true) {
         self.settings = settings
         loadSettingsIntoControls()
+        refreshAccessibilityStatus()
         window?.center()
         if activate {
             window?.makeKeyAndOrderFront(nil)
@@ -86,6 +110,7 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
 
         configureGeneralControls()
         configurePrivacyControls()
+        configureShortcutControls()
 
         let header = brandedHeader()
         let footer = actionFooter()
@@ -154,6 +179,14 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
             views: privacyControls()
         )
 
+        let shortcutsCard = sectionCard(
+            title: "Shortcuts",
+            subtitle: "Open the quick picker from anywhere with a global keyboard shortcut.",
+            symbol: "keyboard",
+            tint: .systemOrange,
+            views: shortcutControls()
+        )
+
         let storageCard = sectionCard(
             title: "Local Storage",
             subtitle: "Accepted clips and the search index stay on this Mac in owner-only files.",
@@ -174,6 +207,7 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         rightColumn.alignment = .width
         rightColumn.spacing = 18
         rightColumn.addArrangedSubview(privacyCard)
+        rightColumn.addArrangedSubview(shortcutsCard)
         rightColumn.addArrangedSubview(storageCard)
 
         columns.addArrangedSubview(leftColumn)
@@ -356,6 +390,97 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         column.resizingMask = .autoresizingMask
         excludedBundlesList.addTableColumn(column)
         excludedBundlesList.autoresizingMask = [.width]
+    }
+
+    private func configureShortcutControls() {
+        shortcutEnabledButton.target = self
+        shortcutEnabledButton.action = #selector(toggleShortcutEnabled)
+        shortcutEnabledButton.font = .systemFont(ofSize: 13, weight: .medium)
+        shortcutRecorder.recorderDelegate = self
+        shortcutConflictLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        shortcutConflictLabel.textColor = .systemRed
+        shortcutConflictLabel.isHidden = true
+        directPasteButton.target = self
+        directPasteButton.action = #selector(toggleDirectPaste)
+        directPasteButton.font = .systemFont(ofSize: 12)
+        accessibilityStatusLabel.font = .systemFont(ofSize: 10)
+        accessibilityStatusLabel.textColor = .secondaryLabelColor
+        openAccessibilityButton.target = self
+        openAccessibilityButton.action = #selector(openAccessibilitySettings)
+        openAccessibilityButton.bezelStyle = .inline
+        openAccessibilityButton.controlSize = .small
+        openAccessibilityButton.setAccessibilityLabel("Open Accessibility privacy settings")
+    }
+
+    private func shortcutControls() -> [NSView] {
+        let recorderRow = settingRow(
+            title: "Quick picker shortcut",
+            detail: "Opens a floating picker over any app. Copy needs no permissions.",
+            control: shortcutRecorder
+        )
+
+        let accessibilityRow = NSStackView()
+        accessibilityRow.orientation = .horizontal
+        accessibilityRow.alignment = .centerY
+        accessibilityRow.spacing = 8
+        accessibilityRow.addArrangedSubview(accessibilityStatusLabel)
+        accessibilityRow.addArrangedSubview(openAccessibilityButton)
+        accessibilityRow.addArrangedSubview(NSView())
+        accessibilityStatusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        return [
+            shortcutEnabledButton,
+            recorderRow,
+            shortcutConflictLabel,
+            separatorView(),
+            directPasteButton,
+            accessibilityRow
+        ]
+    }
+
+    /// Surfaces a hotkey registration failure (conflict or error) from the
+    /// app delegate. Pass nil to clear. The shortcut stays saved but is
+    /// reported as not active (expansion contract 8: never silent).
+    func showShortcutRegistrationFailure(_ message: String?) {
+        shortcutConflictLabel.stringValue = message ?? ""
+        shortcutConflictLabel.isHidden = message == nil
+    }
+
+    @objc private func toggleShortcutEnabled() {
+        updateRetentionStatus()
+    }
+
+    @objc private func toggleDirectPaste() {
+        if directPasteButton.state == .on,
+           !hasPromptedForAccessibility,
+           !AXIsProcessTrusted() {
+            hasPromptedForAccessibility = true
+            // Literal key: kAXTrustedCheckOptionPrompt's documented raw
+            // value; the imported global is not concurrency-safe in Swift 6.
+            let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+            AXIsProcessTrustedWithOptions(options)
+        }
+        refreshAccessibilityStatus()
+    }
+
+    @objc private func openAccessibilitySettings() {
+        let link = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        if let url = URL(string: link) {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    private func refreshAccessibilityStatus() {
+        if AXIsProcessTrusted() {
+            accessibilityStatusLabel.stringValue = "Accessibility access granted"
+            accessibilityStatusLabel.textColor = .systemGreen
+            openAccessibilityButton.isHidden = true
+        } else {
+            accessibilityStatusLabel.stringValue =
+                "Requires Accessibility access — copy-back is used until granted"
+            accessibilityStatusLabel.textColor = .secondaryLabelColor
+            openAccessibilityButton.isHidden = false
+        }
     }
 
     private func privacyControls() -> [NSView] {
@@ -582,6 +707,10 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         excludedBundleIdentifiers = settings.excludedBundleIdentifiers.sorted()
         excludedBundleField.stringValue = ""
         excludedBundlesList.reloadData()
+        shortcutRecorder.shortcut = settings.quickPickerShortcut
+        shortcutEnabledButton.state = settings.quickPickerShortcut.enabled ? .on : .off
+        directPasteButton.state = settings.quickPickerDirectPasteEnabled ? .on : .off
+        refreshAccessibilityStatus()
         updateRetentionStatus()
     }
 
@@ -651,6 +780,10 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         settings.pollIntervalSeconds = poll
         settings.excludedBundleIdentifiers = Array(Set(excludedBundleIdentifiers)).sorted()
         settings.hasCompletedOnboarding = true
+        var shortcut = shortcutRecorder.shortcut ?? settings.quickPickerShortcut
+        shortcut.enabled = shortcutEnabledButton.state == .on
+        settings.quickPickerShortcut = shortcut
+        settings.quickPickerDirectPasteEnabled = directPasteButton.state == .on
 
         do {
             try settingsStore.save(settings)
@@ -748,5 +881,29 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
             text.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
         ])
         return cell
+    }
+}
+
+extension ClipboardSettingsWindowController: ShortcutRecorderViewDelegate {
+    func shortcutRecorderWillBeginRecording(_ view: ShortcutRecorderView) {
+        delegate?.clipboardSettingsWindowWillBeginShortcutRecording(self)
+    }
+
+    func shortcutRecorderDidEndRecording(_ view: ShortcutRecorderView) {
+        delegate?.clipboardSettingsWindowDidEndShortcutRecording(self)
+    }
+
+    func shortcutRecorder(
+        _ view: ShortcutRecorderView,
+        didRecord shortcut: ClipboardShortcutSetting
+    ) {
+        showShortcutRegistrationFailure(nil)
+        statusLabel.stringValue = "Shortcut set to \(shortcut.displayString)"
+    }
+
+    func shortcutRecorderDidClear(_ view: ShortcutRecorderView) {
+        shortcutEnabledButton.state = .off
+        showShortcutRegistrationFailure(nil)
+        statusLabel.stringValue = "Shortcut cleared"
     }
 }
