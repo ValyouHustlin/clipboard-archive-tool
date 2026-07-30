@@ -6,6 +6,7 @@ struct CLIOptions {
     var command: String
     var positional: [String]
     var archiveRoot: URL
+    var indexPath: URL
     var intervalSeconds: TimeInterval
     var durationSeconds: TimeInterval?
     var inlineLimitBytes: Int
@@ -25,6 +26,7 @@ struct CLIOptions {
 
         var positional: [String] = []
         var archiveRoot = ClipboardDefaults.archiveRoot()
+        var indexPath = ClipboardDefaults.indexURL()
         var intervalSeconds: TimeInterval = 1.0
         var durationSeconds: TimeInterval?
         var inlineLimitBytes = 64 * 1024
@@ -43,6 +45,10 @@ struct CLIOptions {
                 index += 1
                 guard index < args.count else { throw CLIError.missingValue("--archive-root") }
                 archiveRoot = URL(fileURLWithPath: args[index])
+            case "--index-path":
+                index += 1
+                guard index < args.count else { throw CLIError.missingValue("--index-path") }
+                indexPath = URL(fileURLWithPath: args[index])
             case "--interval":
                 index += 1
                 guard index < args.count, let value = TimeInterval(args[index]), value > 0 else {
@@ -98,6 +104,7 @@ struct CLIOptions {
             command: command,
             positional: positional,
             archiveRoot: archiveRoot,
+            indexPath: indexPath,
             intervalSeconds: intervalSeconds,
             durationSeconds: durationSeconds,
             inlineLimitBytes: inlineLimitBytes,
@@ -246,7 +253,7 @@ case "monitor":
         pasteboard: .general,
         ingestor: ClipboardIngestor(
             archiveWriter: writer,
-            derivedIndex: ClipboardDerivedIndex(archiveRoot: options.archiveRoot)
+            derivedIndex: ClipboardDerivedIndex(archiveRoot: options.archiveRoot, indexURL: options.indexPath)
         ),
         intervalSeconds: options.intervalSeconds,
         durationSeconds: options.durationSeconds,
@@ -280,7 +287,7 @@ case "redact":
     guard let id = options.positional.first else {
         throw CLIError.missingValue("clipboard event id")
     }
-    let result = try ClipboardArchiveRedactor(archiveRoot: options.archiveRoot).redact(eventID: id)
+    let result = try ClipboardArchiveRedactor(archiveRoot: options.archiveRoot, indexURL: options.indexPath).redact(eventID: id)
     print("redacted \(result.eventID)")
     print("event file: \(result.redactedEventFile)")
     if let deletedBodyFile = result.deletedBodyFile {
@@ -294,7 +301,7 @@ case "prune":
     guard let before = options.until ?? options.since ?? options.positional.first.flatMap(CLIOptions.parseDate) else {
         throw CLIError.missingValue("prune cutoff date; use --until YYYY-MM-DD")
     }
-    let result = try ClipboardArchivePruner(archiveRoot: options.archiveRoot)
+    let result = try ClipboardArchivePruner(archiveRoot: options.archiveRoot, indexURL: options.indexPath)
         .pruneContent(before: before, dryRun: options.dryRun)
     if options.json {
         let encoder = JSONEncoder()
@@ -310,7 +317,7 @@ case "prune":
     }
 
 case "repair-index":
-    let index = ClipboardDerivedIndex(archiveRoot: options.archiveRoot)
+    let index = ClipboardDerivedIndex(archiveRoot: options.archiveRoot, indexURL: options.indexPath)
     let count = try index.rebuild()
     print("index rebuilt: \(count) item(s)")
     print("index path: \(index.indexURL.path)")
@@ -319,11 +326,11 @@ case "index-search":
     guard let query = options.positional.first else {
         throw CLIError.missingValue("search query")
     }
-    let output = try ClipboardDerivedIndex(archiveRoot: options.archiveRoot).search(query, limit: options.limit)
+    let output = try ClipboardDerivedIndex(archiveRoot: options.archiveRoot, indexURL: options.indexPath).search(query, limit: options.limit)
     print(output.isEmpty ? "no matches" : output)
 
 case "health":
-    let reporter = ClipboardArchiveHealthReporter(archiveRoot: options.archiveRoot)
+    let reporter = ClipboardArchiveHealthReporter(archiveRoot: options.archiveRoot, indexURL: options.indexPath)
     let health = try reporter.health()
     if options.json {
         let encoder = JSONEncoder()
@@ -374,6 +381,9 @@ default:
       --duration SECONDS            Stop after this many seconds.
       --interval SECONDS            Polling interval. Default: 1.
       --archive-root PATH           Default: ~/Library/Application Support/ClipboardArchive/Archive/clipboard-history
+      --index-path PATH             Derived search index location used by monitor, redact,
+                                    prune, repair-index, index-search, and health.
+                                    Default: ~/Library/Application Support/ClipboardArchive/Indexes/clipboard-search.sqlite
       --inline-limit-bytes BYTES    Default: 65536. Larger content uses body files.
       --limit N                     Search result limit. Default: 25.
       --since YYYY-MM-DD            Search lower date bound.

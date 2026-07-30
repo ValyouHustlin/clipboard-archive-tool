@@ -14,6 +14,13 @@ swift build --product clipboard-archive >/dev/null
 start_generate="$(date +%s)"
 "$ROOT/.build/debug/clipboard-archive" self-test >/dev/null
 
+# DRIFT GUARD: the python generator below embeds a second copy of the
+# StoredClipboardEvent NDJSON shape. It is locked by
+# Tests/AIHubClipboardCoreTests/SyntheticFixtures.swift (benchmarkGeneratorLine)
+# and the benchmark-shape test in
+# Tests/AIHubClipboardCoreTests/SchemaVersioningTests.swift.
+# Any schema change must update the generator, the fixture, and the test in
+# the SAME commit (docs/expansion-contracts.md, contract 1).
 python3 - "$ARCHIVE_ROOT" "$COUNT" <<'PY'
 import datetime as dt
 import json

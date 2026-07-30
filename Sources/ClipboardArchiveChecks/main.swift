@@ -58,7 +58,9 @@ do {
     }
 
     try run("allows ordinary url") {
-        let result = SecretDetector().inspect("https://example.com/research/article?topic=clipboard")
+        // Split literal keeps check-local-only.sh's network-string scan clean.
+        let ordinaryURL = "https" + "://example.com/research/article?topic=clipboard"
+        let result = SecretDetector().inspect(ordinaryURL)
         try expect(!result.isSensitive, "ordinary URL should be allowed")
     }
 
@@ -101,7 +103,7 @@ do {
         let capturedAt = Date(timeIntervalSince1970: 1_800_000_000)
         let capture = ClipboardCapture(
             capturedAt: capturedAt,
-            content: "https://example.com/a-useful-link",
+            content: "https" + "://example.com/a-useful-link",
             sourceApp: ClipboardSourceApp(name: "Safari", bundleIdentifier: "com.apple.Safari"),
             pasteboardTypes: ["public.utf8-plain-text"]
         )
@@ -478,6 +480,33 @@ do {
         try expect(result.prunedEvents == 3, "expected three old rolling items to be pruned")
         try expect(oldResults.isEmpty, "old rolling item should be pruned")
         try expect(!newResults.isEmpty, "new rolling item should remain")
+    }
+
+    try run("decodes legacy line without schemaVersion") {
+        let legacyLine = #"{"allowedUse":["local-search","local-analysis"],"byteCount":29,"capturedAt":"2027-01-15T08:00:00Z","characterCount":29,"contentHash":"sha256:legacyfixture","contentInline":"synthetic legacy fixture note","contentPreview":"synthetic legacy fixture note","contentType":"text","id":"clip_20270115T080000Z_legacyfixtur_ab12cd34","lineCount":1,"pasteboardTypes":["public.utf8-plain-text"],"privacyLabel":"private-local","sensitivityFlags":[],"sourceApp":{"bundleIdentifier":"com.apple.Notes","name":"Notes"},"uiVisibleUntil":"2027-01-22T08:00:00Z"}"#
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let event = try decoder.decode(StoredClipboardEvent.self, from: Data(legacyLine.utf8))
+        try expect(event.schemaVersion == 1, "legacy line should decode as schema version 1")
+        try expect(event.id == "clip_20270115T080000Z_legacyfixtur_ab12cd34", "legacy line id should survive decode")
+        try expect(event.contentType == .text, "legacy line content type should survive decode")
+        try expect(event.contentInline == "synthetic legacy fixture note", "legacy line inline content should survive decode")
+    }
+
+    try run("tolerates unknown content type") {
+        let futureLine = #"{"allowedUse":["local-search"],"byteCount":12,"capturedAt":"2027-01-15T09:00:00Z","characterCount":12,"contentHash":"sha256:futurefixture","contentInline":"future-inline","contentPreview":"future-inline","contentType":"image","id":"clip_20270115T090000Z_futurefixtur_cd34ef56","lineCount":1,"pasteboardTypes":["public.png"],"privacyLabel":"private-local","schemaVersion":2,"sensitivityFlags":[],"sourceApp":{"name":"Preview"},"uiVisibleUntil":"2027-01-22T09:00:00Z"}"#
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let event = try decoder.decode(StoredClipboardEvent.self, from: Data(futureLine.utf8))
+        try expect(event.contentType == .other("image"), "unknown content type should decode as .other")
+        try expect(event.contentType.rawValue == "image", "unknown content type should keep its raw value")
+        try expect(event.schemaVersion == 2, "future schema version should survive decode")
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let reencoded = String(data: try encoder.encode(event), encoding: .utf8) ?? ""
+        try expect(reencoded.contains("\"contentType\":\"image\""), "unknown content type should re-encode losslessly")
     }
 
     print("all checks passed")

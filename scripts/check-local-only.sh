@@ -11,6 +11,7 @@ production_source_matches="$(
     "$ROOT/Sources/ClipboardArchiveCore" \
     "$ROOT/Sources/ClipboardArchiveMenuBar" \
     "$ROOT/Sources/clipboard-archive" \
+    "$ROOT/Sources/ClipboardArchiveChecks" \
     "$ROOT/Package.swift" \
     2>/dev/null \
     | rg -v 'github\.com/swiftlang/swift-testing\.git' \
