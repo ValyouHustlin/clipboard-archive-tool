@@ -355,6 +355,40 @@ final class ClipboardMenuBarApp: NSObject,
         dashboardWindowController?.show(activate: true)
     }
 
+    // MARK: - Encrypted backup/restore (Slice 8)
+
+    private var backupUIController: ClipboardBackupUIController?
+
+    private func backupController() -> ClipboardBackupUIController {
+        if let backupUIController {
+            return backupUIController
+        }
+        let controller = ClipboardBackupUIController(
+            archiveRoot: archiveRoot,
+            onArchiveMutated: { [weak self] in
+                guard let self else {
+                    return
+                }
+                // Post-import archive-mutation hook: same invalidations as
+                // every other external archive mutation.
+                self.markQuickPickerCacheDirty()
+                self.liveEventCountEstimate = nil
+                self.panelController?.reloadFromExternalMutation()
+                self.rebuildMenu()
+            }
+        )
+        backupUIController = controller
+        return controller
+    }
+
+    @objc private func backupArchive() {
+        backupController().runBackup()
+    }
+
+    @objc private func restoreFromBackup() {
+        backupController().runRestore()
+    }
+
     @objc private func pause15Minutes() {
         pauseFor(minutes: 15)
     }
@@ -658,6 +692,12 @@ final class ClipboardMenuBarApp: NSObject,
             controller.delegate = self
             controller.onOpenDashboard = { [weak self] in
                 self?.openDashboard()
+            }
+            controller.onBackupArchive = { [weak self] in
+                self?.backupArchive()
+            }
+            controller.onRestoreArchive = { [weak self] in
+                self?.restoreFromBackup()
             }
             settingsWindowController = controller
         }
@@ -1766,6 +1806,9 @@ final class ClipboardMenuBarApp: NSObject,
         maintenanceSubmenu.addItem(privateMenu)
         maintenanceSubmenu.addItem(NSMenuItem(title: "Refresh Menu", action: #selector(refreshMenu), keyEquivalent: "r"))
         maintenanceSubmenu.addItem(NSMenuItem(title: "Open Archive Folder", action: #selector(openArchiveFolder), keyEquivalent: ""))
+        maintenanceSubmenu.addItem(NSMenuItem.separator())
+        maintenanceSubmenu.addItem(NSMenuItem(title: "Back Up Archive…", action: #selector(backupArchive), keyEquivalent: ""))
+        maintenanceSubmenu.addItem(NSMenuItem(title: "Restore from Backup…", action: #selector(restoreFromBackup), keyEquivalent: ""))
         maintenance.submenu = maintenanceSubmenu
         menu.addItem(maintenance)
 

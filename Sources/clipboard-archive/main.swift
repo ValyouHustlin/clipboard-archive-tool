@@ -21,6 +21,11 @@ struct CLIOptions {
     var appName: String?
     var contentType: String?
     var sensitivity: String?
+    // Slice 8 backup flags.
+    var includeSettings: Bool
+    var passphraseStdin: Bool
+    var merge: Bool
+    var applySettings: Bool
 
     static func parse(_ arguments: [String]) throws -> CLIOptions {
         var args = Array(arguments.dropFirst())
@@ -46,6 +51,10 @@ struct CLIOptions {
         var appName: String?
         var contentType: String?
         var sensitivity: String?
+        var includeSettings = false
+        var passphraseStdin = false
+        var merge = false
+        var applySettings = false
 
         var index = 0
         while index < args.count {
@@ -128,6 +137,14 @@ struct CLIOptions {
                 dryRun = true
             case "--include-pinned":
                 includePinned = true
+            case "--include-settings":
+                includeSettings = true
+            case "--passphrase-stdin":
+                passphraseStdin = true
+            case "--merge":
+                merge = true
+            case "--apply-settings":
+                applySettings = true
             default:
                 if arg.hasPrefix("--") {
                     throw CLIError.unknownArgument(arg)
@@ -155,7 +172,11 @@ struct CLIOptions {
             bundleID: bundleID,
             appName: appName,
             contentType: contentType,
-            sensitivity: sensitivity
+            sensitivity: sensitivity,
+            includeSettings: includeSettings,
+            passphraseStdin: passphraseStdin,
+            merge: merge,
+            applySettings: applySettings
         )
     }
 
@@ -467,6 +488,9 @@ case "health":
         }
     }
 
+case "backup":
+    try runBackupCommand(options: options)
+
 case "write-manifest":
     let url = try ClipboardArchiveHealthReporter(archiveRoot: options.archiveRoot).writeDailyManifest()
     print("manifest written: \(url.path)")
@@ -488,6 +512,14 @@ default:
       index-search QUERY Search the derived SQLite FTS index.
       health       Report archive/index health.
       write-manifest Write today's daily manifest.
+      backup create FILE   Write an encrypted backup (.clipbak) of the archive.
+                           Options: --include-settings, --passphrase-stdin.
+      backup inspect FILE  Decrypt and show a backup's manifest (needs the
+                           passphrase). Options: --json, --passphrase-stdin.
+      backup restore FILE  Restore a backup. Without --merge the archive must
+                           be empty; --merge imports missing items (local
+                           deletions always win). Options: --merge, --dry-run,
+                           --apply-settings, --json, --passphrase-stdin.
 
     Monitor options:
       --duration SECONDS            Stop after this many seconds.
