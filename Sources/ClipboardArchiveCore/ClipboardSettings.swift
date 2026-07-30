@@ -69,6 +69,14 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
     public var historyWindow: ClipboardHistoryWindow
     public var retentionMode: ClipboardRetentionMode
     public var hasCompletedOnboarding: Bool
+    /// Global shortcut configuration keyed by action id (expansion
+    /// contract 8). Dictionary-keyed so future shortcut actions need no
+    /// settings migration; unknown action ids from newer builds load and
+    /// round-trip untouched.
+    public var shortcuts: [String: ClipboardShortcutSetting]
+    /// Opt-in direct paste after a quick picker commit. Requires
+    /// Accessibility trust at use time and degrades to copy-back silently.
+    public var quickPickerDirectPasteEnabled: Bool
 
     private enum CodingKeys: String, CodingKey {
         case excludedBundleIdentifiers
@@ -80,6 +88,8 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         case historyWindow
         case retentionMode
         case hasCompletedOnboarding
+        case shortcuts
+        case quickPickerDirectPasteEnabled
     }
 
     public init(
@@ -91,7 +101,9 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         recentItemLimit: Int = 50,
         historyWindow: ClipboardHistoryWindow = .sevenDays,
         retentionMode: ClipboardRetentionMode = .recent50,
-        hasCompletedOnboarding: Bool = false
+        hasCompletedOnboarding: Bool = false,
+        shortcuts: [String: ClipboardShortcutSetting] = [:],
+        quickPickerDirectPasteEnabled: Bool = false
     ) {
         self.excludedBundleIdentifiers = excludedBundleIdentifiers
         self.excludedAppNameFragments = excludedAppNameFragments
@@ -102,6 +114,20 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         self.historyWindow = historyWindow
         self.retentionMode = retentionMode
         self.hasCompletedOnboarding = hasCompletedOnboarding
+        self.shortcuts = shortcuts
+        self.quickPickerDirectPasteEnabled = quickPickerDirectPasteEnabled
+    }
+
+    /// The quick picker shortcut, falling back to the disabled ⌥⌘V default
+    /// when no entry exists (settings written by older builds).
+    public var quickPickerShortcut: ClipboardShortcutSetting {
+        get {
+            shortcuts[ClipboardShortcutSetting.quickPickerActionID]
+                ?? .quickPickerDefault
+        }
+        set {
+            shortcuts[ClipboardShortcutSetting.quickPickerActionID] = newValue
+        }
     }
 
     public var isTemporarilyPaused: Bool {
@@ -126,6 +152,14 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         ) ?? .sevenDays
         retentionMode = try container.decodeIfPresent(ClipboardRetentionMode.self, forKey: .retentionMode) ?? (archiveEnabled ? .unlimited : .recent50)
         hasCompletedOnboarding = try container.decodeIfPresent(Bool.self, forKey: .hasCompletedOnboarding) ?? true
+        shortcuts = try container.decodeIfPresent(
+            [String: ClipboardShortcutSetting].self,
+            forKey: .shortcuts
+        ) ?? [:]
+        quickPickerDirectPasteEnabled = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .quickPickerDirectPasteEnabled
+        ) ?? false
     }
 
     public static func clampRecentItemLimit(_ value: Int) -> Int {
