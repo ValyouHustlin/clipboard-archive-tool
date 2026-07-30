@@ -39,7 +39,7 @@ public struct ClipboardArchiveSearcher: Sendable {
             return []
         }
 
-        let deleted = try ClipboardDeletionLedger(archiveRoot: archiveRoot).deletedIDs()
+        let suppression = try ClipboardSuppression(archiveRoot: archiveRoot).snapshot()
         var results: [ClipboardSearchResult] = []
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -50,7 +50,7 @@ public struct ClipboardArchiveSearcher: Sendable {
                 guard let data = String(line).data(using: .utf8),
                       let event = try? decoder.decode(StoredClipboardEvent.self, from: data),
                       isWithinDateWindow(event.capturedAt, options: options),
-                      !deleted.contains(event.id) else {
+                      !suppression.isSuppressed(event) else {
                     continue
                 }
 
