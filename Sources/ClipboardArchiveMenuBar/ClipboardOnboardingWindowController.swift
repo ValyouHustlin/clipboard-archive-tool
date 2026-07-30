@@ -16,13 +16,13 @@ final class ClipboardOnboardingWindowController: NSWindowController {
 
     init(archiveRoot: URL) {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 680, height: 500),
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 540),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
         window.title = "Welcome to Clipboard Archive"
-        window.minSize = NSSize(width: 680, height: 500)
+        window.minSize = NSSize(width: 680, height: 540)
         super.init(window: window)
         buildUI(archiveRoot: archiveRoot)
     }
@@ -45,6 +45,12 @@ final class ClipboardOnboardingWindowController: NSWindowController {
     func writeSnapshot(to url: URL) throws {
         guard let view = window?.contentView else {
             return
+        }
+        // Appearance-resolved background fill for faithful light/dark
+        // snapshots (Slice 9; see ClipboardPanelController.writeSnapshot).
+        view.wantsLayer = true
+        window?.effectiveAppearance.performAsCurrentDrawingAppearance {
+            view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         }
         window?.displayIfNeeded()
         guard let representation = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
@@ -80,6 +86,9 @@ final class ClipboardOnboardingWindowController: NSWindowController {
 
         let root = NSStackView()
         root.orientation = .vertical
+        // Leading alignment (Slice 9 layout QA): the default centerX made
+        // every block float centered at intrinsic width.
+        root.alignment = .leading
         root.spacing = 18
         root.edgeInsets = NSEdgeInsets(top: 28, left: 32, bottom: 28, right: 32)
         root.translatesAutoresizingMaskIntoConstraints = false
@@ -107,6 +116,7 @@ final class ClipboardOnboardingWindowController: NSWindowController {
 
         let headings = NSStackView()
         headings.orientation = .vertical
+        headings.alignment = .leading
         headings.spacing = 5
         let title = NSTextField(labelWithString: "Make your clipboard useful again")
         title.font = .systemFont(ofSize: 25, weight: .semibold)
@@ -129,6 +139,7 @@ final class ClipboardOnboardingWindowController: NSWindowController {
         privacyBox.layer?.cornerRadius = 10
         let privacyStack = NSStackView()
         privacyStack.orientation = .vertical
+        privacyStack.alignment = .leading
         privacyStack.spacing = 5
         privacyStack.edgeInsets = NSEdgeInsets(top: 13, left: 15, bottom: 13, right: 15)
         privacyStack.translatesAutoresizingMaskIntoConstraints = false
@@ -150,6 +161,24 @@ final class ClipboardOnboardingWindowController: NSWindowController {
             privacyBox.heightAnchor.constraint(equalToConstant: 84)
         ])
         root.addArrangedSubview(privacyBox)
+
+        // Compact capabilities line (Slice 9): honest mention of what the
+        // app can do without lengthening the flow — still one decision,
+        // still the same three choices below.
+        let capabilities = NSStackView()
+        capabilities.orientation = .vertical
+        capabilities.alignment = .leading
+        capabilities.spacing = 3
+        let capabilitiesTitle = NSTextField(labelWithString: "Also included, when you want it")
+        capabilitiesTitle.font = .systemFont(ofSize: 12, weight: .semibold)
+        let capabilitiesText = wrappingLabel(
+            "Quick picker on a global shortcut (enable in Settings) · full-history search · pins, tags, and collections · per-app privacy rules · private mode · encrypted local backups. Everything stays on this Mac."
+        )
+        capabilitiesText.font = .systemFont(ofSize: 11)
+        capabilitiesText.textColor = .secondaryLabelColor
+        capabilities.addArrangedSubview(capabilitiesTitle)
+        capabilities.addArrangedSubview(capabilitiesText)
+        root.addArrangedSubview(capabilities)
 
         let choiceTitle = NSTextField(labelWithString: "How much should Clipboard Archive remember?")
         choiceTitle.font = .systemFont(ofSize: 14, weight: .semibold)
@@ -192,6 +221,15 @@ final class ClipboardOnboardingWindowController: NSWindowController {
         location.textColor = .tertiaryLabelColor
         location.lineBreakMode = .byTruncatingMiddle
         root.addArrangedSubview(location)
+
+        // Full-width rows under the leading alignment (insets 32 + 32).
+        for view in [header, privacyBox, capabilities, choices] {
+            view.widthAnchor.constraint(
+                equalTo: root.widthAnchor,
+                constant: -64
+            ).isActive = true
+        }
+        headings.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     }
 
     private func choiceCard(
@@ -221,6 +259,8 @@ final class ClipboardOnboardingWindowController: NSWindowController {
         let button = NSButton(title: buttonTitle, target: self, action: action)
         button.tag = buttonTag
         button.bezelStyle = .rounded
+        button.setAccessibilityLabel(buttonTitle)
+        button.toolTip = detail
         if emphasized {
             button.keyEquivalent = "\r"
         }

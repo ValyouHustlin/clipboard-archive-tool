@@ -16,8 +16,14 @@ production_source_matches="$(
     2>/dev/null \
     | rg -v 'github\.com/swiftlang/swift-testing\.git' \
     | rg -v 'https://example\.com/' \
+    | rg -v 'https://github\.com/ValyouHustlin/clipboard-archive-tool/releases' \
     || true
 )"
+# Allowlist note: the single release-page constant
+# (ClipboardVersionInfo.releasePageURLString) is a display/copy/open-in-
+# browser string for the Settings About section — never fetched by the app.
+# It mirrors the https://example.com/ fixture precedent above; any OTHER
+# URL or network API in production sources still fails this gate.
 
 if [ -n "$production_source_matches" ]; then
   echo "local-only check failed: production source references network/update APIs" >&2
@@ -57,8 +63,12 @@ if [ -n "$RELEASE_DIR" ]; then
       strings "$binary" \
         | rg 'URLSession|NSURLConnection|CFNetwork|NWConnection|CloudKit|WebSocket|Sparkle|SUUpdater|https?://' \
         | rg -v '^application:userDidAcceptCloudKitShareWithMetadata:$' \
+        | rg -v '^https://github\.com/ValyouHustlin/clipboard-archive-tool/releases$' \
         || true
     )"
+    # The exact release-page literal (and nothing else URL-shaped) is
+    # allowed in shipped binaries: it is the About section's manual-update
+    # pointer, exercised only by user-initiated copy/open actions.
     if [ -n "$binary_network_strings" ]; then
       echo "local-only check failed: $binary contains network/update strings" >&2
       echo "$binary_network_strings" >&2

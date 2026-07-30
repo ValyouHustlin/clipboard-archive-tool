@@ -106,6 +106,9 @@ final class QuickPickerPanelController: NSObject,
     private let tableView = NSTableView()
     private let hintLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "")
+    /// Centered over the results list when there is nothing to show
+    /// (Slice 9 empty-state QA) — a blank table reads as broken.
+    private let emptyStateLabel = NSTextField(wrappingLabelWithString: "")
 
     private var events: [StoredClipboardEvent] = []
     private var filteredEvents: [StoredClipboardEvent] = []
@@ -253,6 +256,14 @@ final class QuickPickerPanelController: NSObject,
         }
         built.append(contentsOf: filteredEvents.map { .event($0) })
         rows = built
+        if rows.isEmpty {
+            emptyStateLabel.stringValue = query.isEmpty
+                ? "No clips yet — copy some text and it will show up here. If nothing appears, capture may be off in Settings."
+                : "No clips match \u{201C}\(query)\u{201D}."
+            emptyStateLabel.isHidden = false
+        } else {
+            emptyStateLabel.isHidden = true
+        }
         tableView.reloadData()
         selectFirstSelectableRow()
     }
@@ -643,9 +654,10 @@ final class QuickPickerPanelController: NSObject,
         footer.addArrangedSubview(NSView())
         footer.addArrangedSubview(statusLabel)
 
-        let separator = NSView()
-        separator.wantsLayer = true
-        separator.layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.6).cgColor
+        // Adaptive: re-resolves per appearance (Slice 9 QA fix).
+        let separator = AdaptiveBackgroundView {
+            NSColor.separatorColor.withAlphaComponent(0.6)
+        }
         separator.heightAnchor.constraint(equalToConstant: 1).isActive = true
 
         let stack = NSStackView()
@@ -660,11 +672,23 @@ final class QuickPickerPanelController: NSObject,
         stack.addArrangedSubview(footer)
 
         background.addSubview(stack)
+        emptyStateLabel.font = .systemFont(ofSize: 12)
+        emptyStateLabel.textColor = .secondaryLabelColor
+        emptyStateLabel.alignment = .center
+        emptyStateLabel.isHidden = true
+        emptyStateLabel.translatesAutoresizingMaskIntoConstraints = false
+        background.addSubview(emptyStateLabel)
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: background.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: background.trailingAnchor),
             stack.topAnchor.constraint(equalTo: background.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: background.bottomAnchor)
+            stack.bottomAnchor.constraint(equalTo: background.bottomAnchor),
+            emptyStateLabel.centerXAnchor.constraint(equalTo: scroll.centerXAnchor),
+            emptyStateLabel.centerYAnchor.constraint(equalTo: scroll.centerYAnchor),
+            emptyStateLabel.widthAnchor.constraint(
+                lessThanOrEqualTo: scroll.widthAnchor,
+                constant: -48
+            )
         ])
         panel.contentView = background
     }

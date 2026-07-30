@@ -14,25 +14,50 @@ subscription product. It has two jobs:
 ## Features
 
 - Native macOS menu bar app.
-- Split-view history window with search and Text/Links/Code filters, rich clip
-  rows, full-text preview, multi-select copy, and local delete/redact controls.
+- Split-view history window with This Window and All History scopes:
+  working-view browsing plus full-archive index search with date, app, and
+  type filters, rich clip rows, full-text preview, multi-select copy, and
+  local delete/redact controls.
+- Quick picker on a configurable global shortcut (off by default): a
+  floating, keyboard-first panel with copy-back that needs no permissions
+  and an optional Accessibility-based direct paste.
 - First-run privacy disclosure with capture-off, last-50, or full-archive
   choices before the first item can be stored.
-- Continuous local text clipboard capture.
-- Search, recent items, copy-back, manual delete/redact, pause/resume, and app
-  exclusions.
-- Branded, color-coded settings for capture, retention, a 1/7/14/30-day history
-  window, history size, polling, excluded apps, and local-storage details.
-- Password-manager and credential-like content blocking.
-- Append-oriented NDJSON archive with metadata.
+- Continuous local clipboard capture: text plus optional rich formats —
+  images (size-capped), file references (metadata only), rich text, colors,
+  and titled links, each with faithful copy-back.
+- Pins that survive retention pruning, tags, collections, and snippets,
+  stored in a local sidecar keyed on content so they survive re-copies.
+- Duplicate grouping with copy counts and expandable occurrences.
+- Clip actions: copy as plain text, strip formatting, clean tracking
+  parameters from URLs, normalize whitespace, join clips, and
+  edit-before-copy (edits are copied, never saved to history).
+- Privacy controls: password-manager and credential-like content blocking,
+  per-app rules (Block / Store-don't-index / Normal), manual restricted and
+  expiring clips, timed private mode that never reads the pasteboard, pause
+  and app exclusions, and plain-language blocked-item explanations.
+- Bulk cleanup with truthful previews — the preview and the delete share
+  one code path, so counts and reclaimed bytes match exactly.
+- Storage & Health dashboard: sizes, counts, blocked items, index rebuild,
+  integrity verification, and preview-first cleanup.
+- Encrypted local backup and restore (passphrase-protected AES-GCM) with a
+  merge-aware import that honors local deletions.
+- Branded, color-coded settings for capture, retention, a 1/7/14/30-day
+  history window, history size, polling, privacy rules, shortcuts,
+  launch-at-login, and local-storage details, plus an About section with
+  version and format facts.
+- Optional launch at login via macOS Login Items (off by default, never
+  enabled automatically).
+- Append-oriented NDJSON archive with metadata and versioned, tolerant
+  event decoding.
 - Large clipboard bodies stored as separate local files.
 - Incrementally maintained, rebuildable SQLite FTS search index.
-- CLI pruning for older archive content.
+- CLI for search, prune, bulk cleanup, health, backup, and index repair.
 - Storage modes: remember 10 items, remember 50 items, or keep a full archive.
 - Daily manifests and health reports.
 - Install/update scripts for copying releases to other Macs.
 - No network sync, telemetry, analytics, crash reporting, or in-app update
-  checks.
+  checks. Updates are manual via the GitHub Releases page.
 
 ## Install A Release
 
@@ -63,7 +88,7 @@ replaces only the app bundle, CLI, and LaunchAgent definition.
 To pin a specific version:
 
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ValyouHustlin/clipboard-archive-tool/main/scripts/install-latest-github-release.sh)" -- ValyouHustlin/clipboard-archive-tool v0.1.2
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ValyouHustlin/clipboard-archive-tool/main/scripts/install-latest-github-release.sh)" -- ValyouHustlin/clipboard-archive-tool v0.2.0
 ```
 
 After install/update:
@@ -110,7 +135,7 @@ From the repository root:
 
 ```bash
 ./scripts/package-release.sh
-./scripts/validate-release.sh releases/ClipboardArchive-0.1.2-macos-arm64
+./scripts/validate-release.sh releases/ClipboardArchive-0.2.0-macos-arm64
 ```
 
 Outputs:

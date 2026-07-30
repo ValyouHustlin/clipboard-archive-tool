@@ -313,8 +313,11 @@ final class ClipboardBackupUIController: NSObject {
 
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(previewCancel))
         cancel.keyEquivalent = "\u{1b}"
+        cancel.setAccessibilityLabel("Cancel the import")
         let confirm = NSButton(title: "Import", target: self, action: #selector(previewConfirm))
         confirm.keyEquivalent = "\r"
+        confirm.toolTip = "Apply exactly the plan shown above"
+        confirm.setAccessibilityLabel("Import the backup as previewed")
         let buttons = NSStackView(views: [cancel, confirm])
         buttons.orientation = .horizontal
         buttons.spacing = 10
@@ -390,6 +393,7 @@ final class ClipboardBackupUIController: NSObject {
             )
             includeSettings.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
             includeSettings.font = .systemFont(ofSize: 11)
+            includeSettings.setAccessibilityLabel("Include app settings in the backup")
             let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 280, height: 90))
             accessory.addSubview(first)
             accessory.addSubview(second)
