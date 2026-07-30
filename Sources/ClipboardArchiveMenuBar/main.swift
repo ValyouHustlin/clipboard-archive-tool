@@ -41,6 +41,8 @@ final class ClipboardMenuBarApp: NSObject,
     /// and reset to nil (forcing one reseed scan) when retention settings
     /// change. Deletions leave it as a safe overestimate.
     private var liveEventCountEstimate: Int?
+    private var capturesSinceRetentionScan = 0
+    private static let retentionRescanInterval = 10
     private var lastStatus = "Ready"
     private var lastNonSelfApp = ClipboardSourceApp(name: "Unknown", bundleIdentifier: nil)
     private var panelController: ClipboardPanelController?
@@ -661,9 +663,17 @@ final class ClipboardMenuBarApp: NSObject,
         // limit, so no archive scanning happens at all. The estimate only
         // overshoots (deletes are not subtracted), which is safe: an
         // overshoot merely triggers one enforcement scan that refreshes it.
-        if let estimate = liveEventCountEstimate, estimate <= limit {
+        // Exception: another process (e.g. the CLI monitor pointed at the
+        // same archive root) can append events this counter never sees, so
+        // the estimate could undercount and silently stop enforcing the
+        // user's retention choice. A periodic forced reseed bounds that
+        // window to a handful of captures.
+        capturesSinceRetentionScan += 1
+        if capturesSinceRetentionScan < Self.retentionRescanInterval,
+           let estimate = liveEventCountEstimate, estimate <= limit {
             return
         }
+        capturesSinceRetentionScan = 0
         do {
             let result = try ClipboardArchivePruner(archiveRoot: archiveRoot)
                 .enforceRetentionLimit(

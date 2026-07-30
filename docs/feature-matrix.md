@@ -31,6 +31,7 @@ Legend: status = planned | in-progress | integrated | verified.
 |------|--------|----------|---------------|
 | 2026-07-30 | `43ab766` (baseline) | pre-expansion baseline | 28/28 tests, 25 checks ok, package+validate+local-only+rollback ok |
 | 2026-07-30 | Slice 1 (`a77819a` + perf merge) | schema versioning, tolerant content types, fixtures, `--index-path`, suppression unification, ledger cache, incremental retention, copy-back re-capture fix | 41/41 tests (3 suites), 28 checks ok, package+validate+local-only+rollback ok |
+| 2026-07-30 | Slice 2 merge + reseed fix | quick picker, global shortcut config, shortcut recorder, direct-paste opt-in, retention periodic reseed (security finding) | 60/60 tests (6 suites), 28 checks ok, package+validate+local-only+rollback ok; picker gesture matrix + 41 ms @50k receipts in row 1 |
 
 ## Discovered issues (running log)
 
@@ -47,7 +48,7 @@ Legend: status = planned | in-progress | integrated | verified.
 | 2026-07-30 scout | NDJSON appends unprotected between app and CLI monitor running concurrently | document; single-writer guidance; ledger/index already locked |
 | 2026-07-30 review | Incremental retention: crash between ledger write and index delete left stale index rows | fixed `15eb65f` (fail-closed ordering: index delete first) |
 | 2026-07-30 review | Body-file deletion counts overstated when file already missing (both prune paths) | fixed `15eb65f` |
-| 2026-07-30 security | liveEventCountEstimate undercounts with a concurrent second writer (GUI+CLI) → retention silently unenforced | fix queued post-Slice-2 merge: periodic forced reseed every N captures |
+| 2026-07-30 security | liveEventCountEstimate undercounts with a concurrent second writer (GUI+CLI) → retention silently unenforced | fixed post-Slice-2: forced reseed every 10 captures |
 | 2026-07-30 security | Split-string URL literals in checks binary set an evasion precedent vs check-local-only.sh | fixed: plain literals + explicit `https://example.com/` allowlist in the gate |
 | 2026-07-30 security | Legacy `ClipboardDerivedIndex.search()` passes user query SQL via argv (pre-existing; contract 3 wants stdin) | fold into Slice 3 (index work already scoped there) |
 | 2026-07-30 security | `PrivacyLabel.restricted` exists but is outside the suppression gate; future manual-sensitivity work must define its semantics | assigned to Slice 5 privacy rules; contract note |
