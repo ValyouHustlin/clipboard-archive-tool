@@ -21,8 +21,10 @@ contracts; changes to a contract require a lead decision recorded here.
   as they do today (decode-failure skip); that remains the documented
   forward-compat behavior.
 - An `archive-format.json` marker file is written at the archive root on
-  first write by new code: `{ "archiveFormatVersion": 2, "minReader": 1 }`.
-  Absence means format 1. Nothing deletes or rewrites existing v1 lines.
+  first write by new code: `{ "archiveFormatVersion": 1, "minReader": 1 }`
+  (matching the release manifest; bumped only when the on-disk layout
+  actually changes). Absence means format 1. Nothing deletes or rewrites
+  existing v1 lines.
 - `scripts/scale-benchmark.sh` embeds a second copy of the event shape; any
   schema change must update it in the same commit (checked by a test fixture
   that decodes a benchmark-generated line).
