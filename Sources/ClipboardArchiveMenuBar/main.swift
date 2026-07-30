@@ -61,6 +61,10 @@ final class ClipboardMenuBarApp: NSObject,
     /// Automation NEVER registers the Carbon hotkey (a dev instance must not
     /// grab system combos while the live app runs) and never posts CGEvents.
     private var isAutomationMode = false
+    /// Fixture ids manufactured by the all-history drift flow so the result
+    /// receipt can assert both stay invisible.
+    private var automationDriftedEventID = ""
+    private var automationDoNotIndexEventID = ""
 #endif
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -487,13 +491,28 @@ final class ClipboardMenuBarApp: NSObject,
             try settingsStore.save(settings)
             if screen == "history" {
                 try seedSyntheticUIFixtures()
+                let scopeRequest = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_SCOPE"] ?? "working"
+                if scopeRequest == "all-history" {
+                    try seedAllHistoryDriftFixtures()
+                }
                 showClipboardWindow(focusSearch: false, activate: false)
+                if scopeRequest == "all-history" {
+                    panelController?.performAutomationScope("all-history")
+                }
                 panelController?.performAutomationSearch(
                     environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_QUERY"] ?? ""
                 )
                 panelController?.performAutomationTypeFilter(
                     environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_TYPE_FILTER"] ?? "all"
                 )
+                if let dateFilter = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_DATE_FILTER"],
+                   !dateFilter.isEmpty {
+                    panelController?.performAutomationDateFilter(dateFilter)
+                }
+                if let appFilter = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_APP_FILTER"],
+                   !appFilter.isEmpty {
+                    panelController?.performAutomationAppFilter(appFilter)
+                }
             } else if screen == "settings" {
                 showSettingsWindow(activate: false)
             } else if screen == "onboarding" {
@@ -520,12 +539,30 @@ final class ClipboardMenuBarApp: NSObject,
             return true
         }
 
+        if screen == "history" {
+            // History (both scopes) settles by polling instead of a fixed
+            // sleep: 0.1 s steps with a 5 s cap. On timeout the snapshot is
+            // still written — the receipt records the unsettled state.
+            let deadline = Date().addingTimeInterval(5.0)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                self?.pollHistoryAutomationSettled(deadline: deadline) { [weak self] in
+                    let url = URL(fileURLWithPath: snapshotPath)
+                    do {
+                        try self?.panelController?.writeSnapshot(to: url)
+                    } catch {
+                        FileHandle.standardError.write(Data("UI snapshot failed: \(error)\n".utf8))
+                    }
+                    self?.writeHistoryAutomationResult()
+                    NSApp.terminate(nil)
+                }
+            }
+            return true
+        }
+
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
             let url = URL(fileURLWithPath: snapshotPath)
             do {
                 switch screen {
-                case "history":
-                    try self?.panelController?.writeSnapshot(to: url)
                 case "settings":
                     try self?.settingsWindowController?.writeSnapshot(to: url)
                 case "onboarding":
@@ -541,6 +578,126 @@ final class ClipboardMenuBarApp: NSObject,
             NSApp.terminate(nil)
         }
         return true
+    }
+
+    private func pollHistoryAutomationSettled(
+        deadline: Date,
+        completion: @escaping () -> Void
+    ) {
+        if panelController?.automationIsSettled ?? true || Date() >= deadline {
+            completion()
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.pollHistoryAutomationSettled(deadline: deadline, completion: completion)
+        }
+    }
+
+    /// Manufactures the stale-index + ledger-drift condition the design
+    /// demands the snapshot prove (read-time suppression, not rebuild-time
+    /// luck):
+    /// 1. append one hand-built doNotIndex event line (must never appear in
+    ///    the index or any result),
+    /// 2. rebuild the index so every live seeded event is indexed,
+    /// 3. THEN record a deletion for one seeded event WITHOUT the matching
+    ///    index delete — the index still holds the row; only read-time
+    ///    suppression can keep it out of results.
+    private func seedAllHistoryDriftFixtures() throws {
+        let capturedAt = Date().addingTimeInterval(-30 * 60)
+        let body = "synthetic doNotIndex fixture launch checklist secret-shaped note"
+        let compactFormatter = DateFormatter()
+        compactFormatter.calendar = Calendar(identifier: .gregorian)
+        compactFormatter.locale = Locale(identifier: "en_US_POSIX")
+        compactFormatter.timeZone = TimeZone(secondsFromGMT: 0)
+        compactFormatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
+        let doNotIndexEvent = StoredClipboardEvent(
+            id: "clip_\(compactFormatter.string(from: capturedAt))_donotindexff_aa11bb22",
+            capturedAt: capturedAt,
+            contentType: .text,
+            contentHash: "sha256:synthetic-donotindex",
+            contentPreview: body,
+            contentInline: body,
+            rawContentPath: nil,
+            sourceApp: ClipboardSourceApp(name: "Notes", bundleIdentifier: "com.apple.Notes"),
+            pasteboardTypes: ["public.utf8-plain-text"],
+            byteCount: body.utf8.count,
+            characterCount: body.count,
+            lineCount: 1,
+            privacyLabel: .doNotIndex,
+            allowedUse: [.doNotIndex],
+            sensitivityFlags: [],
+            uiVisibleUntil: capturedAt.addingTimeInterval(7 * 86_400)
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        var line = try encoder.encode(doNotIndexEvent)
+        line.append(0x0A)
+        let dayFormatter = DateFormatter()
+        dayFormatter.calendar = Calendar(identifier: .gregorian)
+        dayFormatter.locale = Locale(identifier: "en_US_POSIX")
+        dayFormatter.timeZone = TimeZone(secondsFromGMT: 0)
+        dayFormatter.dateFormat = "yyyy/MM/yyyy-MM-dd"
+        let dayFile = archiveRoot.appendingPathComponent(
+            "raw/\(dayFormatter.string(from: capturedAt))_clipboard-events.ndjson"
+        )
+        if FileManager.default.fileExists(atPath: dayFile.path) {
+            let handle = try FileHandle(forWritingTo: dayFile)
+            try handle.seekToEnd()
+            try handle.write(contentsOf: line)
+            try handle.close()
+        } else {
+            try FileManager.default.createDirectory(
+                at: dayFile.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try line.write(to: dayFile, options: [.atomic])
+        }
+        automationDoNotIndexEventID = doNotIndexEvent.id
+
+        // Index every currently-live event, THEN manufacture ledger drift.
+        _ = try derivedIndex.rebuild()
+        let seeded = try reader.recentItems(since: Date(timeIntervalSince1970: 0), limit: 100)
+        guard let driftTarget = seeded.first(where: { $0.sourceApp.name == "Xcode" })
+            ?? seeded.first else {
+            return
+        }
+        try ClipboardDeletionLedger(archiveRoot: archiveRoot).recordDeletion(
+            eventID: driftTarget.id,
+            reason: "ui-automation-drift"
+        )
+        automationDriftedEventID = driftTarget.id
+    }
+
+    /// Machine-readable receipt for the history automation run: counts,
+    /// state, and proof that the drifted and doNotIndex fixtures stayed
+    /// invisible.
+    private func writeHistoryAutomationResult() {
+        let environment = ProcessInfo.processInfo.environment
+        guard let resultPath = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_RESULT_PATH"],
+              !resultPath.isEmpty else {
+            return
+        }
+        let visibleIDs = panelController?.automationVisibleResultIDs ?? []
+        let result: [String: Any] = [
+            "scope": environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_SCOPE"] ?? "working",
+            "state": panelController?.automationStateName ?? "unknown",
+            "settled": panelController?.automationIsSettled ?? false,
+            "resultCount": panelController?.automationRowCount ?? -1,
+            "visibleIDs": visibleIDs,
+            "driftedEventID": automationDriftedEventID,
+            "doNotIndexEventID": automationDoNotIndexEventID,
+            "driftedEventVisible": !automationDriftedEventID.isEmpty
+                && visibleIDs.contains(automationDriftedEventID),
+            "doNotIndexEventVisible": !automationDoNotIndexEventID.isEmpty
+                && visibleIDs.contains(automationDoNotIndexEventID)
+        ]
+        if let data = try? JSONSerialization.data(
+            withJSONObject: result,
+            options: [.prettyPrinted, .sortedKeys]
+        ) {
+            try? data.write(to: URL(fileURLWithPath: resultPath), options: [.atomic])
+        }
     }
 
     /// Applies the requested gesture list through the picker's production
