@@ -1,6 +1,6 @@
 # Clipboard Archive Architecture
 
-Last verified against source: 2026-07-29
+Last verified against source: 2026-07-30 (0.2.0 expansion complete)
 
 ## Product Boundary
 
@@ -16,25 +16,46 @@ GitHub is used only by separate, user-run install/update scripts.
 ```text
 NSPasteboard
   -> menu bar polling loop
-  -> ClipboardPrivacyFilter
+       -> ClipboardCaptureGate (private mode / pause decision, pure Core)
+       -> rich classification (fileURL > image > RTF > color > titled link)
+  -> ClipboardPrivacyFilter (type denylist, built-ins, per-app rules,
+       legacy exclusions, SecretDetector)
        -> blocked-event metadata only
-       -> accepted StoredClipboardEvent
+       -> accepted StoredClipboardEvent (schema-versioned, tolerant decode)
   -> append-oriented NDJSON archive
-       -> inline text, or a same-day large-body file
-  -> incremental derived SQLite FTS upsert
-  -> recent menu/window reader
+       -> inline text, or a same-day large-body / rich-body file
+  -> incremental derived SQLite FTS upsert (schema v2, user_version)
+  -> readers: menu, History window (This Window + All History scopes),
+       quick picker, Storage & Health dashboard
+
+Sidecar: annotations/annotations.json (pins, tags, collections, snippets,
+manual sensitivity, expiry) keyed on content hash — never in the NDJSON.
 
 CLI
-  -> search / redact / prune / health / manifest / index repair
+  -> search / redact / prune / bulk / sweep-expired / health / manifest /
+     index repair / backup create-inspect-restore
   -> the same core library and archive format
 ```
 
-`ClipboardArchiveCore` owns the data model, filtering, archive reader/writer,
-redaction, pruning, health reporting, settings, and the derived index.
+`ClipboardArchiveCore` owns the data model (versioned event schema with
+tolerant decoding), filtering, the capture gate, archive reader/writer,
+redaction, the promoted pruner core, the bulk engine
+(`ClipboardBulkEngine`: one shared dry-run/execute path with truthful
+reclaim accounting), the expiry sweeper, the annotations sidecar store,
+duplicate grouping, clip transformations (`ClipTransformations`: pure
+plain-text/strip/URL-cleanup/whitespace/join functions), encrypted backup
+(`ClipboardBackup` + `ClipboardBackupImporter`: CLIPBAK1 AES-GCM containers
+with PBKDF2-calibrated keys and a journaled, ledger-first import), health
+reporting, settings, version info (`ClipboardVersionInfo`), the
+launch-at-login state model (`ClipboardLoginItemState`), and the derived
+index.
 
 `ClipboardArchiveMenuBar` owns pasteboard polling, source-app attribution,
-pause/storage controls, recent-history UI, settings, and the single-instance
-file lock.
+pause/private-mode/storage controls, the History window, the quick picker
+panel and its Carbon global hotkey, the Storage & Health dashboard, the
+bulk cleanup sheet, the backup UI, settings (including the SMAppService
+login-item wrapper), and the single-instance file lock. All copy-back
+surfaces route through one shared no-re-capture pasteboard helper.
 
 The primary UI is a native AppKit split-view window. Its sidebar owns search,
 recent event metadata, and clip count; its detail surface reads full content
@@ -112,12 +133,15 @@ files use mode `0600`.
 
 ## Search And Retention
 
-The clipboard window loads recent records from the user-selected working
-window: 1, 7, 14, or 30 days. Its in-memory filters combine a search query with
-All, Text, Links, or Code content-type selection. These controls filter loaded
-event preview/source/type metadata; they do not search the full archive or
-large-body contents. The menu's five quick-copy items remain a short recent
-view.
+The clipboard window has two scopes. This Window loads recent records from
+the user-selected working window (1, 7, 14, or 30 days) and filters them in
+memory by query and All/Text/Links/Code/Images/Files type. All History
+reads the derived FTS index only — full-archive search with date, app, and
+type filters, debounced on a background queue; it never scans NDJSON on
+the UI thread. Duplicate grouping and collection filtering apply in both
+scopes as presentation after filtering. The menu's five quick-copy items
+remain a short recent view, and the quick picker serves keyboard-first
+recall from a warm in-memory cache invalidated on every archive mutation.
 
 The CLI's archive search scans NDJSON plus contained body files. The separate
 SQLite FTS index is derived data and stores searchable content in plaintext.
@@ -193,10 +217,42 @@ loading a legacy regular settings file repairs broader permissions, while a
 file that cannot be repaired falls back to capture-off defaults. A symlinked
 settings path is rejected rather than followed.
 
+## Rich Content Containment
+
+Rich bodies (image bytes, RTF, spilled file lists) store as body files
+under the same `raw/YYYY/MM/*_large-items/` layout with type-derived
+extensions; `richContent.bodyPath` is relative and containment-checked
+exactly like text bodies. File-type clips store metadata only — names,
+paths, sizes — never file contents. Images above the configurable cap
+(default 10 MiB) are blocked before any decode with a visible reason.
+Text-only lines keep stamping schema version 1 byte-identically; only
+events carrying `richContent` stamp version 2.
+
+## Encrypted Backup
+
+`backup create` produces a CLIPBAK1 container: PBKDF2-HMAC-SHA256
+(runtime-calibrated, 600k-iteration floor) feeding HKDF-derived subkeys,
+a sealed manifest whose AAD binds the plaintext KDF header, and 4 MiB
+AES-GCM chunks with positional AAD so drops, reorders, and splices fail
+hard. Import runs three phases — authenticate and stage into a hidden
+0700 directory, plan (one planner shared by dry-run and execute), then a
+journaled ledger-first commit with pre-image rollback. Merge restores
+honor the local deletion ledger; locally deleted events and their rich
+bodies are never resurrected. The derived index is excluded and rebuilt
+after import.
+
 ## Current Startup Behavior
 
 The app acquires an exclusive file lock before creating its menu-bar UI. A
 second executable exits without starting another polling loop.
+
+Launch at login is user-controlled and off by default. The Settings toggle
+wraps `SMAppService.mainApp` (macOS 13+): state is re-read whenever the
+card shows, `.requiresApproval` renders an approval message with a Login
+Items shortcut, and `.notFound` (development builds outside a normal app
+location) disables the toggle with an honest explanation. The installer's
+LaunchAgent remains a separate mechanism; `docs/INSTALL.md` tells users to
+pick one. Registration never happens automatically.
 
 On a new profile with no settings file, capture defaults off. A first-run
 window discloses plaintext storage and filter limits, shows the archive path,

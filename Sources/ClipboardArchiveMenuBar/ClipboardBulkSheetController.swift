@@ -73,6 +73,9 @@ final class ClipboardBulkSheetController: NSObject {
         )
         super.init()
         sheetWindow.title = "Bulk Cleanup"
+        // Keyboard pass (Slice 9): Tab order follows layout — criteria
+        // popups, include-pinned, then Close / Preview / Delete.
+        sheetWindow.autorecalculatesKeyViewLoop = true
         buildUI()
         populateAppPopup()
     }
@@ -136,6 +139,9 @@ final class ClipboardBulkSheetController: NSObject {
         includePinnedCheckbox.target = self
         includePinnedCheckbox.action = #selector(includePinnedToggled)
         includePinnedCheckbox.font = .systemFont(ofSize: 12)
+        includePinnedCheckbox.toolTip =
+            "Pinned clips are exempt unless included; including them asks for a separate confirmation"
+        includePinnedCheckbox.setAccessibilityLabel("Include pinned clips in bulk cleanup")
         stack.addArrangedSubview(includePinnedCheckbox)
 
         resultLabel.font = .systemFont(ofSize: 11)
@@ -146,12 +152,17 @@ final class ClipboardBulkSheetController: NSObject {
 
         previewButton.target = self
         previewButton.action = #selector(previewClicked)
+        previewButton.toolTip = "Show exactly how many clips and bytes match before anything is deleted"
+        previewButton.setAccessibilityLabel("Preview the bulk cleanup impact")
         deleteButton.target = self
         deleteButton.action = #selector(deleteClicked)
         deleteButton.isEnabled = false
+        deleteButton.toolTip = "Delete the previewed clips — cannot be undone"
+        deleteButton.setAccessibilityLabel("Delete the previewed clips")
         closeButton.title = "Close"
         closeButton.target = self
         closeButton.action = #selector(closeClicked)
+        closeButton.setAccessibilityLabel("Close the bulk cleanup sheet")
         let buttons = NSStackView(views: [closeButton, NSView(), previewButton, deleteButton])
         buttons.orientation = .horizontal
         buttons.spacing = 9

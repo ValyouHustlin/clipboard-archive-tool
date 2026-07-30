@@ -593,6 +593,14 @@ final class ClipboardMenuBarApp: NSObject,
                     // Multi-select joins stay plain text (documented).
                     self?.copyToPasteboardWithoutRecapture(content)
                 },
+                isCaptureEnabled: { [weak self] in
+                    // First-run empty state (Slice 9): the zero-clips hint
+                    // says honestly when capture is off or paused.
+                    guard let self else {
+                        return false
+                    }
+                    return self.settings.archiveEnabled && !self.isPaused
+                },
                 onArchiveMutation: { [weak self] mutation in
                     guard let self else {
                         return
@@ -855,6 +863,13 @@ final class ClipboardMenuBarApp: NSObject,
             controller.onRestoreArchive = { [weak self] in
                 self?.restoreFromBackup()
             }
+            controller.onCopyReleasePageURL = { [weak self] in
+                // The release-page URL rides the ONE shared no-re-capture
+                // copy path like every other app-initiated copy (Slice 9).
+                self?.copyToPasteboardWithoutRecapture(
+                    ClipboardVersionInfo.releasePageURLString
+                )
+            }
             settingsWindowController = controller
         }
         settingsWindowController?.show(settings: settings, activate: activate)
@@ -935,6 +950,17 @@ final class ClipboardMenuBarApp: NSObject,
             return false
         }
 
+        // Appearance override (Slice 9 density/appearance QA): render the
+        // same screens under light and dark without changing system state.
+        switch environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_APPEARANCE"] {
+        case "dark":
+            NSApp.appearance = NSAppearance(named: .darkAqua)
+        case "light":
+            NSApp.appearance = NSAppearance(named: .aqua)
+        default:
+            break
+        }
+
         let supportRoot = ClipboardDefaults.applicationSupportRoot()
         guard archiveRoot.standardizedFileURL.path.hasPrefix("/tmp/"),
               supportRoot.standardizedFileURL.path.hasPrefix("/tmp/") else {
@@ -983,6 +1009,10 @@ final class ClipboardMenuBarApp: NSObject,
                     // Rich-format render receipts (Slice 6): ONLY the five
                     // per-kind rich fixtures, newest-first image→link.
                     try seedSyntheticRichFixtures()
+                } else if environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_SEED_NONE"] == "1" {
+                    // Slice 9 empty-state receipt: zero fixtures, so the
+                    // first-run "No clips yet" surface renders (with the
+                    // capture-off hint when archiveEnabled is 0).
                 } else {
                     try seedSyntheticUIFixtures()
                 }
@@ -1034,6 +1064,13 @@ final class ClipboardMenuBarApp: NSObject,
                 }
             } else if screen == "settings" {
                 showSettingsWindow(activate: false)
+                if environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_TALL_WINDOW"] == "1" {
+                    // Slice 9 render QA: capture the full card stack
+                    // (including Startup & About) without scrolling.
+                    settingsWindowController?.window?.setContentSize(
+                        NSSize(width: 900, height: 1500)
+                    )
+                }
             } else if screen == "onboarding" {
                 showOnboarding(activate: false)
             } else if screen == "dashboard" {
@@ -1061,6 +1098,9 @@ final class ClipboardMenuBarApp: NSObject,
             } else if screen == "quickpicker" {
                 if environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_SEED_RICH"] == "1" {
                     try seedSyntheticRichFixtures()
+                } else if environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_SEED_NONE"] == "1" {
+                    // Slice 9 empty-state receipt: the picker renders its
+                    // "No clips yet" copy instead of a blank table.
                 } else {
                     try seedSyntheticUIFixtures()
                 }

@@ -86,6 +86,12 @@ final class ClipboardDashboardWindowController: NSWindowController {
         guard let view = window?.contentView else {
             return
         }
+        // Appearance-resolved background fill for faithful light/dark
+        // snapshots (Slice 9; see ClipboardPanelController.writeSnapshot).
+        view.wantsLayer = true
+        window?.effectiveAppearance.performAsCurrentDrawingAppearance {
+            view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        }
         view.layoutSubtreeIfNeeded()
         window?.displayIfNeeded()
         guard let representation = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
@@ -199,7 +205,11 @@ final class ClipboardDashboardWindowController: NSWindowController {
 
         // Maintenance card.
         let rebuildButton = NSButton(title: "Rebuild Search Index", target: self, action: #selector(rebuildIndexClicked))
+        rebuildButton.toolTip = "Rebuild the derived search index from the archive (always safe)"
+        rebuildButton.setAccessibilityLabel("Rebuild the search index")
         let verifyButton = NSButton(title: "Verify Integrity", target: self, action: #selector(verifyIntegrityClicked))
+        verifyButton.toolTip = "Run a SQLite quick_check plus an archive health summary"
+        verifyButton.setAccessibilityLabel("Verify archive and index integrity")
         let maintenanceRow = NSStackView(views: [rebuildButton, verifyButton, NSView()])
         maintenanceRow.orientation = .horizontal
         maintenanceRow.spacing = 9
@@ -222,10 +232,16 @@ final class ClipboardDashboardWindowController: NSWindowController {
         cleanupAgePopup.setAccessibilityLabel("Cleanup age threshold")
         cleanupPreviewButton.target = self
         cleanupPreviewButton.action = #selector(previewCleanup)
+        cleanupPreviewButton.toolTip = "Show exactly how many clips and bytes this cleanup would remove"
+        cleanupPreviewButton.setAccessibilityLabel("Preview the cleanup impact")
         cleanupDeleteButton.target = self
         cleanupDeleteButton.action = #selector(executeCleanup)
         cleanupDeleteButton.isEnabled = false
+        cleanupDeleteButton.toolTip = "Delete the previewed clips — cannot be undone"
+        cleanupDeleteButton.setAccessibilityLabel("Delete the previewed clips")
         let bulkButton = NSButton(title: "Bulk Cleanup…", target: self, action: #selector(openBulkSheet))
+        bulkButton.toolTip = "Open the bulk cleanup sheet with app, type, and sensitivity filters"
+        bulkButton.setAccessibilityLabel("Open the bulk cleanup sheet")
         let cleanupRow = NSStackView(views: [
             cleanupAgePopup, cleanupPreviewButton, cleanupDeleteButton, NSView(), bulkButton
         ])
@@ -254,6 +270,8 @@ final class ClipboardDashboardWindowController: NSWindowController {
         statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.textColor = .secondaryLabelColor
         let refreshButton = NSButton(title: "Refresh", target: self, action: #selector(refreshClicked))
+        refreshButton.toolTip = "Recompute archive health and recent blocked items"
+        refreshButton.setAccessibilityLabel("Refresh the dashboard")
         footer.addArrangedSubview(statusLabel)
         footer.addArrangedSubview(NSView())
         footer.addArrangedSubview(refreshButton)

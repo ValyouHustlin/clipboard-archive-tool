@@ -30,10 +30,10 @@ jobs:
         run: ./scripts/package-release.sh
 
       - name: Validate release
-        run: ./scripts/validate-release.sh "releases/ClipboardArchive-0.1.2-macos-$(uname -m)"
+        run: ./scripts/validate-release.sh "releases/ClipboardArchive-0.2.0-macos-$(uname -m)"
 
       - name: Check local-only boundary
-        run: ./scripts/check-local-only.sh "releases/ClipboardArchive-0.1.2-macos-$(uname -m)"
+        run: ./scripts/check-local-only.sh "releases/ClipboardArchive-0.2.0-macos-$(uname -m)"
 
       - name: Test failed-update rollback
-        run: ./scripts/test-install-rollback.sh "releases/ClipboardArchive-0.1.2-macos-$(uname -m)"
+        run: ./scripts/test-install-rollback.sh "releases/ClipboardArchive-0.2.0-macos-$(uname -m)"

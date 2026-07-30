@@ -3,8 +3,8 @@ set -euo pipefail
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${CLIPBOARD_ARCHIVE_VERSION:-0.1.2}"
-BUILD_NUMBER="${CLIPBOARD_ARCHIVE_BUILD:-4}"
+VERSION="${CLIPBOARD_ARCHIVE_VERSION:-0.2.0}"
+BUILD_NUMBER="${CLIPBOARD_ARCHIVE_BUILD:-5}"
 ARCH="$(uname -m)"
 NAME="ClipboardArchive-${VERSION}-macos-${ARCH}"
 RELEASE_ROOT="$ROOT/releases"

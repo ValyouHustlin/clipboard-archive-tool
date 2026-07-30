@@ -22,6 +22,10 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
     /// ClipboardBackupUIController).
     var onBackupArchive: (() -> Void)?
     var onRestoreArchive: (() -> Void)?
+    /// Copies the release-page URL through the app delegate's shared
+    /// no-re-capture pasteboard path (Slice 9) — the settings window never
+    /// touches the pasteboard directly.
+    var onCopyReleasePageURL: (() -> Void)?
 
     private let settingsStore: ClipboardSettingsStore
     private let archiveRoot: URL
@@ -76,6 +80,24 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
     /// paste enable in this session — never from the picker at paste time.
     private var hasPromptedForAccessibility = false
 
+    // MARK: - Launch at login + About (Slice 9)
+
+    /// Reads/writes the real SMAppService registration; every decision and
+    /// string lives in the testable ClipboardLoginItemState. Registration
+    /// only ever happens from an explicit click on this checkbox.
+    private let loginItemManager = LoginItemManager()
+    private let launchAtLoginButton = NSButton(
+        checkboxWithTitle: "Start Clipboard Archive when you log in",
+        target: nil,
+        action: nil
+    )
+    private let loginStatusLabel = NSTextField(wrappingLabelWithString: "")
+    private let openLoginItemsButton = NSButton(
+        title: "Open Login Items Settings",
+        target: nil,
+        action: nil
+    )
+
     init(settings: ClipboardSettings, settingsStore: ClipboardSettingsStore, archiveRoot: URL) {
         self.settings = settings
         self.settingsStore = settingsStore
@@ -90,6 +112,9 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         window.title = "Clipboard Archive Settings"
         window.minSize = NSSize(width: 760, height: 560)
         window.setFrameAutosaveName("ClipboardSettingsWindowV2")
+        // Keyboard pass (Slice 9): recompute the key view loop from layout
+        // so Tab walks the cards top-to-bottom, left column then right.
+        window.autorecalculatesKeyViewLoop = true
         super.init(window: window)
         buildUI()
         loadSettingsIntoControls()
@@ -103,6 +128,10 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         self.settings = settings
         loadSettingsIntoControls()
         refreshAccessibilityStatus()
+        // Status poll on card display (Slice 9): the toggle always reflects
+        // the REAL SMAppService state, including changes the user made in
+        // System Settings while this window was closed.
+        refreshLoginItemStatus()
         window?.center()
         if activate {
             window?.makeKeyAndOrderFront(nil)
@@ -116,6 +145,12 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
     func writeSnapshot(to url: URL) throws {
         guard let view = window?.contentView else {
             return
+        }
+        // Appearance-resolved background fill for faithful light/dark
+        // snapshots (Slice 9; see ClipboardPanelController.writeSnapshot).
+        view.wantsLayer = true
+        window?.effectiveAppearance.performAsCurrentDrawingAppearance {
+            view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         }
         view.layoutSubtreeIfNeeded()
         window?.displayIfNeeded()
@@ -138,6 +173,7 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         configureGeneralControls()
         configurePrivacyControls()
         configureShortcutControls()
+        configureStartupControls()
 
         let header = brandedHeader()
         let footer = actionFooter()
@@ -223,12 +259,21 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
             views: [storageControls()]
         )
 
+        let startupCard = sectionCard(
+            title: "Startup & About",
+            subtitle: "Launch at login is off by default and only changes when you toggle it here.",
+            symbol: "power",
+            tint: .systemTeal,
+            views: startupControls()
+        )
+
         let leftColumn = NSStackView()
         leftColumn.orientation = .vertical
         leftColumn.alignment = .width
         leftColumn.spacing = 18
         leftColumn.addArrangedSubview(captureCard)
         leftColumn.addArrangedSubview(historyCard)
+        leftColumn.addArrangedSubview(startupCard)
 
         let rightColumn = NSStackView()
         rightColumn.orientation = .vertical
@@ -276,11 +321,10 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
     }
 
     private func brandedHeader() -> NSView {
-        let header = NSView()
-        header.wantsLayer = true
-        header.layer?.backgroundColor = NSColor.controlAccentColor
-            .withAlphaComponent(0.09)
-            .cgColor
+        // Adaptive band: re-resolves per appearance (Slice 9 QA fix).
+        let header = AdaptiveBackgroundView {
+            NSColor.controlAccentColor.withAlphaComponent(0.09)
+        }
 
         let mark = iconTile(
             symbol: "doc.on.clipboard.fill",
@@ -304,18 +348,29 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         text.alignment = .leading
         text.spacing = 3
 
-        let version = NSTextField(labelWithString: versionText())
-        version.font = .monospacedSystemFont(ofSize: 10, weight: .medium)
-        version.textColor = .secondaryLabelColor
-        version.drawsBackground = true
-        version.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.75)
-        version.isBezeled = false
-        version.isEditable = false
-        version.alignment = .center
-        version.wantsLayer = true
-        version.layer?.cornerRadius = 8
-        version.widthAnchor.constraint(greaterThanOrEqualToConstant: 124).isActive = true
-        version.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        // Adaptive pill (Slice 9 QA fix): the label draws no background of
+        // its own; the container re-resolves its fill per appearance.
+        let versionLabel = NSTextField(labelWithString: versionText())
+        versionLabel.font = .monospacedSystemFont(ofSize: 10, weight: .medium)
+        versionLabel.textColor = .secondaryLabelColor
+        versionLabel.alignment = .center
+        versionLabel.translatesAutoresizingMaskIntoConstraints = false
+        let version = AdaptiveBackgroundView {
+            NSColor.controlBackgroundColor.withAlphaComponent(0.75)
+        }
+        version.cornerRadius = 8
+        version.translatesAutoresizingMaskIntoConstraints = false
+        version.addSubview(versionLabel)
+        NSLayoutConstraint.activate([
+            versionLabel.centerXAnchor.constraint(equalTo: version.centerXAnchor),
+            versionLabel.centerYAnchor.constraint(equalTo: version.centerYAnchor),
+            versionLabel.leadingAnchor.constraint(
+                greaterThanOrEqualTo: version.leadingAnchor,
+                constant: 10
+            ),
+            version.widthAnchor.constraint(greaterThanOrEqualToConstant: 124),
+            version.heightAnchor.constraint(equalToConstant: 28)
+        ])
 
         let row = NSStackView()
         row.orientation = .horizontal
@@ -336,9 +391,9 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
     }
 
     private func actionFooter() -> NSView {
-        let footer = NSView()
-        footer.wantsLayer = true
-        footer.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        let footer = AdaptiveBackgroundView {
+            .windowBackgroundColor
+        }
 
         let separator = separatorView()
         separator.translatesAutoresizingMaskIntoConstraints = false
@@ -353,11 +408,14 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         statusLabel.textColor = .secondaryLabelColor
         buttons.addArrangedSubview(statusLabel)
         buttons.addArrangedSubview(NSView())
-        buttons.addArrangedSubview(NSButton(title: "Cancel", target: self, action: #selector(cancel)))
+        let cancelButton = NSButton(title: "Cancel", target: self, action: #selector(cancel))
+        cancelButton.setAccessibilityLabel("Cancel and close settings")
+        buttons.addArrangedSubview(cancelButton)
         let saveButton = NSButton(title: "Save Changes", target: self, action: #selector(save))
         saveButton.keyEquivalent = "\r"
         saveButton.bezelStyle = .rounded
         saveButton.contentTintColor = .controlAccentColor
+        saveButton.setAccessibilityLabel("Save settings changes")
         buttons.addArrangedSubview(saveButton)
         footer.addSubview(buttons)
 
@@ -376,6 +434,7 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         archiveEnabledButton.target = self
         archiveEnabledButton.action = #selector(toggleArchiveEnabled)
         archiveEnabledButton.font = .systemFont(ofSize: 13, weight: .medium)
+        archiveEnabledButton.setAccessibilityLabel("Capture clipboard history")
         captureRichContentButton.font = .systemFont(ofSize: 12)
         captureRichContentButton.toolTip =
             "Also capture copied images, file references, formatted text, colors, and titled links. Images above the size cap are blocked with a visible reason."
@@ -432,6 +491,7 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         shortcutEnabledButton.target = self
         shortcutEnabledButton.action = #selector(toggleShortcutEnabled)
         shortcutEnabledButton.font = .systemFont(ofSize: 13, weight: .medium)
+        shortcutEnabledButton.setAccessibilityLabel("Enable quick picker shortcut")
         shortcutRecorder.recorderDelegate = self
         shortcutConflictLabel.font = .systemFont(ofSize: 11, weight: .medium)
         shortcutConflictLabel.textColor = .systemRed
@@ -439,6 +499,7 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         directPasteButton.target = self
         directPasteButton.action = #selector(toggleDirectPaste)
         directPasteButton.font = .systemFont(ofSize: 12)
+        directPasteButton.setAccessibilityLabel("Paste directly into the active app after picking")
         accessibilityStatusLabel.font = .systemFont(ofSize: 10)
         accessibilityStatusLabel.textColor = .secondaryLabelColor
         openAccessibilityButton.target = self
@@ -446,6 +507,147 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         openAccessibilityButton.bezelStyle = .inline
         openAccessibilityButton.controlSize = .small
         openAccessibilityButton.setAccessibilityLabel("Open Accessibility privacy settings")
+    }
+
+    private func configureStartupControls() {
+        launchAtLoginButton.target = self
+        launchAtLoginButton.action = #selector(toggleLaunchAtLogin)
+        launchAtLoginButton.font = .systemFont(ofSize: 13, weight: .medium)
+        launchAtLoginButton.toolTip =
+            "Registers Clipboard Archive with macOS Login Items. Never enabled automatically."
+        launchAtLoginButton.setAccessibilityLabel("Start Clipboard Archive when you log in")
+        loginStatusLabel.font = .systemFont(ofSize: 10)
+        loginStatusLabel.textColor = .secondaryLabelColor
+        openLoginItemsButton.target = self
+        openLoginItemsButton.action = #selector(openLoginItemsSettings)
+        openLoginItemsButton.bezelStyle = .inline
+        openLoginItemsButton.controlSize = .small
+        openLoginItemsButton.isHidden = true
+        openLoginItemsButton.toolTip = "Open System Settings › General › Login Items"
+        openLoginItemsButton.setAccessibilityLabel("Open Login Items in System Settings")
+    }
+
+    private func startupControls() -> [NSView] {
+        let statusRow = NSStackView()
+        statusRow.orientation = .horizontal
+        statusRow.alignment = .centerY
+        statusRow.spacing = 8
+        statusRow.addArrangedSubview(loginStatusLabel)
+        statusRow.addArrangedSubview(openLoginItemsButton)
+        statusRow.addArrangedSubview(NSView())
+        loginStatusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let installerNote = wrappingLabel(
+            "Installed with install.sh? That already added a LaunchAgent that starts the app — keep this toggle off, or remove the LaunchAgent first (see docs/INSTALL.md). Enabling both starts the app twice at login."
+        )
+        installerNote.font = .systemFont(ofSize: 10)
+        installerNote.textColor = .tertiaryLabelColor
+
+        // About block (Slice 9): version facts assembled in ONE place
+        // (ClipboardVersionInfo) so Settings, CLI, and docs agree.
+        let info = versionInfo()
+        let aboutTitle = NSTextField(labelWithString: "ABOUT")
+        aboutTitle.font = .systemFont(ofSize: 9, weight: .semibold)
+        aboutTitle.textColor = .tertiaryLabelColor
+        let aboutLines = NSStackView()
+        aboutLines.orientation = .vertical
+        aboutLines.alignment = .leading
+        aboutLines.spacing = 2
+        for line in info.summaryLines {
+            let label = wrappingLabel(line)
+            label.font = .systemFont(ofSize: 11)
+            label.textColor = .secondaryLabelColor
+            aboutLines.addArrangedSubview(label)
+        }
+        let releaseURL = wrappingLabel(ClipboardVersionInfo.releasePageURLString)
+        releaseURL.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
+        releaseURL.textColor = .tertiaryLabelColor
+        releaseURL.lineBreakMode = .byTruncatingMiddle
+        aboutLines.addArrangedSubview(releaseURL)
+
+        let copyURLButton = NSButton(
+            title: "Copy Release Page URL",
+            target: self,
+            action: #selector(copyReleasePageURL)
+        )
+        copyURLButton.toolTip = "Copy the GitHub Releases page address to the clipboard"
+        copyURLButton.setAccessibilityLabel("Copy the release page URL")
+        let openReleasesButton = NSButton(
+            title: "Open Releases Page",
+            target: self,
+            action: #selector(openReleasePage)
+        )
+        openReleasesButton.toolTip =
+            "Open the GitHub Releases page in your browser (the app itself never checks for updates)"
+        openReleasesButton.setAccessibilityLabel("Open the release page in the browser")
+        let aboutButtons = NSStackView(views: [copyURLButton, openReleasesButton])
+        aboutButtons.orientation = .horizontal
+        aboutButtons.spacing = 8
+
+        return [
+            launchAtLoginButton,
+            statusRow,
+            installerNote,
+            separatorView(),
+            aboutTitle,
+            aboutLines,
+            aboutButtons
+        ]
+    }
+
+    /// One assembly point for the About facts. Development builds (no
+    /// bundle version) label themselves honestly.
+    private func versionInfo() -> ClipboardVersionInfo {
+        let info = Bundle.main.infoDictionary
+        return ClipboardVersionInfo(
+            appVersion: info?["CFBundleShortVersionString"] as? String ?? "development",
+            appBuild: info?["CFBundleVersion"] as? String
+        )
+    }
+
+    /// Reads the REAL SMAppService state and renders it. Never mutates
+    /// registration — reading is the only automatic behavior.
+    private func refreshLoginItemStatus() {
+        let state = loginItemManager.state
+        launchAtLoginButton.state = state.reflectsToggleOn ? .on : .off
+        launchAtLoginButton.isEnabled = state.allowsToggle
+        loginStatusLabel.stringValue = state.statusDescription
+        openLoginItemsButton.isHidden = !state.showsOpenLoginItemsButton
+    }
+
+    @objc private func toggleLaunchAtLogin() {
+        let wantEnabled = launchAtLoginButton.state == .on
+        do {
+            try loginItemManager.setEnabled(wantEnabled)
+            statusLabel.stringValue = wantEnabled
+                ? "Login item requested — status shown above"
+                : "Login item removed"
+            refreshLoginItemStatus()
+        } catch {
+            // SMAppService errors surface honestly (contract: never
+            // silent) — common when the app runs outside ~/Applications.
+            refreshLoginItemStatus()
+            statusLabel.stringValue = "Login item change failed"
+            loginStatusLabel.stringValue =
+                "Could not \(wantEnabled ? "enable" : "disable") launch at login: \(error.localizedDescription)"
+        }
+    }
+
+    @objc private func openLoginItemsSettings() {
+        loginItemManager.openLoginItemsSettings()
+    }
+
+    @objc private func copyReleasePageURL() {
+        onCopyReleasePageURL?()
+        statusLabel.stringValue = "Release page URL copied"
+    }
+
+    @objc private func openReleasePage() {
+        // User-initiated browser navigation; the app runtime itself makes
+        // no network requests.
+        if let url = URL(string: ClipboardVersionInfo.releasePageURLString) {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     private func shortcutControls() -> [NSView] {
@@ -526,6 +728,8 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         addRow.alignment = .centerY
         addRow.addArrangedSubview(excludedBundleField)
         let addButton = NSButton(title: "Add App", target: self, action: #selector(addExcludedBundle))
+        addButton.toolTip = "Add a Block rule for this bundle identifier"
+        addButton.setAccessibilityLabel("Add an app privacy rule")
         addRow.addArrangedSubview(addButton)
 
         let excludedScroll = NSScrollView()
@@ -541,6 +745,8 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
             action: #selector(removeSelectedExcludedBundle)
         )
         remove.alignment = .left
+        remove.toolTip = "Remove the selected app privacy rule"
+        remove.setAccessibilityLabel("Remove the selected app privacy rule")
         let downgradeNote = wrappingLabel(
             "Store, don't index keeps the app in the plain exclusion list too, so older versions of Clipboard Archive block it outright — stricter, never looser."
         )
@@ -687,6 +893,8 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
             target: self,
             action: #selector(showArchiveInFinder)
         )
+        reveal.toolTip = "Open the local archive folder in Finder"
+        reveal.setAccessibilityLabel("Show the archive folder in Finder")
         let dashboard = NSButton(
             title: "Storage & Health…",
             target: self,
@@ -759,9 +967,9 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
     }
 
     private func separatorView() -> NSView {
-        let separator = NSView()
-        separator.wantsLayer = true
-        separator.layer?.backgroundColor = NSColor.separatorColor.cgColor
+        let separator = AdaptiveBackgroundView {
+            .separatorColor
+        }
         separator.heightAnchor.constraint(equalToConstant: 1).isActive = true
         return separator
     }

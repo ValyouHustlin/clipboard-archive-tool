@@ -77,6 +77,34 @@ clipboard-archive repair-index
 clipboard-archive write-manifest
 ```
 
+## Start At Login
+
+There are two separate mechanisms that can start Clipboard Archive at login.
+Use ONE of them, never both — enabling both launches the app twice (the
+second instance exits against the single-instance lock, but the race is
+noisy and pointless).
+
+1. LaunchAgent (installer-managed). `./install.sh` writes
+   `~/Library/LaunchAgents/app.clipboardarchive.plist` and loads it. This is
+   the default for installed copies and what the updater preserves. Remove
+   it with `./uninstall.sh` or:
+
+   ```bash
+   launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/app.clipboardarchive.plist
+   rm ~/Library/LaunchAgents/app.clipboardarchive.plist
+   ```
+
+2. macOS Login Items (in-app toggle). Settings › Startup & About has a
+   "Start Clipboard Archive when you log in" checkbox backed by the system
+   Login Items list (SMAppService, macOS 13+). It is off by default, is
+   never enabled automatically, and reflects the real system state —
+   including "waiting for approval" (finish in System Settings › General ›
+   Login Items) and "unavailable" when the app is not in a normal app
+   location. Manage or revoke it any time from System Settings.
+
+If you used `install.sh`, keep the in-app toggle off, or remove the
+LaunchAgent first if you prefer the Login Items mechanism.
+
 ## Settings
 
 Open the menu bar icon and choose `Settings...`.
@@ -87,12 +115,20 @@ storage and filtering limits, then offers no capture, last 50 items
 
 Current controls:
 
-- Capture on/off.
+- Capture on/off, plus rich-format capture (images, files, rich text,
+  colors, titled links).
 - Storage mode: remember 10 items, remember 50 items, or full archive.
-- Number of items shown in the app.
+- History window (1/7/14/30 days) and number of items shown in the app.
 - Poll interval.
-- Excluded app bundle identifiers.
-- Archive/settings path visibility.
+- App privacy rules: Block, Store-don't-index, or Normal per bundle
+  identifier (legacy exclusion lists still load).
+- Quick picker global shortcut and optional direct paste.
+- Launch at login (see above; off by default).
+- Local storage details, Storage & Health dashboard, encrypted backup and
+  restore.
+- About: app version, archive format, event schema, and search index schema
+  versions, plus the GitHub Releases page URL. Updates are manual; the app
+  never checks the internet.
 
 Excluded apps use bundle identifiers, not display names from the Applications
 folder. Examples:

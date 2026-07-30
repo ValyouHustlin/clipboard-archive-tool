@@ -1,6 +1,109 @@
 # Changelog
 
-## Unreleased - 2026-07-30 (bulk management, privacy upgrades, dashboard)
+## 0.2.0 - 2026-07-30
+
+The complete 2026-07 feature expansion: twelve feature slices, two fixed
+privacy bugs, and a round of review-driven hardening, all under the same
+offline promise — the app runtime has no network code of any kind.
+
+### Foundations
+
+- Event schema versioning with tolerant decoding: every existing archive
+  line decodes as version 1; text-only lines keep writing the byte-identical
+  v1 shape; only events using v2 fields (rich content) stamp version 2.
+  Unknown content types from newer builds decode instead of failing the
+  line. An `archive-format.json` marker records the on-disk format.
+- One suppression gate (`ClipboardSuppression`) now serves every read path;
+  deletion-ledger reads are cached; retention pruning became incremental
+  (no more full rewrite + full index rebuild per capture in recent-10/50
+  modes); copying a clip back out of the app is no longer re-captured as a
+  new event.
+- Derived index schema v2 (`PRAGMA user_version`, content-hash and
+  captured-at indexes, stored previews) with automatic rebuild on version
+  mismatch. All SQL — including the legacy CLI search — now streams over
+  stdin, so clipboard content never appears in process arguments.
+
+### Features
+
+- Quick picker: a floating, keyboard-first panel on a configurable global
+  shortcut (default ⌥⌘V, off until enabled in Settings). Copy-back needs no
+  permissions; direct paste is a separate opt-in that uses Accessibility
+  and degrades to copy-back. Registration conflicts surface in Settings and
+  the menu, never silently.
+- Full-archive search in History: an All History scope over the FTS index
+  with date, app, and type filters — plus the existing working-window view.
+- Pins with retention protection: pinned clips survive recent-10/50 pruning
+  and bulk cleanup unless "include pinned" is separately confirmed.
+- Duplicate grouping with copy counts, first/last timestamps, and
+  expandable occurrence rows, in both scopes.
+- Tags, collections, and snippets, stored in a versioned sidecar
+  annotations file keyed on content hash (annotations survive re-copies;
+  the archive stays append-oriented). Snippets appear at the top of the
+  quick picker and resolve to their newest live copy at commit time.
+- Bulk management with truthful previews: preview and execute share one
+  code path, so the confirmation's clip count and reclaimed bytes match the
+  run exactly. History multi-select delete routes through the same engine.
+- Rich clipboard formats: images (with a configurable size cap), file
+  references (metadata only — never file contents), rich text, colors, and
+  titled links, each with faithful copy-back of the original
+  representations and per-kind detail rendering.
+- Clip actions: copy as plain text, strip formatting, clean tracking
+  parameters from URLs, normalize whitespace, join selected clips, and an
+  edit-before-copy sheet. Edits are copied, never written to history; ⌥↩
+  in the quick picker commits as plain text.
+- Privacy upgrades: per-app rules (Block / Store-don't-index / Normal;
+  unknown modes fail closed), manual Mark Sensitive with restricted
+  (stored, visible, never searchable) and expiring clips, timed Private
+  Mode that never reads the pasteboard while active, and plain-language
+  blocked-event explanations.
+- Storage & Health dashboard: extended overview computed off the main
+  thread, recent blocked items with explanations, index rebuild and
+  integrity verification with inline receipts, and preview-first cleanup.
+- Encrypted backup and restore: passphrase-protected AES-GCM containers
+  (PBKDF2-calibrated key derivation, tamper-evident chunking), a
+  dry-run preview shared with execution, merge-aware restore that honors
+  local deletions, and CLI `backup create/inspect/restore`.
+- Daily-use polish: launch-at-login via macOS Login Items (SMAppService,
+  off by default, never enabled automatically, honest status including the
+  approval-pending and wrong-location cases), a refreshed first-run window
+  that mentions the new capabilities without adding steps, an About section
+  with app/format/schema versions and a copyable GitHub Releases URL
+  (updates stay manual — the app never checks the internet), empty-state
+  copy on every surface, and an accessibility/tooltip pass across the new
+  controls.
+
+### Fixed privacy bugs
+
+- Pause retro-capture (pre-existing): resuming from a pause retroactively
+  captured the last item copied while paused, because the pause exit never
+  resynchronized pasteboard change tracking. All gate exits — manual pause,
+  timed pause, and private mode — now resync without ingesting.
+- Settings date decode (pre-existing): persisted ISO 8601 dates (timed
+  pause, private mode, rule timestamps) could reset the whole settings file
+  to defaults on load — silently turning capture back on and dropping
+  exclusions. Dates now decode flexibly per field, and one malformed
+  shortcut entry no longer resets unrelated settings.
+
+### Review-driven hardening
+
+- Deleted content can no longer be copied from a stale quick-picker cache;
+  every archive mutation invalidates the warm caches.
+- Fail-closed ordering for deletions: index rows are removed before
+  tombstoning, so a crash cannot leave searchable content.
+- In-process index locking fixed alongside the cross-process file lock;
+  rebuilds no longer race capture upserts.
+- Merge-restore no longer resurrects rich bodies of locally deleted events;
+  restores honor the local deletion ledger.
+- Restricted clips are badged on every surface (History, quick picker,
+  menu); store-don't-index apps also stay in the legacy exclusion list so
+  older builds block them outright (stricter, never looser).
+- Bulk sheet close during an in-flight delete no longer skips cache
+  invalidation; hotkey conflicts get a persistent menu warning.
+
+## 0.2.0 development log - 2026-07-30 (bulk management, privacy upgrades, dashboard)
+
+These notes were kept during the expansion and are summarized in the 0.2.0
+entry above.
 
 - FIXED PRIVACY BUG (pre-existing): resuming from a pause retroactively
   captured the last item copied while paused, because the pause exit never
@@ -43,7 +146,7 @@
   pause, private mode, rule timestamps) now load correctly instead of
   resetting the settings file to defaults.
 
-## Unreleased - 2026-07-29
+## 0.2.0 development log - 2026-07-29
 
 - Rebuilt the history window as a searchable split view with rich
   source/type/time rows, a readable full-content detail pane, multi-selection,

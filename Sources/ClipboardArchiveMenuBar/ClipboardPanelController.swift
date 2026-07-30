@@ -127,6 +127,10 @@ final class ClipboardPanelController: NSWindowController,
     /// Plain-text path: multi-select joins stay plain text (documented —
     /// joining rich representations has no meaningful pasteboard shape).
     private let copyPlainTextToPasteboard: (String) -> Void
+    /// Whether capture is currently on (Slice 9): the zero-clips empty
+    /// state uses it to say honestly that capture may be off instead of
+    /// implying clips will appear.
+    private let isCaptureEnabled: () -> Bool
     private var events: [StoredClipboardEvent] = []
     private var filteredEvents: [StoredClipboardEvent] = []
     private var recentItemLimit: Int
@@ -231,6 +235,7 @@ final class ClipboardPanelController: NSWindowController,
         groupDuplicates: Bool = false,
         copyEventToPasteboard: @escaping (StoredClipboardEvent) -> Void,
         copyPlainTextToPasteboard: @escaping (String) -> Void,
+        isCaptureEnabled: @escaping () -> Bool = { true },
         onArchiveMutation: @escaping (ArchiveMutation) -> Void = { _ in },
         onGroupDuplicatesChanged: @escaping (Bool) -> Void = { _ in }
     ) {
@@ -242,6 +247,7 @@ final class ClipboardPanelController: NSWindowController,
         self.derivedIndex = ClipboardDerivedIndex(archiveRoot: archiveRoot)
         self.copyEventToPasteboard = copyEventToPasteboard
         self.copyPlainTextToPasteboard = copyPlainTextToPasteboard
+        self.isCaptureEnabled = isCaptureEnabled
         self.onArchiveMutation = onArchiveMutation
         self.onGroupDuplicatesChanged = onGroupDuplicatesChanged
         self.recentItemLimit = recentItemLimit
@@ -322,6 +328,15 @@ final class ClipboardPanelController: NSWindowController,
     func writeSnapshot(to url: URL) throws {
         guard let view = window?.contentView else {
             return
+        }
+        // Snapshot fidelity (Slice 9): production windows draw their own
+        // background, but cached bitmaps composite the non-layer-backed
+        // content view's transparent regions as white — illegible with
+        // dark-appearance text. Fill with the appearance-resolved window
+        // background first. DEBUG-only path.
+        view.wantsLayer = true
+        window?.effectiveAppearance.performAsCurrentDrawingAppearance {
+            view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         }
         view.layoutSubtreeIfNeeded()
         window?.displayIfNeeded()
@@ -683,6 +698,7 @@ final class ClipboardPanelController: NSWindowController,
         scopeControl.target = self
         scopeControl.action = #selector(scopeChanged)
         scopeControl.setAccessibilityLabel("Search scope")
+        scopeControl.toolTip = "This Window browses the working view; All History searches the full archive index"
         listStack.addArrangedSubview(scopeControl)
         scopeControl.widthAnchor.constraint(
             equalTo: listStack.widthAnchor,
@@ -695,6 +711,7 @@ final class ClipboardPanelController: NSWindowController,
         collectionPopup.target = self
         collectionPopup.action = #selector(collectionScopeChanged)
         collectionPopup.setAccessibilityLabel("Filter history by collection")
+        collectionPopup.toolTip = "Show all clips, pinned clips, snippets, or a collection"
         listStack.addArrangedSubview(collectionPopup)
         collectionPopup.widthAnchor.constraint(
             equalTo: listStack.widthAnchor,
@@ -733,6 +750,7 @@ final class ClipboardPanelController: NSWindowController,
         groupDuplicatesCheckbox.state = groupDuplicates ? .on : .off
         groupDuplicatesCheckbox.font = .systemFont(ofSize: 11)
         groupDuplicatesCheckbox.setAccessibilityLabel("Group duplicate clips")
+        groupDuplicatesCheckbox.toolTip = "Collapse repeated copies of the same content into one row"
         listStack.addArrangedSubview(groupDuplicatesCheckbox)
 
         // All-history-only filter row (hidden in This Window scope).
@@ -1027,12 +1045,14 @@ final class ClipboardPanelController: NSWindowController,
         tagsField.placeholderString = "Add tags"
         tagsField.completionDelay = 0.2
         tagsField.setAccessibilityLabel("Tags for the selected clip")
+        tagsField.toolTip = "Comma or Return adds a tag; tags stick to the content, not one copy"
         tagsColumn.addArrangedSubview(tagsLabel)
         tagsColumn.addArrangedSubview(tagsField)
         tagsField.widthAnchor.constraint(greaterThanOrEqualToConstant: 220).isActive = true
         collectionMembershipButton.pullsDown = true
         collectionMembershipButton.addItem(withTitle: "Add to Collection")
         collectionMembershipButton.setAccessibilityLabel("Add the selected clip to a collection")
+        collectionMembershipButton.toolTip = "Add or remove the selected clip from a collection"
         organizeRow.addArrangedSubview(tagsColumn)
         organizeRow.addArrangedSubview(collectionMembershipButton)
         organizeRow.addArrangedSubview(NSView())
@@ -1089,9 +1109,10 @@ final class ClipboardPanelController: NSWindowController,
     }
 
     private func separatorView() -> NSView {
-        let separator = NSView()
-        separator.wantsLayer = true
-        separator.layer?.backgroundColor = NSColor.separatorColor.cgColor
+        // Adaptive: re-resolves per appearance (Slice 9 QA fix).
+        let separator = AdaptiveBackgroundView {
+            .separatorColor
+        }
         separator.heightAnchor.constraint(equalToConstant: 1).isActive = true
         return separator
     }
@@ -3407,7 +3428,11 @@ final class ClipboardPanelController: NSWindowController,
                 detailMetadata.stringValue = "Copy combines them with a blank line between each clip."
             } else if events.isEmpty {
                 detailTitle.stringValue = "No clips yet"
-                detailMetadata.stringValue = "Copy text in any app and it will appear here."
+                // Honest first-run hint (Slice 9): if capture is off or
+                // paused, copying will NOT make clips appear — say so.
+                detailMetadata.stringValue = isCaptureEnabled()
+                    ? "Copy text in any app and it will appear here."
+                    : "Capture is off or paused — turn it on from the menu bar icon or Settings, then copy some text."
             } else {
                 detailTitle.stringValue = "No matching clips"
                 detailMetadata.stringValue = "Try a different search."
