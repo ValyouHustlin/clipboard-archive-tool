@@ -28,6 +28,7 @@ final class ClipboardBulkSheetController: NSObject {
     )
     private let previewButton = NSButton(title: "Preview", target: nil, action: nil)
     private let deleteButton = NSButton(title: "Delete…", target: nil, action: nil)
+    private let closeButton = NSButton(title: "Close", target: nil, action: nil)
     private let resultLabel = NSTextField(wrappingLabelWithString: " ")
     private let workQueue = DispatchQueue(label: "app.clipboardarchive.bulk-sheet")
     private var workInFlight = false
@@ -148,8 +149,10 @@ final class ClipboardBulkSheetController: NSObject {
         deleteButton.target = self
         deleteButton.action = #selector(deleteClicked)
         deleteButton.isEnabled = false
-        let cancelButton = NSButton(title: "Close", target: self, action: #selector(closeClicked))
-        let buttons = NSStackView(views: [cancelButton, NSView(), previewButton, deleteButton])
+        closeButton.title = "Close"
+        closeButton.target = self
+        closeButton.action = #selector(closeClicked)
+        let buttons = NSStackView(views: [closeButton, NSView(), previewButton, deleteButton])
         buttons.orientation = .horizontal
         buttons.spacing = 9
         stack.addArrangedSubview(buttons)
@@ -312,15 +315,18 @@ final class ClipboardBulkSheetController: NSObject {
         }
         workInFlight = true
         deleteButton.isEnabled = false
+        closeButton.isEnabled = false
         resultLabel.stringValue = "Deleting…"
         let engine = engine
+        // Deliberate STRONG self capture: the deletion mutates the archive,
+        // and closing the sheet mid-run must not deallocate the controller
+        // before `onExecuted` fires — that would leave the History window
+        // and quick-picker caches referencing already-redacted events.
         runWork { @Sendable in
             try? engine.execute(criteria)
-        } completion: { [weak self] result in
-            guard let self else {
-                return
-            }
+        } completion: { result in
             self.workInFlight = false
+            self.closeButton.isEnabled = true
             self.previewedSignature = nil
             self.previewedCriteria = nil
             self.lastPreview = nil

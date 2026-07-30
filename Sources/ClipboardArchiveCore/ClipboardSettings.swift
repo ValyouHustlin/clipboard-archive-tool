@@ -86,7 +86,17 @@ public struct ClipboardAppPrivacyRule: Codable, Equatable, Sendable {
         // must fail closed, so default to the empty string (evaluates as
         // block) rather than dropping the record.
         mode = try container.decodeIfPresent(String.self, forKey: .mode) ?? ""
-        addedAt = try container.decodeIfPresent(Date.self, forKey: .addedAt) ?? .distantPast
+        // A malformed/mixed-format date must not fail this rule's decode:
+        // FailableDecodable would then DROP the rule, silently un-blocking
+        // the app (fail-open). The timestamp is cosmetic; the mode is not.
+        if let date = try? container.decodeIfPresent(Date.self, forKey: .addedAt) {
+            addedAt = date
+        } else if let string = try? container.decodeIfPresent(String.self, forKey: .addedAt),
+                  let parsed = ISO8601DateFormatter().date(from: string) {
+            addedAt = parsed
+        } else {
+            addedAt = .distantPast
+        }
     }
 
     /// Fail-closed evaluation (contract: unknown mode weakens nothing).
@@ -241,7 +251,7 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         excludedBundleIdentifiers = try container.decodeIfPresent([String].self, forKey: .excludedBundleIdentifiers) ?? []
         excludedAppNameFragments = try container.decodeIfPresent([String].self, forKey: .excludedAppNameFragments) ?? []
-        pauseUntil = try container.decodeIfPresent(Date.self, forKey: .pauseUntil)
+        pauseUntil = Self.flexibleDate(in: container, forKey: .pauseUntil)
         pollIntervalSeconds = try container.decodeIfPresent(TimeInterval.self, forKey: .pollIntervalSeconds) ?? 0.2
         archiveEnabled = try container.decodeIfPresent(Bool.self, forKey: .archiveEnabled) ?? true
         let decodedLimit = try container.decodeIfPresent(Int.self, forKey: .recentItemLimit) ?? 50
@@ -276,7 +286,7 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
             forKey: .appPrivacyRules
         ) ?? [:]
         appPrivacyRules = Self.normalizedRuleKeys(tolerantRules.compactMapValues(\.value))
-        privateModeUntil = try container.decodeIfPresent(Date.self, forKey: .privateModeUntil)
+        privateModeUntil = Self.flexibleDate(in: container, forKey: .privateModeUntil)
         showBlockedEventStatus = try container.decodeIfPresent(
             Bool.self,
             forKey: .showBlockedEventStatus
@@ -285,6 +295,28 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
 
     public static func clampRecentItemLimit(_ value: Int) -> Int {
         max(minimumRecentItemLimit, min(maximumRecentItemLimit, value))
+    }
+
+    /// Decodes a date that may be an ISO 8601 string OR a numeric timestamp,
+    /// regardless of the decoder's date strategy. A settings file with mixed
+    /// date encodings (hand edit, partial write, format bug) must degrade to
+    /// dropping the one odd date — NEVER to failing the whole decode, which
+    /// the store would answer with a factory reset that silently un-blocks
+    /// the user's privacy rules.
+    private static func flexibleDate(
+        in container: KeyedDecodingContainer<CodingKeys>,
+        forKey key: CodingKeys
+    ) -> Date? {
+        if let date = try? container.decodeIfPresent(Date.self, forKey: key) {
+            return date
+        }
+        if let string = try? container.decodeIfPresent(String.self, forKey: key) {
+            return ISO8601DateFormatter().date(from: string)
+        }
+        if let seconds = try? container.decodeIfPresent(Double.self, forKey: key) {
+            return Date(timeIntervalSinceReferenceDate: seconds)
+        }
+        return nil
     }
 }
 
