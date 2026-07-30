@@ -6,19 +6,25 @@ public struct ClipboardRedactionResult: Equatable, Sendable {
     public var deletedBodyFile: String?
     public var deletedFromIndex: Bool
     public var skippedUnsafeBodyPath: Bool
+    /// Non-nil when this redaction removed the LAST live occurrence of an
+    /// annotated content hash, so its annotation record and collection
+    /// memberships were dropped too (contract 5).
+    public var removedAnnotationContentHash: String?
 
     public init(
         eventID: String,
         redactedEventFile: String,
         deletedBodyFile: String?,
         deletedFromIndex: Bool,
-        skippedUnsafeBodyPath: Bool = false
+        skippedUnsafeBodyPath: Bool = false,
+        removedAnnotationContentHash: String? = nil
     ) {
         self.eventID = eventID
         self.redactedEventFile = redactedEventFile
         self.deletedBodyFile = deletedBodyFile
         self.deletedFromIndex = deletedFromIndex
         self.skippedUnsafeBodyPath = skippedUnsafeBodyPath
+        self.removedAnnotationContentHash = removedAnnotationContentHash
     }
 }
 
@@ -47,6 +53,7 @@ public struct ClipboardArchiveRedactor: Sendable {
             var changed = false
             var deletedBodyFile: String?
             var skippedUnsafeBodyPath = false
+            var redactedContentHash: String?
             var rewrittenLines: [String] = []
 
             for line in originalLines {
@@ -59,6 +66,10 @@ public struct ClipboardArchiveRedactor: Sendable {
                     }
                     continue
                 }
+
+                // Content identity, captured pre-tombstone, for the
+                // last-occurrence annotation cleanup below.
+                redactedContentHash = event.contentHash
 
                 if let rawContentPath = event.rawContentPath {
                     if let bodyURL = try? ClipboardArchivePath.containedURL(
@@ -99,17 +110,55 @@ public struct ClipboardArchiveRedactor: Sendable {
                 try ClipboardDeletionLedger(archiveRoot: archiveRoot).recordDeletion(eventID: eventID, reason: reason)
                 let deletedFromIndex = try ClipboardDerivedIndex(archiveRoot: archiveRoot, indexURL: indexURL)
                     .delete(eventID: eventID)
+                var removedAnnotationContentHash: String?
+                if let redactedContentHash {
+                    removedAnnotationContentHash = cleanUpAnnotationIfLastOccurrence(
+                        contentHash: redactedContentHash
+                    )
+                }
                 return ClipboardRedactionResult(
                     eventID: eventID,
                     redactedEventFile: eventFile.path,
                     deletedBodyFile: deletedBodyFile,
                     deletedFromIndex: deletedFromIndex,
-                    skippedUnsafeBodyPath: skippedUnsafeBodyPath
+                    skippedUnsafeBodyPath: skippedUnsafeBodyPath,
+                    removedAnnotationContentHash: removedAnnotationContentHash
                 )
             }
         }
 
         throw ClipboardArchiveError.eventNotFound(eventID)
+    }
+
+    /// Contract 5 cleanup: when the event just redacted was the LAST live
+    /// occurrence of an annotated content hash, drop the annotation record
+    /// and its collection memberships.
+    ///
+    /// The live-occurrence count comes from `ClipboardOccurrenceResolver`
+    /// (content_hash index query post-filtered through the deletion ledger —
+    /// a stale index must not keep an annotation alive; a missing index
+    /// falls back to one reader scan). A resolver failure keeps the
+    /// annotation (conservative). Removal in read-only newer-format mode is
+    /// silently skipped: the dangling reference is harmless because all
+    /// consumers resolve annotations through live occurrences.
+    private func cleanUpAnnotationIfLastOccurrence(contentHash: String) -> String? {
+        let store = ClipboardAnnotationsStore(archiveRoot: archiveRoot)
+        let document = store.document()
+        let referenced = document.annotations[contentHash] != nil
+            || document.collections.contains { $0.contentHashes.contains(contentHash) }
+        guard referenced else {
+            return nil
+        }
+        guard let remaining = try? ClipboardOccurrenceResolver(
+            archiveRoot: archiveRoot,
+            indexURL: indexURL
+        ).liveOccurrenceIDs(contentHash: contentHash), remaining.isEmpty else {
+            return nil
+        }
+        guard (try? store.removeContentReference(contentHash: contentHash)) != nil else {
+            return nil
+        }
+        return contentHash
     }
 }
 

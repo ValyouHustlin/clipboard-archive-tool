@@ -4,16 +4,41 @@ import Foundation
 
 /// Table subclass so a plain Return keypress in the results list commits a
 /// copy through the shared no-re-capture path (keyboard-first contract;
-/// works in both scopes).
+/// works in both scopes), and →/← toggle duplicate-group expansion.
 final class HistoryResultsTableView: NSTableView {
     var onReturnKey: (() -> Void)?
+    /// Right/left arrow handling for duplicate groups. Return true when the
+    /// key was consumed (a group row expanded/collapsed).
+    var onExpandKey: ((_ expand: Bool) -> Bool)?
 
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 36, let onReturnKey {
             onReturnKey()
             return
         }
+        if event.keyCode == 124, onExpandKey?(true) == true {
+            return
+        }
+        if event.keyCode == 123, onExpandKey?(false) == true {
+            return
+        }
         super.keyDown(with: event)
+    }
+}
+
+/// Window subclass so ⌘P toggles the pin on the current selection. This is
+/// an accessory app with no main menu, so the key equivalent has to be
+/// intercepted at the window level (`performKeyEquivalent`).
+final class HistoryPanelWindow: NSWindow {
+    var onPinKeyEquivalent: (() -> Bool)?
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+           event.charactersIgnoringModifiers?.lowercased() == "p",
+           onPinKeyEquivalent?() == true {
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
     }
 }
 
@@ -21,7 +46,19 @@ final class HistoryResultsTableView: NSTableView {
 final class ClipboardPanelController: NSWindowController,
     NSTableViewDataSource,
     NSTableViewDelegate,
-    NSSearchFieldDelegate {
+    NSSearchFieldDelegate,
+    NSTokenFieldDelegate,
+    NSMenuDelegate {
+    /// Archive-state mutations this window performs. The app delegate keys
+    /// its shared-cache invalidation off the case: every mutation dirties
+    /// the quick-picker cache; removing a pin ALSO resets the retention
+    /// estimate (an unpin shrinks the exempt set, so the in-memory count
+    /// could undercount and silently stop enforcing retention).
+    enum ArchiveMutation {
+        case eventsDeleted
+        case annotationsChanged(pinRemoved: Bool)
+    }
+
     /// Which data source drives the results list. `.thisWindow` is the
     /// original in-memory recent-items path and its behavior is unchanged;
     /// `.allHistory` reads the derived FTS index only (contract 3 — never
@@ -43,25 +80,69 @@ final class ClipboardPanelController: NSWindowController,
         case preparingIndex
     }
 
+    /// Collection popup selection (client-side hash filtering, both scopes).
+    private enum CollectionScope: Equatable {
+        case all
+        case pinned
+        case snippets
+        case collection(id: String)
+    }
+
+    /// One display row after duplicate grouping. Indexes point into the
+    /// current flat source array (`filteredEvents` or `archiveRows`).
+    private struct GroupRowInfo {
+        var hash: String
+        /// Newest first.
+        var indices: [Int]
+        var firstCapturedAt: Date
+        var lastCapturedAt: Date
+    }
+
+    private enum HistoryRow {
+        case single(Int)
+        case group(GroupRowInfo)
+        case occurrence(Int, groupHash: String)
+    }
+
     private let archiveRoot: URL
     private let reader: ClipboardArchiveReader
     private let redactor: ClipboardArchiveRedactor
-    /// Notifies the app delegate after this window redacts events so shared
-    /// caches (quick picker warm list, retention estimate) stay truthful.
-    private let onArchiveMutation: () -> Void
+    private let annotations: ClipboardAnnotationsStore
+    private let occurrenceResolver: ClipboardOccurrenceResolver
+    /// Notifies the app delegate after this window mutates archive state so
+    /// shared caches (quick picker warm list, retention estimate) stay
+    /// truthful. One funnel for deletes AND annotation changes.
+    private let onArchiveMutation: (ArchiveMutation) -> Void
+    /// Persists the "Group duplicates" toggle into settings (the app
+    /// delegate owns the settings file; the panel never writes it directly).
+    private let onGroupDuplicatesChanged: (Bool) -> Void
     private let derivedIndex: ClipboardDerivedIndex
     /// Shared copy-back path owned by the app delegate
     /// (`copyToPasteboardWithoutRecapture` in main.swift). It sets the
     /// pasteboard AND updates the capture dedup state so a copy from this
     /// window is not re-captured as a new event. The panel must never write
-    /// to the pasteboard directly, and the future quick picker must be wired
-    /// through the same closure.
+    /// to the pasteboard directly.
     private let copyToPasteboard: (String) -> Void
     private var events: [StoredClipboardEvent] = []
     private var filteredEvents: [StoredClipboardEvent] = []
     private var recentItemLimit: Int
     private var historyWindow: ClipboardHistoryWindow
     private var contentTypeFilter: ClipboardContentType?
+
+    // MARK: - Annotation / grouping state
+
+    private var pinnedHashes: Set<String> = []
+    private var snippetHashes: Set<String> = []
+    private var knownCollections: [ClipboardAnnotationCollection] = []
+    private var collectionScope: CollectionScope = .all
+    private var groupDuplicates: Bool
+    private var displayRows: [HistoryRow] = []
+    /// Expansion is per-hash and resets on reload/scope change.
+    private var expandedGroupHashes: Set<String> = []
+    /// The content hash currently backing the tags field / collection
+    /// pulldown, captured when the detail pane was populated so an edit
+    /// commits to the item it was typed against.
+    private var detailContentHash: String?
 
     // MARK: - All-history scope state
 
@@ -93,6 +174,12 @@ final class ClipboardPanelController: NSWindowController,
     private let historySubtitle = NSTextField(labelWithString: "")
     private let typeFilter = NSSegmentedControl()
     private let scopeControl = NSSegmentedControl()
+    private let collectionPopup = NSPopUpButton()
+    private let groupDuplicatesCheckbox = NSButton(
+        checkboxWithTitle: "Group duplicates",
+        target: nil,
+        action: nil
+    )
     private let dateFilterPopup = NSPopUpButton()
     private let appFilterPopup = NSPopUpButton()
     private let archiveFilterRow = NSStackView()
@@ -107,25 +194,34 @@ final class ClipboardPanelController: NSWindowController,
     private let detailSizeValue = NSTextField(labelWithString: "—")
     private let copyButton = NSButton(title: "Copy", target: nil, action: nil)
     private let deleteButton = NSButton(title: "Delete", target: nil, action: nil)
+    private let pinButton = NSButton(title: "", target: nil, action: nil)
+    private let tagsField = NSTokenField()
+    private let collectionMembershipButton = NSPopUpButton()
     private var detailCardHeightConstraint: NSLayoutConstraint?
 
     init(
         archiveRoot: URL,
         recentItemLimit: Int,
         historyWindow: ClipboardHistoryWindow,
+        groupDuplicates: Bool = false,
         copyToPasteboard: @escaping (String) -> Void,
-        onArchiveMutation: @escaping () -> Void = {}
+        onArchiveMutation: @escaping (ArchiveMutation) -> Void = { _ in },
+        onGroupDuplicatesChanged: @escaping (Bool) -> Void = { _ in }
     ) {
         self.archiveRoot = archiveRoot
         self.reader = ClipboardArchiveReader(archiveRoot: archiveRoot)
         self.redactor = ClipboardArchiveRedactor(archiveRoot: archiveRoot)
+        self.annotations = ClipboardAnnotationsStore(archiveRoot: archiveRoot)
+        self.occurrenceResolver = ClipboardOccurrenceResolver(archiveRoot: archiveRoot)
         self.derivedIndex = ClipboardDerivedIndex(archiveRoot: archiveRoot)
         self.copyToPasteboard = copyToPasteboard
         self.onArchiveMutation = onArchiveMutation
+        self.onGroupDuplicatesChanged = onGroupDuplicatesChanged
         self.recentItemLimit = recentItemLimit
         self.historyWindow = historyWindow
+        self.groupDuplicates = groupDuplicates
 
-        let window = NSWindow(
+        let window = HistoryPanelWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 520),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
@@ -136,6 +232,9 @@ final class ClipboardPanelController: NSWindowController,
         window.center()
         window.setFrameAutosaveName("ClipboardHistoryWindowV2")
         super.init(window: window)
+        window.onPinKeyEquivalent = { [weak self] in
+            self?.togglePinOnSelection() ?? false
+        }
         buildUI()
         reload()
     }
@@ -238,6 +337,44 @@ final class ClipboardPanelController: NSWindowController,
         archiveFiltersChanged()
     }
 
+    func performAutomationGroupDuplicates(_ enabled: Bool) {
+        groupDuplicatesCheckbox.state = enabled ? .on : .off
+        groupDuplicatesToggled()
+    }
+
+    func performAutomationCollectionFilter(_ title: String) {
+        guard collectionPopup.itemTitles.contains(title) else {
+            return
+        }
+        collectionPopup.selectItem(withTitle: title)
+        collectionScopeChanged()
+    }
+
+    /// Routes a named gesture through the SAME production handlers the UI
+    /// uses so automation exercises real paths.
+    func performAutomationHistoryGesture(_ gesture: String) {
+        switch gesture.trimmingCharacters(in: .whitespaces).lowercased() {
+        case "select-first":
+            selectDisplayRow(0)
+        case "select-last":
+            selectDisplayRow(displayRows.count - 1)
+        case "pin-selected":
+            setPinned(true, forContentHashes: selectedContentHashes())
+        case "unpin-selected":
+            // Bypasses the snippet confirm alert (none of the harness
+            // fixtures are snippets); production path otherwise.
+            setPinned(false, forContentHashes: selectedContentHashes())
+        case "expand-group":
+            _ = toggleSelectedGroup(expand: true)
+        case "collapse-group":
+            _ = toggleSelectedGroup(expand: false)
+        case "copy-selected":
+            copySelected()
+        default:
+            break
+        }
+    }
+
     /// True when no archive query or detail fetch is pending or in flight.
     /// The harness polls this (0.1 s steps, 5 s cap) instead of sleeping a
     /// fixed interval.
@@ -283,11 +420,52 @@ final class ClipboardPanelController: NSWindowController,
     }
 
     var automationVisibleResultIDs: [String] {
-        scope == .allHistory ? archiveRows.map(\.id) : filteredEvents.map(\.id)
+        displayRows.compactMap { row in
+            switch row {
+            case let .single(index), let .occurrence(index, _):
+                return flatID(at: index)
+            case let .group(info):
+                return info.indices.first.flatMap { flatID(at: $0) }
+            }
+        }
     }
 
     var automationRowCount: Int {
-        scope == .allHistory ? archiveRows.count : filteredEvents.count
+        displayRows.count
+    }
+
+    var automationRowKinds: [String] {
+        displayRows.map { row in
+            switch row {
+            case .single:
+                return "single"
+            case let .group(info):
+                return "group:\(info.indices.count)"
+            case .occurrence:
+                return "occurrence"
+            }
+        }
+    }
+
+    var automationPinnedVisibleIDs: [String] {
+        displayRows.compactMap { row in
+            switch row {
+            case let .single(index), let .occurrence(index, _):
+                guard pinnedHashes.contains(flatContentHash(at: index)) else {
+                    return nil
+                }
+                return flatID(at: index)
+            case let .group(info):
+                guard pinnedHashes.contains(info.hash) else {
+                    return nil
+                }
+                return info.indices.first.flatMap { flatID(at: $0) }
+            }
+        }
+    }
+
+    var automationStatusText: String {
+        statusLabel.stringValue
     }
 #endif
 
@@ -363,6 +541,18 @@ final class ClipboardPanelController: NSWindowController,
             constant: -28
         ).isActive = true
 
+        // Collections filter (contract 5): All Clips | Pinned | Snippets |
+        // named collections | New Collection…, client-side hash filtering
+        // in both scopes.
+        collectionPopup.target = self
+        collectionPopup.action = #selector(collectionScopeChanged)
+        collectionPopup.setAccessibilityLabel("Filter history by collection")
+        listStack.addArrangedSubview(collectionPopup)
+        collectionPopup.widthAnchor.constraint(
+            equalTo: listStack.widthAnchor,
+            constant: -28
+        ).isActive = true
+
         searchField.placeholderString = "Search clips"
         searchField.delegate = self
         searchField.sendsSearchStringImmediately = true
@@ -387,6 +577,13 @@ final class ClipboardPanelController: NSWindowController,
             equalTo: listStack.widthAnchor,
             constant: -28
         ).isActive = true
+
+        groupDuplicatesCheckbox.target = self
+        groupDuplicatesCheckbox.action = #selector(groupDuplicatesToggled)
+        groupDuplicatesCheckbox.state = groupDuplicates ? .on : .off
+        groupDuplicatesCheckbox.font = .systemFont(ofSize: 11)
+        groupDuplicatesCheckbox.setAccessibilityLabel("Group duplicate clips")
+        listStack.addArrangedSubview(groupDuplicatesCheckbox)
 
         // All-history-only filter row (hidden in This Window scope).
         dateFilterPopup.addItems(withTitles: Self.dateFilterTitles)
@@ -429,27 +626,17 @@ final class ClipboardPanelController: NSWindowController,
         tableView.dataSource = self
         tableView.delegate = self
         tableView.target = self
-        tableView.doubleAction = #selector(copySelected)
+        tableView.doubleAction = #selector(rowDoubleClicked)
         // Return in the list commits a copy through the shared
         // no-re-capture path — in both scopes.
         tableView.onReturnKey = { [weak self] in
             self?.copySelected()
         }
+        tableView.onExpandKey = { [weak self] expand in
+            self?.toggleSelectedGroup(expand: expand) ?? false
+        }
         let contextMenu = NSMenu()
-        let copyItem = NSMenuItem(
-            title: "Copy Selected",
-            action: #selector(copySelected),
-            keyEquivalent: ""
-        )
-        copyItem.target = self
-        contextMenu.addItem(copyItem)
-        let deleteItem = NSMenuItem(
-            title: "Delete Selected…",
-            action: #selector(deleteSelected),
-            keyEquivalent: ""
-        )
-        deleteItem.target = self
-        contextMenu.addItem(deleteItem)
+        contextMenu.delegate = self
         tableView.menu = contextMenu
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("clipboard"))
         column.resizingMask = .autoresizingMask
@@ -466,6 +653,7 @@ final class ClipboardPanelController: NSWindowController,
         listFooter.spacing = 8
         statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.textColor = .secondaryLabelColor
+        statusLabel.lineBreakMode = .byTruncatingTail
         let refreshButton = symbolButton(
             symbol: "arrow.clockwise",
             accessibilityLabel: "Refresh history",
@@ -535,6 +723,16 @@ final class ClipboardPanelController: NSWindowController,
         )
         deleteButton.toolTip = "Delete selected clips"
         deleteButton.setAccessibilityLabel("Delete selected clips")
+        pinButton.target = self
+        pinButton.action = #selector(pinButtonClicked)
+        pinButton.bezelStyle = .texturedRounded
+        pinButton.title = ""
+        pinButton.image = NSImage(
+            systemSymbolName: "pin",
+            accessibilityDescription: "Pin selected clip"
+        )
+        pinButton.toolTip = "Pin selected clip (⌘P)"
+        pinButton.setAccessibilityLabel("Pin selected clip")
 
         let revealButton = symbolButton(
             symbol: "folder",
@@ -547,6 +745,7 @@ final class ClipboardPanelController: NSWindowController,
         actions.spacing = 8
         actions.alignment = .centerY
         actions.addArrangedSubview(revealButton)
+        actions.addArrangedSubview(pinButton)
         actions.addArrangedSubview(deleteButton)
         actions.addArrangedSubview(copyButton)
 
@@ -638,6 +837,39 @@ final class ClipboardPanelController: NSWindowController,
             constant: -52
         ).isActive = true
 
+        // Tags + collection membership (single selection only).
+        let organizeRow = NSStackView()
+        organizeRow.orientation = .horizontal
+        organizeRow.alignment = .firstBaseline
+        organizeRow.spacing = 18
+        let tagsColumn = NSStackView()
+        tagsColumn.orientation = .vertical
+        tagsColumn.alignment = .leading
+        tagsColumn.spacing = 3
+        let tagsLabel = NSTextField(labelWithString: "TAGS")
+        tagsLabel.font = .systemFont(ofSize: 9, weight: .semibold)
+        tagsLabel.textColor = .tertiaryLabelColor
+        tagsField.delegate = self
+        tagsField.tokenStyle = .rounded
+        tagsField.font = .systemFont(ofSize: 12)
+        tagsField.placeholderString = "Add tags"
+        tagsField.completionDelay = 0.2
+        tagsField.setAccessibilityLabel("Tags for the selected clip")
+        tagsColumn.addArrangedSubview(tagsLabel)
+        tagsColumn.addArrangedSubview(tagsField)
+        tagsField.widthAnchor.constraint(greaterThanOrEqualToConstant: 220).isActive = true
+        collectionMembershipButton.pullsDown = true
+        collectionMembershipButton.addItem(withTitle: "Add to Collection")
+        collectionMembershipButton.setAccessibilityLabel("Add the selected clip to a collection")
+        organizeRow.addArrangedSubview(tagsColumn)
+        organizeRow.addArrangedSubview(collectionMembershipButton)
+        organizeRow.addArrangedSubview(NSView())
+        detailStack.addArrangedSubview(organizeRow)
+        organizeRow.widthAnchor.constraint(
+            equalTo: detailStack.widthAnchor,
+            constant: -52
+        ).isActive = true
+
         detailStack.addArrangedSubview(NSView())
         let localNote = NSStackView()
         localNote.orientation = .horizontal
@@ -666,6 +898,7 @@ final class ClipboardPanelController: NSWindowController,
         splitView.addArrangedSubview(listPane)
         splitView.addArrangedSubview(detailPane)
         splitView.setHoldingPriority(.defaultHigh, forSubviewAt: 0)
+        refreshAnnotationState()
     }
 
     private func detailFact(title: String, value: NSTextField) -> NSView {
@@ -730,6 +963,274 @@ final class ClipboardPanelController: NSWindowController,
         }
     }
 
+    @objc private func groupDuplicatesToggled() {
+        groupDuplicates = groupDuplicatesCheckbox.state == .on
+        expandedGroupHashes.removeAll()
+        onGroupDuplicatesChanged(groupDuplicates)
+        if scope == .allHistory {
+            // The empty-query data source changes (browse ↔ metaRows), so
+            // re-run the query rather than regrouping stale rows.
+            scheduleArchiveQuery(debounced: false)
+        } else {
+            applyFilter()
+        }
+    }
+
+    // MARK: - Annotation state
+
+    /// Re-reads pins/snippets/collections from the sidecar store (cheap: the
+    /// store stat-checks a cached parse) and refreshes the collection popup.
+    private func refreshAnnotationState() {
+        let document = annotations.document()
+        pinnedHashes = Set(document.annotations.filter { $0.value.pinned }.keys)
+        snippetHashes = Set(document.annotations.filter { $0.value.snippet }.keys)
+        knownCollections = document.collections
+        populateCollectionPopup()
+    }
+
+    private func populateCollectionPopup() {
+        let selectedScope = collectionScope
+        collectionPopup.removeAllItems()
+        collectionPopup.addItem(withTitle: "All Clips")
+        collectionPopup.addItem(withTitle: "Pinned")
+        collectionPopup.addItem(withTitle: "Snippets")
+        if !knownCollections.isEmpty {
+            collectionPopup.menu?.addItem(.separator())
+            for collection in knownCollections {
+                collectionPopup.addItem(withTitle: collection.name)
+                collectionPopup.lastItem?.representedObject = collection.id
+            }
+        }
+        collectionPopup.menu?.addItem(.separator())
+        collectionPopup.addItem(withTitle: "New Collection…")
+        switch selectedScope {
+        case .all:
+            collectionPopup.selectItem(at: 0)
+        case .pinned:
+            collectionPopup.selectItem(at: 1)
+        case .snippets:
+            collectionPopup.selectItem(at: 2)
+        case let .collection(id):
+            if let item = collectionPopup.itemArray.first(where: {
+                $0.representedObject as? String == id
+            }) {
+                collectionPopup.select(item)
+            } else {
+                // The filtered collection was deleted; fall back to all.
+                collectionScope = .all
+                collectionPopup.selectItem(at: 0)
+            }
+        }
+    }
+
+    @objc private func collectionScopeChanged() {
+        guard let item = collectionPopup.selectedItem else {
+            return
+        }
+        if item.title == "New Collection…" {
+            promptForNewCollection()
+            return
+        }
+        if let id = item.representedObject as? String {
+            collectionScope = .collection(id: id)
+        } else {
+            switch collectionPopup.indexOfSelectedItem {
+            case 1:
+                collectionScope = .pinned
+            case 2:
+                collectionScope = .snippets
+            default:
+                collectionScope = .all
+            }
+        }
+        expandedGroupHashes.removeAll()
+        if scope == .allHistory {
+            scheduleArchiveQuery(debounced: false)
+        } else {
+            applyFilter()
+        }
+    }
+
+    private func promptForNewCollection() {
+        let alert = NSAlert()
+        alert.messageText = "New Collection"
+        alert.informativeText = "Collections are ordered lists of clips, stored locally."
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        input.placeholderString = "Collection name"
+        alert.accessoryView = input
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+        let response = alert.runModal()
+        let name = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard response == .alertFirstButtonReturn, !name.isEmpty else {
+            populateCollectionPopup()
+            return
+        }
+        do {
+            let collection = try annotations.createCollection(named: name)
+            collectionScope = .collection(id: collection.id)
+            refreshAnnotationState()
+            onArchiveMutation(.annotationsChanged(pinRemoved: false))
+            if scope == .allHistory {
+                scheduleArchiveQuery(debounced: false)
+            } else {
+                applyFilter()
+            }
+        } catch {
+            statusLabel.stringValue = annotationsErrorMessage(error)
+            populateCollectionPopup()
+        }
+    }
+
+    /// Current collection-scope hash constraint. `order` is non-nil only for
+    /// named collections, whose `contentHashes` order is the display order.
+    private func collectionScopeHashes() -> (hashes: Set<String>, order: [String]?)? {
+        switch collectionScope {
+        case .all:
+            return nil
+        case .pinned:
+            return (pinnedHashes, nil)
+        case .snippets:
+            return (snippetHashes, nil)
+        case let .collection(id):
+            let hashes = knownCollections.first { $0.id == id }?.contentHashes ?? []
+            return (Set(hashes), hashes)
+        }
+    }
+
+    // MARK: - Pinning
+
+    /// The ONE pin/unpin funnel for every surface (context menu, detail
+    /// button, ⌘P, automation). Newer-format read-only annotations surface
+    /// as a status message, never a crash or silent no-op.
+    private func setPinned(_ pinned: Bool, forContentHashes hashes: [String]) {
+        let targets = hashes.filter { !$0.isEmpty && (pinnedHashes.contains($0) != pinned) }
+        guard !targets.isEmpty else {
+            return
+        }
+        if !pinned {
+            let snippetTargets = targets.filter { snippetHashes.contains($0) }
+            if !snippetTargets.isEmpty, !confirmUnpinSnippets(count: snippetTargets.count) {
+                return
+            }
+        }
+        do {
+            for hash in targets {
+                try annotations.setPinned(pinned, forContentHash: hash)
+            }
+            refreshAnnotationState()
+            onArchiveMutation(.annotationsChanged(pinRemoved: !pinned))
+            statusLabel.stringValue = pinned
+                ? (targets.count == 1 ? "Pinned" : "Pinned \(targets.count) clips")
+                : (targets.count == 1 ? "Unpinned" : "Unpinned \(targets.count) clips")
+            refreshAfterAnnotationChange()
+        } catch {
+            statusLabel.stringValue = annotationsErrorMessage(error)
+        }
+    }
+
+    private func confirmUnpinSnippets(count: Int) -> Bool {
+#if DEBUG
+        if ProcessInfo.processInfo.environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_SCREEN"] != nil {
+            return true
+        }
+#endif
+        let alert = NSAlert()
+        alert.messageText = count == 1 ? "Unpin this snippet?" : "Unpin \(count) snippets?"
+        alert.informativeText = "Snippets are always pinned, so unpinning also removes the snippet."
+        alert.addButton(withTitle: "Unpin and Remove Snippet")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    /// ⌘P behavior: if every selected clip is pinned, unpin; otherwise pin.
+    /// Returns false when there is nothing to act on (lets the key fall
+    /// through).
+    @discardableResult
+    private func togglePinOnSelection() -> Bool {
+        let hashes = selectedContentHashes()
+        guard !hashes.isEmpty else {
+            return false
+        }
+        let allPinned = hashes.allSatisfy { pinnedHashes.contains($0) }
+        setPinned(!allPinned, forContentHashes: hashes)
+        return true
+    }
+
+    @objc private func pinButtonClicked() {
+        togglePinOnSelection()
+    }
+
+    private func annotationsErrorMessage(_ error: Error) -> String {
+        if case ClipboardAnnotationsError.newerFormat = error {
+            return "Saved by a newer version of Clipboard Archive."
+        }
+        return "Could not update the annotation"
+    }
+
+    /// After any annotation change: re-filter when an annotation-driven
+    /// filter is active (membership may have changed), otherwise just
+    /// redraw badges and the detail pane.
+    private func refreshAfterAnnotationChange() {
+        if collectionScope != .all {
+            if scope == .allHistory {
+                scheduleArchiveQuery(debounced: false)
+            } else {
+                applyFilter()
+            }
+            return
+        }
+        if scope == .thisWindow {
+            rebuildDisplayRows()
+        }
+        tableView.reloadData()
+        updateDetail()
+    }
+
+    // MARK: - Snippets (creation surface; consumption lives in the picker)
+
+    private func markSelectionAsSnippet() {
+        guard let hash = selectedContentHashes().first, selectedContentHashes().count == 1 else {
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Save as Snippet"
+        alert.informativeText = "Snippets appear at the top of the Quick Picker. Saving a snippet also pins it."
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        input.placeholderString = "Snippet title (optional)"
+        alert.accessoryView = input
+        alert.addButton(withTitle: "Save Snippet")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            return
+        }
+        do {
+            try annotations.setSnippet(true, title: input.stringValue, forContentHash: hash)
+            refreshAnnotationState()
+            onArchiveMutation(.annotationsChanged(pinRemoved: false))
+            statusLabel.stringValue = "Saved as snippet"
+            refreshAfterAnnotationChange()
+        } catch {
+            statusLabel.stringValue = annotationsErrorMessage(error)
+        }
+    }
+
+    private func removeSelectionSnippet() {
+        guard let hash = selectedContentHashes().first, selectedContentHashes().count == 1 else {
+            return
+        }
+        do {
+            try annotations.setSnippet(false, title: nil, forContentHash: hash)
+            refreshAnnotationState()
+            onArchiveMutation(.annotationsChanged(pinRemoved: false))
+            statusLabel.stringValue = "Snippet removed (still pinned)"
+            refreshAfterAnnotationChange()
+        } catch {
+            statusLabel.stringValue = annotationsErrorMessage(error)
+        }
+    }
+
     // MARK: - All-history scope (contract 3)
 
     private static let allAppsFilterTitle = "All Apps"
@@ -745,6 +1246,7 @@ final class ClipboardPanelController: NSWindowController,
         scope = requested
         archiveDetailEvent = nil
         archiveDetailContent = nil
+        expandedGroupHashes.removeAll()
         switch scope {
         case .thisWindow:
             // Cancel pending archive work and restore the existing
@@ -810,6 +1312,13 @@ final class ClipboardPanelController: NSWindowController,
     /// One query pipeline for both browse (empty query) and search. Every
     /// keystroke debounces 250 ms; the generation counter drops stale
     /// completions; all index work runs on the serial background queue.
+    ///
+    /// Data-source selection (Slice 4): an empty query normally browses the
+    /// newest 200 rows, but duplicate grouping or a collection filter needs
+    /// deeper reach, so those use the meta-only `metaRows` query (capped at
+    /// 5,000 — surfaced in the footer when hit). NO SQL GROUP BY anywhere:
+    /// the deletion ledger cannot be consulted in SQL, so grouping happens
+    /// in Swift after read-time suppression.
     private func scheduleArchiveQuery(debounced: Bool) {
         guard scope == .allHistory else {
             return
@@ -820,6 +1329,8 @@ final class ClipboardPanelController: NSWindowController,
         let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let filters = currentArchiveFilters()
         let index = derivedIndex
+        let needsDeepReach = groupDuplicates || collectionScope != .all
+        let hashConstraint = collectionScopeHashes()
         setAllHistoryState(.searching)
         let work = DispatchWorkItem { @Sendable [weak self] in
             // First entry after a schema bump (or a missing index) triggers
@@ -837,9 +1348,33 @@ final class ClipboardPanelController: NSWindowController,
             var outcome: AllHistoryState
             do {
                 try index.ensureCurrentSchema()
-                let rows = query.isEmpty
-                    ? try index.browse(filters: filters, limit: 200)
-                    : try index.structuredSearch(query, filters: filters, limit: 200)
+                var rows: [ClipboardIndexSearchResult]
+                if query.isEmpty {
+                    rows = needsDeepReach
+                        ? try index.metaRows(filters: filters)
+                        : try index.browse(filters: filters, limit: 200)
+                } else {
+                    rows = try index.structuredSearch(query, filters: filters, limit: 200)
+                }
+                if let hashConstraint {
+                    rows = rows.filter { hashConstraint.hashes.contains($0.contentHash) }
+                    if let order = hashConstraint.order {
+                        // Collection order = contentHashes order; newest
+                        // first within the same hash.
+                        var position: [String: Int] = [:]
+                        for (offset, hash) in order.enumerated() where position[hash] == nil {
+                            position[hash] = offset
+                        }
+                        rows.sort { left, right in
+                            let leftPosition = position[left.contentHash] ?? Int.max
+                            let rightPosition = position[right.contentHash] ?? Int.max
+                            if leftPosition != rightPosition {
+                                return leftPosition < rightPosition
+                            }
+                            return left.capturedAt > right.capturedAt
+                        }
+                    }
+                }
                 if rows.isEmpty {
                     outcome = .empty
                 } else {
@@ -884,8 +1419,9 @@ final class ClipboardPanelController: NSWindowController,
         guard scope == .allHistory else {
             return
         }
+        rebuildDisplayRows()
         tableView.reloadData()
-        if !archiveRows.isEmpty, tableView.selectedRow < 0 {
+        if !displayRows.isEmpty, tableView.selectedRow < 0 {
             tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         }
         updateStatus()
@@ -945,12 +1481,235 @@ final class ClipboardPanelController: NSWindowController,
         }
     }
 
-    private func selectedArchiveResult() -> ClipboardIndexSearchResult? {
-        let row = tableView.selectedRow
-        guard row >= 0, row < archiveRows.count else {
+    // MARK: - Display rows (duplicate grouping presentation)
+
+    private var flatCount: Int {
+        scope == .allHistory ? archiveRows.count : filteredEvents.count
+    }
+
+    private func flatContentHash(at index: Int) -> String {
+        if scope == .allHistory {
+            guard index < archiveRows.count else {
+                return ""
+            }
+            return archiveRows[index].contentHash
+        }
+        guard index < filteredEvents.count else {
+            return ""
+        }
+        return filteredEvents[index].contentHash
+    }
+
+    private func flatID(at index: Int) -> String? {
+        if scope == .allHistory {
+            guard index < archiveRows.count else {
+                return nil
+            }
+            return archiveRows[index].id
+        }
+        guard index < filteredEvents.count else {
             return nil
         }
-        return archiveRows[row]
+        return filteredEvents[index].id
+    }
+
+    private func flatCapturedAt(at index: Int) -> Date {
+        if scope == .allHistory {
+            guard index < archiveRows.count else {
+                return .distantPast
+            }
+            return archiveRows[index].capturedAt
+        }
+        guard index < filteredEvents.count else {
+            return .distantPast
+        }
+        return filteredEvents[index].capturedAt
+    }
+
+    /// Adapter so the Core grouping engine can group flat-array positions.
+    private struct IndexedGroupable: ClipboardDuplicateGroupable {
+        var index: Int
+        var hash: String
+        var capturedAt: Date
+
+        var duplicateContentHash: String { hash }
+        var duplicateCapturedAt: Date { capturedAt }
+    }
+
+    /// Grouping is presentation over the CURRENT flat rows: the existing
+    /// filter predicate has already run, so group counts are honest about
+    /// what survived filtering (and read-time suppression in All History).
+    private func rebuildDisplayRows() {
+        let count = flatCount
+        guard groupDuplicates else {
+            displayRows = (0..<count).map { .single($0) }
+            return
+        }
+        let items = (0..<count).map {
+            IndexedGroupable(index: $0, hash: flatContentHash(at: $0), capturedAt: flatCapturedAt(at: $0))
+        }
+        var rows: [HistoryRow] = []
+        for grouped in ClipboardDuplicateGrouping.rows(grouping: items) {
+            switch grouped {
+            case let .single(item):
+                rows.append(.single(item.index))
+            case let .group(group):
+                let info = GroupRowInfo(
+                    hash: group.contentHash,
+                    indices: group.occurrences.map(\.index),
+                    firstCapturedAt: group.firstCapturedAt,
+                    lastCapturedAt: group.lastCapturedAt
+                )
+                rows.append(.group(info))
+                if expandedGroupHashes.contains(group.contentHash) {
+                    for occurrence in group.occurrences {
+                        rows.append(.occurrence(occurrence.index, groupHash: group.contentHash))
+                    }
+                }
+            }
+        }
+        displayRows = rows
+    }
+
+    private func selectDisplayRow(_ row: Int) {
+        guard row >= 0, row < displayRows.count else {
+            return
+        }
+        tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        tableView.scrollRowToVisible(row)
+    }
+
+    /// Representative flat index for a display row: singles and occurrences
+    /// map directly; a collapsed group maps to its NEWEST occurrence.
+    private func representativeFlatIndex(forRow row: Int) -> Int? {
+        guard row >= 0, row < displayRows.count else {
+            return nil
+        }
+        switch displayRows[row] {
+        case let .single(index), let .occurrence(index, _):
+            return index
+        case let .group(info):
+            return info.indices.first
+        }
+    }
+
+    private func selectionContainsGroupRow() -> Bool {
+        tableView.selectedRowIndexes.contains { row in
+            if row < displayRows.count, case .group = displayRows[row] {
+                return true
+            }
+            return false
+        }
+    }
+
+    /// Unique content hashes covered by the selection (group rows contribute
+    /// their group hash). Empty hashes (pre-hash index rows) are dropped.
+    private func selectedContentHashes() -> [String] {
+        var seen = Set<String>()
+        var hashes: [String] = []
+        for row in tableView.selectedRowIndexes.sorted() {
+            guard row < displayRows.count else {
+                continue
+            }
+            let hash: String
+            switch displayRows[row] {
+            case let .single(index), let .occurrence(index, _):
+                hash = flatContentHash(at: index)
+            case let .group(info):
+                hash = info.hash
+            }
+            if !hash.isEmpty, seen.insert(hash).inserted {
+                hashes.append(hash)
+            }
+        }
+        return hashes
+    }
+
+    @discardableResult
+    private func toggleSelectedGroup(expand: Bool) -> Bool {
+        let selectedRow = tableView.selectedRow
+        guard selectedRow >= 0, selectedRow < displayRows.count else {
+            return false
+        }
+        switch displayRows[selectedRow] {
+        case let .group(info):
+            if expand, !expandedGroupHashes.contains(info.hash) {
+                expandedGroupHashes.insert(info.hash)
+            } else if !expand, expandedGroupHashes.contains(info.hash) {
+                expandedGroupHashes.remove(info.hash)
+            } else {
+                return false
+            }
+            rebuildDisplayRows()
+            tableView.reloadData()
+            selectRowForGroupHash(info.hash)
+            updateStatus()
+            updateDetail()
+            return true
+        case let .occurrence(_, groupHash):
+            guard !expand else {
+                return false
+            }
+            expandedGroupHashes.remove(groupHash)
+            rebuildDisplayRows()
+            tableView.reloadData()
+            selectRowForGroupHash(groupHash)
+            updateStatus()
+            updateDetail()
+            return true
+        case .single:
+            return false
+        }
+    }
+
+    private func selectRowForGroupHash(_ hash: String) {
+        guard let row = displayRows.firstIndex(where: {
+            if case let .group(info) = $0 {
+                return info.hash == hash
+            }
+            return false
+        }) else {
+            return
+        }
+        selectDisplayRow(row)
+    }
+
+    private func toggleGroup(atRow row: Int) {
+        guard row >= 0, row < displayRows.count, case let .group(info) = displayRows[row] else {
+            return
+        }
+        if expandedGroupHashes.contains(info.hash) {
+            expandedGroupHashes.remove(info.hash)
+        } else {
+            expandedGroupHashes.insert(info.hash)
+        }
+        rebuildDisplayRows()
+        tableView.reloadData()
+        selectRowForGroupHash(info.hash)
+        updateStatus()
+        updateDetail()
+    }
+
+    @objc private func chevronClicked(_ sender: NSButton) {
+        toggleGroup(atRow: sender.tag)
+    }
+
+    @objc private func rowDoubleClicked() {
+        let clicked = tableView.clickedRow
+        if clicked >= 0, clicked < displayRows.count, case .group = displayRows[clicked] {
+            toggleGroup(atRow: clicked)
+            return
+        }
+        copySelected()
+    }
+
+    private func selectedArchiveResult() -> ClipboardIndexSearchResult? {
+        guard scope == .allHistory,
+              let index = representativeFlatIndex(forRow: tableView.selectedRow),
+              index < archiveRows.count else {
+            return nil
+        }
+        return archiveRows[index]
     }
 
     /// Background fetch of the selected result's full event + content via
@@ -1085,6 +1844,8 @@ final class ClipboardPanelController: NSWindowController,
 
     @objc private func copySelected() {
         if scope == .allHistory {
+            // A collapsed group copies its NEWEST occurrence via the shared
+            // no-re-capture path (representative mapping).
             copySelectedArchiveResult()
             return
         }
@@ -1108,14 +1869,53 @@ final class ClipboardPanelController: NSWindowController,
         guard scope == .thisWindow else {
             return
         }
+        // Delete is DISABLED on collapsed group rows: a group hides N
+        // copies behind one row, and bulk deletion (Slice 5) owns
+        // multi-occurrence destruction. Expand the group to delete copies.
+        guard !selectionContainsGroupRow() else {
+            statusLabel.stringValue = "Expand the group to delete individual copies"
+            return
+        }
         let selected = selectedEvents()
         guard !selected.isEmpty else {
             return
         }
+
+        // Contract 5 warning: if this selection covers the LAST live
+        // occurrence of a pinned or snippet hash, deleting it also removes
+        // the pin, tags, and snippet — say so and retitle the button. A
+        // single explicit delete needs no SECOND confirmation; the
+        // separately-confirmed override belongs to Slice 5 bulk.
+        let selectedIDs = Set(selected.map(\.id))
+        var removesAnnotations = false
+        for event in selected {
+            let hash = event.contentHash
+            guard pinnedHashes.contains(hash) || snippetHashes.contains(hash) else {
+                continue
+            }
+            guard let remaining = try? occurrenceResolver.liveOccurrenceIDs(contentHash: hash) else {
+                continue
+            }
+            if remaining.allSatisfy({ selectedIDs.contains($0) }) {
+                removesAnnotations = true
+                break
+            }
+        }
+
         let alert = NSAlert()
         alert.messageText = selected.count == 1 ? "Delete this clip?" : "Delete \(selected.count) clips?"
-        alert.informativeText = "Stored content will be redacted and removed from local search. Timeline metadata remains."
-        alert.addButton(withTitle: selected.count == 1 ? "Delete Clip" : "Delete Clips")
+        var informative = "Stored content will be redacted and removed from local search. Timeline metadata remains."
+        if removesAnnotations {
+            informative += " Deleting its last copy also removes its pin, tags, and snippet."
+        }
+        alert.informativeText = informative
+        let deleteTitle: String
+        if removesAnnotations {
+            deleteTitle = selected.count == 1 ? "Delete Clip and Pin" : "Delete Clips and Pins"
+        } else {
+            deleteTitle = selected.count == 1 ? "Delete Clip" : "Delete Clips"
+        }
+        alert.addButton(withTitle: deleteTitle)
         alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .warning
         guard alert.runModal() == .alertFirstButtonReturn else {
@@ -1126,16 +1926,18 @@ final class ClipboardPanelController: NSWindowController,
             for event in selected {
                 try redactor.redact(eventID: event.id)
             }
-            onArchiveMutation()
+            onArchiveMutation(.eventsDeleted)
             reload()
             statusLabel.stringValue = selected.count == 1 ? "Clip deleted" : "\(selected.count) clips deleted"
         } catch {
-            onArchiveMutation()
+            onArchiveMutation(.eventsDeleted)
             statusLabel.stringValue = "Delete failed"
         }
     }
 
     private func reload() {
+        refreshAnnotationState()
+        expandedGroupHashes.removeAll()
         if scope == .thisWindow {
             historySubtitle.stringValue = "\(historyWindow.displayName) · local to this Mac"
         }
@@ -1160,8 +1962,12 @@ final class ClipboardPanelController: NSWindowController,
         let query = searchField.stringValue
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
+        let hashConstraint = collectionScopeHashes()
         filteredEvents = events.filter { event in
             let matchesType = contentTypeFilter.map { event.contentType == $0 } ?? true
+            let matchesCollection = hashConstraint.map {
+                $0.hashes.contains(event.contentHash)
+            } ?? true
             let matchesQuery = query.isEmpty || [
                 event.contentPreview,
                 event.sourceApp.name,
@@ -1170,25 +1976,89 @@ final class ClipboardPanelController: NSWindowController,
             .joined(separator: " ")
             .lowercased()
             .contains(query)
-            return matchesType && matchesQuery
+            return matchesType && matchesCollection && matchesQuery
         }
+        if let order = hashConstraint?.order {
+            var position: [String: Int] = [:]
+            for (offset, hash) in order.enumerated() where position[hash] == nil {
+                position[hash] = offset
+            }
+            filteredEvents.sort { left, right in
+                let leftPosition = position[left.contentHash] ?? Int.max
+                let rightPosition = position[right.contentHash] ?? Int.max
+                if leftPosition != rightPosition {
+                    return leftPosition < rightPosition
+                }
+                return left.capturedAt > right.capturedAt
+            }
+        }
+        rebuildDisplayRows()
         tableView.reloadData()
         if let previousID,
-           let row = filteredEvents.firstIndex(where: { $0.id == previousID }) {
+           let row = displayRows.firstIndex(where: { displayRow in
+               representativeID(of: displayRow) == previousID
+           }) {
             tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-        } else if !filteredEvents.isEmpty {
+        } else if !displayRows.isEmpty {
             tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         }
         updateStatus()
         updateDetail()
     }
 
+    private func representativeID(of row: HistoryRow) -> String? {
+        switch row {
+        case let .single(index), let .occurrence(index, _):
+            return flatID(at: index)
+        case let .group(info):
+            return info.indices.first.flatMap { flatID(at: $0) }
+        }
+    }
+
     func controlTextDidChange(_ obj: Notification) {
+        guard (obj.object as AnyObject?) === searchField else {
+            return
+        }
         if scope == .allHistory {
             scheduleArchiveQuery(debounced: true)
         } else {
             applyFilter()
         }
+    }
+
+    /// Tags commit on end-editing against the hash the field was populated
+    /// with (single selection only).
+    func controlTextDidEndEditing(_ obj: Notification) {
+        guard (obj.object as AnyObject?) === tagsField,
+              let hash = detailContentHash, !hash.isEmpty else {
+            return
+        }
+        let tokens = (tagsField.objectValue as? [String]) ?? []
+        let normalized = ClipboardAnnotationsStore.normalizedTags(tokens)
+        let existing = annotations.annotation(for: hash)?.tags ?? []
+        guard normalized != existing else {
+            return
+        }
+        do {
+            try annotations.setTags(normalized, forContentHash: hash)
+            refreshAnnotationState()
+            onArchiveMutation(.annotationsChanged(pinRemoved: false))
+            statusLabel.stringValue = normalized.isEmpty ? "Tags cleared" : "Tags saved"
+            refreshAfterAnnotationChange()
+        } catch {
+            statusLabel.stringValue = annotationsErrorMessage(error)
+        }
+    }
+
+    /// Tag completions come from every tag already in the store.
+    func tokenField(
+        _ tokenField: NSTokenField,
+        completionsForSubstring substring: String,
+        indexOfToken tokenIndex: Int,
+        indexOfSelectedItem selectedIndex: UnsafeMutablePointer<Int>?
+    ) -> [Any]? {
+        let lowered = substring.lowercased()
+        return annotations.allTags().filter { $0.lowercased().hasPrefix(lowered) }
     }
 
     /// Keyboard-first routing for the search field: ↓ jumps focus into the
@@ -1213,8 +2083,117 @@ final class ClipboardPanelController: NSWindowController,
         }
     }
 
+    // MARK: - Context menu (pin state aware)
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+
+        let copyItem = NSMenuItem(
+            title: "Copy Selected",
+            action: #selector(copySelected),
+            keyEquivalent: ""
+        )
+        copyItem.target = self
+        menu.addItem(copyItem)
+
+        let hashes = selectedContentHashes()
+        if !hashes.isEmpty {
+            let allPinned = hashes.allSatisfy { pinnedHashes.contains($0) }
+            let title: String
+            if hashes.count == 1 {
+                title = allPinned ? "Unpin" : "Pin"
+            } else {
+                title = allPinned ? "Unpin \(hashes.count) Clips" : "Pin \(hashes.count) Clips"
+            }
+            let pinItem = NSMenuItem(
+                title: title,
+                action: allPinned ? #selector(unpinFromMenu) : #selector(pinFromMenu),
+                keyEquivalent: "p"
+            )
+            pinItem.target = self
+            menu.addItem(pinItem)
+
+            if hashes.count == 1, let hash = hashes.first {
+                if snippetHashes.contains(hash) {
+                    let snippetItem = NSMenuItem(
+                        title: "Remove Snippet",
+                        action: #selector(removeSnippetFromMenu),
+                        keyEquivalent: ""
+                    )
+                    snippetItem.target = self
+                    menu.addItem(snippetItem)
+                } else {
+                    let snippetItem = NSMenuItem(
+                        title: "Save as Snippet…",
+                        action: #selector(makeSnippetFromMenu),
+                        keyEquivalent: ""
+                    )
+                    snippetItem.target = self
+                    menu.addItem(snippetItem)
+                }
+            }
+        }
+
+        menu.addItem(.separator())
+        let deleteItem = NSMenuItem(
+            title: "Delete Selected…",
+            action: #selector(deleteSelected),
+            keyEquivalent: ""
+        )
+        deleteItem.target = self
+        if scope != .thisWindow || selectionContainsGroupRow() {
+            deleteItem.action = nil
+            deleteItem.isEnabled = false
+            deleteItem.toolTip = scope == .thisWindow
+                ? "Expand the group to delete individual copies"
+                : "Delete from the This Window scope"
+        }
+        menu.addItem(deleteItem)
+    }
+
+    @objc private func pinFromMenu() {
+        setPinned(true, forContentHashes: selectedContentHashes())
+    }
+
+    @objc private func unpinFromMenu() {
+        setPinned(false, forContentHashes: selectedContentHashes())
+    }
+
+    @objc private func makeSnippetFromMenu() {
+        markSelectionAsSnippet()
+    }
+
+    @objc private func removeSnippetFromMenu() {
+        removeSelectionSnippet()
+    }
+
+    @objc private func collectionMembershipToggled(_ sender: NSMenuItem) {
+        guard let hash = detailContentHash, !hash.isEmpty,
+              let collectionID = sender.representedObject as? String else {
+            return
+        }
+        let isMember = knownCollections
+            .first { $0.id == collectionID }?
+            .contentHashes.contains(hash) ?? false
+        do {
+            try annotations.setMembership(contentHash: hash, inCollection: collectionID, isMember: !isMember)
+            refreshAnnotationState()
+            onArchiveMutation(.annotationsChanged(pinRemoved: false))
+            statusLabel.stringValue = isMember ? "Removed from collection" : "Added to collection"
+            refreshAfterAnnotationChange()
+        } catch {
+            statusLabel.stringValue = annotationsErrorMessage(error)
+        }
+    }
+
+    @objc private func newCollectionFromMembership() {
+        promptForNewCollection()
+    }
+
+    // MARK: - Table
+
     func numberOfRows(in tableView: NSTableView) -> Int {
-        scope == .allHistory ? archiveRows.count : filteredEvents.count
+        displayRows.count
     }
 
     func tableView(
@@ -1222,34 +2201,55 @@ final class ClipboardPanelController: NSWindowController,
         viewFor tableColumn: NSTableColumn?,
         row: Int
     ) -> NSView? {
+        guard row < displayRows.count else {
+            return nil
+        }
+        switch displayRows[row] {
+        case let .single(index):
+            return flatCell(at: index, indented: false)
+        case let .occurrence(index, _):
+            return flatCell(at: index, indented: true)
+        case let .group(info):
+            return groupCell(info: info, row: row)
+        }
+    }
+
+    private func flatCell(at index: Int, indented: Bool) -> NSView? {
         if scope == .allHistory {
-            guard row < archiveRows.count else {
+            guard index < archiveRows.count else {
                 return nil
             }
-            let result = archiveRows[row]
+            let result = archiveRows[index]
             return historyCell(
                 contentType: ClipboardContentType(rawValue: result.contentType),
                 previewText: result.snippet,
-                metadataText: "\(result.sourceApp)  ·  \(relativeDate(result.capturedAt))"
+                metadataText: "\(result.sourceApp)  ·  \(relativeDate(result.capturedAt))",
+                pinned: pinnedHashes.contains(result.contentHash),
+                indented: indented
             )
         }
-        guard row < filteredEvents.count else {
+        guard index < filteredEvents.count else {
             return nil
         }
-        let event = filteredEvents[row]
+        let event = filteredEvents[index]
         return historyCell(
             contentType: event.contentType,
             previewText: event.contentPreview,
-            metadataText: "\(event.sourceApp.name)  ·  \(relativeDate(event.capturedAt))"
+            metadataText: "\(event.sourceApp.name)  ·  \(relativeDate(event.capturedAt))",
+            pinned: pinnedHashes.contains(event.contentHash),
+            indented: indented
         )
     }
 
     private func historyCell(
         contentType: ClipboardContentType,
         previewText: String,
-        metadataText: String
+        metadataText: String,
+        pinned: Bool = false,
+        indented: Bool = false
     ) -> NSView {
         let cell = NSTableCellView()
+        let leadingInset: CGFloat = indented ? 34 : 10
 
         let icon = NSImageView()
         icon.image = NSImage(
@@ -1277,18 +2277,159 @@ final class ClipboardPanelController: NSWindowController,
         cell.addSubview(icon)
         cell.addSubview(preview)
         cell.addSubview(metadata)
+
+        var trailingAnchor = cell.trailingAnchor
+        var trailingConstant: CGFloat = -10
+        if pinned {
+            let badge = NSImageView()
+            badge.image = NSImage(
+                systemSymbolName: "pin.fill",
+                accessibilityDescription: "Pinned"
+            )
+            badge.contentTintColor = .systemOrange
+            badge.translatesAutoresizingMaskIntoConstraints = false
+            cell.addSubview(badge)
+            NSLayoutConstraint.activate([
+                badge.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -10),
+                badge.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+                badge.widthAnchor.constraint(equalToConstant: 12),
+                badge.heightAnchor.constraint(equalToConstant: 12)
+            ])
+            trailingAnchor = badge.leadingAnchor
+            trailingConstant = -6
+        }
+
         NSLayoutConstraint.activate([
-            icon.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 10),
+            icon.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: leadingInset),
             icon.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
             icon.widthAnchor.constraint(equalToConstant: 22),
             icon.heightAnchor.constraint(equalToConstant: 22),
             preview.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 10),
-            preview.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -10),
+            preview.trailingAnchor.constraint(equalTo: trailingAnchor, constant: trailingConstant),
             preview.topAnchor.constraint(equalTo: cell.topAnchor, constant: 11),
             metadata.leadingAnchor.constraint(equalTo: preview.leadingAnchor),
             metadata.trailingAnchor.constraint(equalTo: preview.trailingAnchor),
             metadata.topAnchor.constraint(equalTo: preview.bottomAnchor, constant: 4)
         ])
+        return cell
+    }
+
+    /// Group header row: preview of the newest copy, a "×N" count capsule,
+    /// an expand chevron, and honest first/latest metadata.
+    private func groupCell(info: GroupRowInfo, row: Int) -> NSView? {
+        guard let newestIndex = info.indices.first else {
+            return nil
+        }
+        let contentType: ClipboardContentType
+        let previewText: String
+        if scope == .allHistory {
+            guard newestIndex < archiveRows.count else {
+                return nil
+            }
+            let result = archiveRows[newestIndex]
+            contentType = ClipboardContentType(rawValue: result.contentType)
+            previewText = result.snippet
+        } else {
+            guard newestIndex < filteredEvents.count else {
+                return nil
+            }
+            let event = filteredEvents[newestIndex]
+            contentType = event.contentType
+            previewText = event.contentPreview
+        }
+
+        let cell = NSTableCellView()
+        let expanded = expandedGroupHashes.contains(info.hash)
+
+        let chevron = NSButton(title: "", target: self, action: #selector(chevronClicked(_:)))
+        chevron.bezelStyle = .inline
+        chevron.isBordered = false
+        chevron.image = NSImage(
+            systemSymbolName: expanded ? "chevron.down" : "chevron.right",
+            accessibilityDescription: expanded ? "Collapse duplicates" : "Expand duplicates"
+        )
+        chevron.tag = row
+        chevron.setAccessibilityLabel(expanded ? "Collapse duplicate group" : "Expand duplicate group")
+        chevron.translatesAutoresizingMaskIntoConstraints = false
+
+        let icon = NSImageView()
+        icon.image = NSImage(
+            systemSymbolName: symbolName(for: contentType),
+            accessibilityDescription: contentType.rawValue
+        )
+        icon.contentTintColor = .secondaryLabelColor
+        icon.translatesAutoresizingMaskIntoConstraints = false
+
+        let preview = NSTextField(labelWithString: singleLine(previewText))
+        preview.font = contentType == .code
+            ? .monospacedSystemFont(ofSize: 13, weight: .regular)
+            : .systemFont(ofSize: 13)
+        preview.lineBreakMode = .byTruncatingTail
+        preview.translatesAutoresizingMaskIntoConstraints = false
+
+        let capsule = NSTextField(labelWithString: "×\(info.indices.count)")
+        capsule.font = .systemFont(ofSize: 10, weight: .semibold)
+        capsule.textColor = .secondaryLabelColor
+        capsule.alignment = .center
+        capsule.wantsLayer = true
+        capsule.layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
+        capsule.layer?.cornerRadius = 7
+        capsule.translatesAutoresizingMaskIntoConstraints = false
+
+        let metadataText = "\(info.indices.count) copies · first \(relativeDate(info.firstCapturedAt)) · latest \(relativeDate(info.lastCapturedAt))"
+        let metadata = NSTextField(labelWithString: metadataText)
+        metadata.font = .systemFont(ofSize: 11, weight: .medium)
+        metadata.textColor = .secondaryLabelColor
+        metadata.lineBreakMode = .byTruncatingTail
+        metadata.translatesAutoresizingMaskIntoConstraints = false
+
+        cell.addSubview(chevron)
+        cell.addSubview(icon)
+        cell.addSubview(preview)
+        cell.addSubview(capsule)
+        cell.addSubview(metadata)
+
+        var previewTrailingAnchor = cell.trailingAnchor
+        var previewTrailingConstant: CGFloat = -10
+        if pinnedHashes.contains(info.hash) {
+            let badge = NSImageView()
+            badge.image = NSImage(
+                systemSymbolName: "pin.fill",
+                accessibilityDescription: "Pinned"
+            )
+            badge.contentTintColor = .systemOrange
+            badge.translatesAutoresizingMaskIntoConstraints = false
+            cell.addSubview(badge)
+            NSLayoutConstraint.activate([
+                badge.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -10),
+                badge.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+                badge.widthAnchor.constraint(equalToConstant: 12),
+                badge.heightAnchor.constraint(equalToConstant: 12)
+            ])
+            previewTrailingAnchor = badge.leadingAnchor
+            previewTrailingConstant = -6
+        }
+
+        NSLayoutConstraint.activate([
+            chevron.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6),
+            chevron.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            chevron.widthAnchor.constraint(equalToConstant: 16),
+            chevron.heightAnchor.constraint(equalToConstant: 16),
+            icon.leadingAnchor.constraint(equalTo: chevron.trailingAnchor, constant: 4),
+            icon.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 22),
+            icon.heightAnchor.constraint(equalToConstant: 22),
+            preview.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 10),
+            preview.topAnchor.constraint(equalTo: cell.topAnchor, constant: 11),
+            capsule.leadingAnchor.constraint(equalTo: preview.trailingAnchor, constant: 6),
+            capsule.centerYAnchor.constraint(equalTo: preview.centerYAnchor),
+            capsule.widthAnchor.constraint(greaterThanOrEqualToConstant: 26),
+            capsule.trailingAnchor.constraint(lessThanOrEqualTo: previewTrailingAnchor, constant: previewTrailingConstant),
+            metadata.leadingAnchor.constraint(equalTo: preview.leadingAnchor),
+            metadata.trailingAnchor.constraint(equalTo: previewTrailingAnchor, constant: previewTrailingConstant),
+            metadata.topAnchor.constraint(equalTo: preview.bottomAnchor, constant: 4)
+        ])
+        preview.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return cell
     }
 
@@ -1298,15 +2439,31 @@ final class ClipboardPanelController: NSWindowController,
     }
 
     private func selectedEvents() -> [StoredClipboardEvent] {
-        tableView.selectedRowIndexes.compactMap { row in
-            guard row >= 0, row < filteredEvents.count else {
-                return nil
-            }
-            return filteredEvents[row]
+        guard scope == .thisWindow else {
+            return []
         }
+        var seen = Set<String>()
+        var selected: [StoredClipboardEvent] = []
+        for row in tableView.selectedRowIndexes.sorted() {
+            guard let index = representativeFlatIndex(forRow: row),
+                  index < filteredEvents.count else {
+                continue
+            }
+            let event = filteredEvents[index]
+            if seen.insert(event.id).inserted {
+                selected.append(event)
+            }
+        }
+        return selected
     }
 
     private func updateStatus() {
+        var capSuffix = ""
+        if scope == .allHistory,
+           groupDuplicates || collectionScope != .all,
+           archiveRows.count >= ClipboardDerivedIndex.metaRowsMaximumLimit {
+            capSuffix = " · grouped over the most recent 5,000 clips"
+        }
         if scope == .allHistory {
             switch allHistoryState {
             case .searching:
@@ -1318,15 +2475,27 @@ final class ClipboardPanelController: NSWindowController,
             case .error:
                 statusLabel.stringValue = "Search failed"
             case let .browse(rows):
-                statusLabel.stringValue = "\(rows.count) archived clip\(rows.count == 1 ? "" : "s")"
+                if groupDuplicates {
+                    let groupCount = displayRows.filter {
+                        if case .group = $0 {
+                            return true
+                        }
+                        return false
+                    }.count
+                    statusLabel.stringValue = "\(rows.count) archived clip\(rows.count == 1 ? "" : "s") · \(groupCount) duplicate group\(groupCount == 1 ? "" : "s")\(capSuffix)"
+                } else {
+                    statusLabel.stringValue = "\(rows.count) archived clip\(rows.count == 1 ? "" : "s")\(capSuffix)"
+                }
             case let .results(rows):
-                statusLabel.stringValue = "\(rows.count) match\(rows.count == 1 ? "" : "es")"
+                statusLabel.stringValue = "\(rows.count) match\(rows.count == 1 ? "" : "es")\(capSuffix)"
             }
             return
         }
         let selectedCount = tableView.selectedRowIndexes.count
         let total = filteredEvents.count
-        let isFiltered = !searchField.stringValue.isEmpty || contentTypeFilter != nil
+        let isFiltered = !searchField.stringValue.isEmpty
+            || contentTypeFilter != nil
+            || collectionScope != .all
         let base = !isFiltered
             ? "\(total) clip\(total == 1 ? "" : "s")"
             : "\(total) match\(total == 1 ? "" : "es")"
@@ -1335,14 +2504,73 @@ final class ClipboardPanelController: NSWindowController,
             : base
     }
 
+    // MARK: - Detail pane
+
+    /// Detail-pane annotation controls: pin button state, tags field, and
+    /// collection membership pulldown for the current single-selection hash.
+    private func updateAnnotationControls(contentHash: String?) {
+        detailContentHash = contentHash
+        let hasHash = !(contentHash?.isEmpty ?? true)
+        pinButton.isEnabled = !selectedContentHashes().isEmpty
+        let selectionPinned = !selectedContentHashes().isEmpty
+            && selectedContentHashes().allSatisfy { pinnedHashes.contains($0) }
+        pinButton.image = NSImage(
+            systemSymbolName: selectionPinned ? "pin.fill" : "pin",
+            accessibilityDescription: selectionPinned ? "Unpin selected clip" : "Pin selected clip"
+        )
+        pinButton.contentTintColor = selectionPinned ? .systemOrange : nil
+        pinButton.toolTip = selectionPinned ? "Unpin selected clip (⌘P)" : "Pin selected clip (⌘P)"
+
+        tagsField.isEnabled = hasHash
+        if let contentHash, hasHash {
+            tagsField.objectValue = annotations.annotation(for: contentHash)?.tags ?? []
+        } else {
+            tagsField.objectValue = []
+        }
+
+        collectionMembershipButton.isEnabled = hasHash
+        rebuildCollectionMembershipMenu(contentHash: hasHash ? contentHash : nil)
+    }
+
+    private func rebuildCollectionMembershipMenu(contentHash: String?) {
+        let menu = NSMenu()
+        menu.addItem(NSMenuItem(title: "Add to Collection", action: nil, keyEquivalent: ""))
+        for collection in knownCollections {
+            let item = NSMenuItem(
+                title: collection.name,
+                action: #selector(collectionMembershipToggled(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = collection.id
+            if let contentHash, collection.contentHashes.contains(contentHash) {
+                item.state = .on
+            }
+            menu.addItem(item)
+        }
+        if !knownCollections.isEmpty {
+            menu.addItem(.separator())
+        }
+        let newItem = NSMenuItem(
+            title: "New Collection…",
+            action: #selector(newCollectionFromMembership),
+            keyEquivalent: ""
+        )
+        newItem.target = self
+        menu.addItem(newItem)
+        collectionMembershipButton.menu = menu
+    }
+
     private func updateArchiveDetail() {
         deleteButton.isEnabled = false
+        deleteButton.toolTip = "Deletion works in the This Window scope"
         detailCapturedValue.stringValue = "—"
         detailFormatValue.stringValue = "—"
         detailSizeValue.stringValue = "—"
         detailCardHeightConstraint?.constant = 150
         guard let result = selectedArchiveResult() else {
             copyButton.isEnabled = false
+            updateAnnotationControls(contentHash: nil)
             detailTextView.string = ""
             switch allHistoryState {
             case .preparingIndex:
@@ -1369,6 +2597,7 @@ final class ClipboardPanelController: NSWindowController,
         } else {
             rebuildIndexButton.isHidden = true
         }
+        updateAnnotationControls(contentHash: result.contentHash)
         if let event = archiveDetailEvent, event.id == result.id,
            let content = archiveDetailContent {
             renderArchiveDetail(event: event, content: content)
@@ -1395,13 +2624,18 @@ final class ClipboardPanelController: NSWindowController,
         rebuildIndexButton.isHidden = true
         let selected = selectedEvents()
         copyButton.isEnabled = !selected.isEmpty
-        deleteButton.isEnabled = !selected.isEmpty
+        let hasCollapsedGroup = selectionContainsGroupRow()
+        deleteButton.isEnabled = !selected.isEmpty && !hasCollapsedGroup
+        deleteButton.toolTip = hasCollapsedGroup
+            ? "Expand the group to delete individual copies"
+            : "Delete selected clips"
         detailCapturedValue.stringValue = "—"
         detailFormatValue.stringValue = "—"
         detailSizeValue.stringValue = "—"
         detailCardHeightConstraint?.constant = 150
 
         guard selected.count == 1, let event = selected.first else {
+            updateAnnotationControls(contentHash: nil)
             if selected.count > 1 {
                 detailTitle.stringValue = "\(selected.count) clips selected"
                 detailMetadata.stringValue = "Copy combines them with a blank line between each clip."
@@ -1416,8 +2650,15 @@ final class ClipboardPanelController: NSWindowController,
             return
         }
 
+        updateAnnotationControls(contentHash: event.contentHash)
         detailTitle.stringValue = event.sourceApp.name
-        detailMetadata.stringValue = "Copied \(relativeDate(event.capturedAt))"
+        var metadataText = "Copied \(relativeDate(event.capturedAt))"
+        if case let .group(info)? = tableView.selectedRowIndexes.first.flatMap({ row in
+            row < displayRows.count ? displayRows[row] : nil
+        }), info.indices.count > 1 {
+            metadataText = "\(info.indices.count) copies · newest \(relativeDate(info.lastCapturedAt))"
+        }
+        detailMetadata.stringValue = metadataText
         detailCapturedValue.stringValue = fullDate(event.capturedAt)
         detailFormatValue.stringValue = event.contentType.rawValue.capitalized
         detailSizeValue.stringValue = ByteCountFormatter.string(

@@ -16,6 +16,7 @@ struct CLIOptions {
     var verbose: Bool
     var json: Bool
     var dryRun: Bool
+    var includePinned: Bool
 
     static func parse(_ arguments: [String]) throws -> CLIOptions {
         var args = Array(arguments.dropFirst())
@@ -36,6 +37,7 @@ struct CLIOptions {
         var verbose = false
         var json = false
         var dryRun = false
+        var includePinned = false
 
         var index = 0
         while index < args.count {
@@ -91,6 +93,8 @@ struct CLIOptions {
                 json = true
             case "--dry-run":
                 dryRun = true
+            case "--include-pinned":
+                includePinned = true
             default:
                 if arg.hasPrefix("--") {
                     throw CLIError.unknownArgument(arg)
@@ -113,7 +117,8 @@ struct CLIOptions {
             until: until,
             verbose: verbose,
             json: json,
-            dryRun: dryRun
+            dryRun: dryRun,
+            includePinned: includePinned
         )
     }
 
@@ -302,7 +307,7 @@ case "prune":
         throw CLIError.missingValue("prune cutoff date; use --until YYYY-MM-DD")
     }
     let result = try ClipboardArchivePruner(archiveRoot: options.archiveRoot, indexURL: options.indexPath)
-        .pruneContent(before: before, dryRun: options.dryRun)
+        .pruneContent(before: before, dryRun: options.dryRun, includePinned: options.includePinned)
     if options.json {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -314,6 +319,7 @@ case "prune":
         print("pruned: \(result.prunedEvents)")
         print("deleted_body_files: \(result.deletedBodyFiles)")
         print("changed_files: \(result.changedFiles)")
+        print("exempt_pinned: \(result.exemptedPinnedEvents)")
     }
 
 case "repair-index":
@@ -389,6 +395,8 @@ default:
       --since YYYY-MM-DD            Search lower date bound.
       --until YYYY-MM-DD            Search upper date bound, or prune cutoff.
       --dry-run                     Report prune impact without changing files.
+      --include-pinned              Prune pinned content too. Pinned clips are
+                                    exempt from pruning by default.
       --verbose                     Print ignored non-text changes.
       --json                        JSON output for supported commands.
 
