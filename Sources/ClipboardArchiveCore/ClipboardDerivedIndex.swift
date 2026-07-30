@@ -39,6 +39,10 @@ public struct ClipboardIndexSearchResult: Equatable, Sendable {
     public var contentType: String
     public var snippet: String
     public var byteCount: Int
+    /// Content identity (`sha256:<hex>`) for duplicate grouping and
+    /// annotation lookups. Empty when the row was indexed by an older binary
+    /// that predates the column (heals on the next rebuild).
+    public var contentHash: String
 
     public init(
         id: String,
@@ -47,7 +51,8 @@ public struct ClipboardIndexSearchResult: Equatable, Sendable {
         bundleID: String?,
         contentType: String,
         snippet: String,
-        byteCount: Int
+        byteCount: Int,
+        contentHash: String = ""
     ) {
         self.id = id
         self.capturedAt = capturedAt
@@ -56,6 +61,7 @@ public struct ClipboardIndexSearchResult: Equatable, Sendable {
         self.contentType = contentType
         self.snippet = snippet
         self.byteCount = byteCount
+        self.contentHash = contentHash
     }
 }
 
@@ -298,6 +304,7 @@ public struct ClipboardDerivedIndex: Sendable {
         SELECT m.id AS id, m.captured_at AS captured_at, m.source_app AS source_app,
                m.bundle_id AS bundle_id, m.content_type AS content_type,
                m.byte_count AS byte_count,
+               COALESCE(m.content_hash, '') AS content_hash,
                snippet(clipboard_fts, 5, '', '', ' … ', 24) AS snip
         FROM clipboard_fts
         JOIN clipboard_meta m ON m.id = clipboard_fts.id
@@ -320,13 +327,60 @@ public struct ClipboardDerivedIndex: Sendable {
         let sql = """
         SELECT id AS id, captured_at AS captured_at, source_app AS source_app,
                bundle_id AS bundle_id, content_type AS content_type,
-               byte_count AS byte_count, COALESCE(preview, '') AS snip
+               byte_count AS byte_count, COALESCE(content_hash, '') AS content_hash,
+               COALESCE(preview, '') AS snip
         FROM clipboard_meta
         WHERE content_type <> 'blocked'\(filterSQL(filters, columnPrefix: ""))
         ORDER BY captured_at DESC
         LIMIT \(boundedLimit);
         """
         return try suppressionFiltered(results(fromRows: runSQLiteJSON(sql)))
+    }
+
+    /// Hard cap for `metaRows`: duplicate grouping in All History scope
+    /// groups over at most this many most-recent rows, and the UI footer
+    /// states the cap when it is hit.
+    public static let metaRowsMaximumLimit = 5_000
+
+    /// Meta-only rows for duplicate grouping (no FTS join; the stored
+    /// preview stands in for a snippet). Grouping and counting happen in
+    /// Swift AFTER read-time suppression — never as SQL GROUP BY — because
+    /// the deletion ledger cannot be consulted inside SQL, and counts must
+    /// stay honest under index drift.
+    public func metaRows(
+        filters: ClipboardIndexSearchFilters = ClipboardIndexSearchFilters(),
+        limit: Int = ClipboardDerivedIndex.metaRowsMaximumLimit
+    ) throws -> [ClipboardIndexSearchResult] {
+        try ensureCurrentSchema()
+        let boundedLimit = max(1, min(limit, Self.metaRowsMaximumLimit))
+        let sql = """
+        SELECT id AS id, captured_at AS captured_at, source_app AS source_app,
+               bundle_id AS bundle_id, content_type AS content_type,
+               byte_count AS byte_count, COALESCE(content_hash, '') AS content_hash,
+               COALESCE(preview, '') AS snip
+        FROM clipboard_meta
+        WHERE content_type <> 'blocked'\(filterSQL(filters, columnPrefix: ""))
+        ORDER BY captured_at DESC
+        LIMIT \(boundedLimit);
+        """
+        return try suppressionFiltered(results(fromRows: runSQLiteJSON(sql)))
+    }
+
+    /// Occurrence ids for one content hash, newest first, straight off the
+    /// `content_hash` index. Deliberately does NOT ensure/rebuild the schema:
+    /// callers (`ClipboardOccurrenceResolver`) treat a missing or unreadable
+    /// index as "fall back to one reader scan" instead of triggering a full
+    /// rebuild mid-delete. Results are NOT suppression-filtered here — the
+    /// resolver drops ledger-deleted ids so a stale index cannot keep an
+    /// annotation alive.
+    public func occurrenceIDs(contentHash: String) throws -> [String] {
+        let rows = try runSQLiteJSON("""
+        SELECT id AS id
+        FROM clipboard_meta
+        WHERE content_hash = '\(escape(contentHash))' AND content_type <> 'blocked'
+        ORDER BY captured_at DESC;
+        """)
+        return rows.compactMap { $0["id"] as? String }
     }
 
     /// Distinct source app names for the UI filter popup.
@@ -369,7 +423,8 @@ public struct ClipboardDerivedIndex: Sendable {
                 bundleID: bundleID,
                 contentType: row["content_type"] as? String ?? "",
                 snippet: row["snip"] as? String ?? "",
-                byteCount: row["byte_count"] as? Int ?? 0
+                byteCount: row["byte_count"] as? Int ?? 0,
+                contentHash: row["content_hash"] as? String ?? ""
             )
         }
     }

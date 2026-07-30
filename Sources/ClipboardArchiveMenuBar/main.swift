@@ -33,6 +33,8 @@ final class ClipboardMenuBarApp: NSObject,
     )
     private let reader = ClipboardArchiveReader(archiveRoot: archiveRoot)
     private let redactor = ClipboardArchiveRedactor(archiveRoot: archiveRoot)
+    private let annotationsStore = ClipboardAnnotationsStore(archiveRoot: archiveRoot)
+    private let occurrenceResolver = ClipboardOccurrenceResolver(archiveRoot: archiveRoot)
     private var capturedCount = 0
     private var blockedCount = 0
     /// In-memory estimate of live (unsuppressed) archive events, used so the
@@ -60,6 +62,10 @@ final class ClipboardMenuBarApp: NSObject,
     /// repeat opens are O(1) and a cold open does one `recentItems` scan.
     private var quickPickerCache: [StoredClipboardEvent] = []
     private var quickPickerCacheDirty = true
+    /// Warm snippet list for the picker's top section. Invalidated together
+    /// with the picker cache (every archive or annotations mutation).
+    private var snippetCache: [QuickPickerPanelController.SnippetItem] = []
+    private var snippetCacheDirty = true
 #if DEBUG
     /// True when the DEBUG UI automation harness drives this instance.
     /// Automation NEVER registers the Carbon hotkey (a dev instance must not
@@ -69,6 +75,11 @@ final class ClipboardMenuBarApp: NSObject,
     /// receipt can assert both stay invisible.
     private var automationDriftedEventID = ""
     private var automationDoNotIndexEventID = ""
+    /// Receipt facts from the pin→prune→survives retention flow.
+    private var automationRetentionReceipt: [String: Any] = [:]
+    /// Exact bytes of the future-version annotations fixture at seed time,
+    /// so the result can prove the file stayed byte-identical.
+    private var automationAnnotationsBytesBefore: Data?
 #endif
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -245,15 +256,34 @@ final class ClipboardMenuBarApp: NSObject,
                 archiveRoot: archiveRoot,
                 recentItemLimit: settings.recentItemLimit,
                 historyWindow: settings.historyWindow,
+                groupDuplicates: settings.historyGroupDuplicates,
                 copyToPasteboard: { [weak self] content in
                     self?.copyToPasteboardWithoutRecapture(content)
                 },
-                onArchiveMutation: { [weak self] in
-                    // History-window deletes must invalidate the picker's
-                    // warm cache: a stale in-memory event still carries
-                    // contentInline, and copy-back would resurrect content
-                    // the user explicitly deleted.
-                    self?.markQuickPickerCacheDirty()
+                onArchiveMutation: { [weak self] mutation in
+                    guard let self else {
+                        return
+                    }
+                    // Every panel mutation invalidates the picker's warm
+                    // caches: a stale in-memory event still carries
+                    // contentInline (deleted content must never resurrect
+                    // via copy-back), and pins/snippets may have changed.
+                    self.markQuickPickerCacheDirty()
+                    if case .annotationsChanged(pinRemoved: true) = mutation {
+                        // Unpinning shrinks the retention-exempt set, so
+                        // the in-memory counted estimate could undercount
+                        // and silently stop enforcing retention. Reset it
+                        // for one reseed scan. (Pinning only overestimates,
+                        // which is safe — no reset needed.)
+                        self.liveEventCountEstimate = nil
+                    }
+                },
+                onGroupDuplicatesChanged: { [weak self] enabled in
+                    guard let self else {
+                        return
+                    }
+                    self.settings.historyGroupDuplicates = enabled
+                    try? self.settingsStore.save(self.settings)
                 }
             )
         }
@@ -284,9 +314,26 @@ final class ClipboardMenuBarApp: NSObject,
                     loadEvents: { [weak self] in
                         self?.quickPickerEvents() ?? []
                     },
+                    loadSnippets: { [weak self] in
+                        self?.quickPickerSnippets() ?? []
+                    },
                     copyToPasteboard: { [weak self] event in
                         // Wraps the ONE shared no-re-capture copy path.
                         guard let self,
+                              let content = try? self.reader.content(for: event) else {
+                            return nil
+                        }
+                        self.copyToPasteboardWithoutRecapture(content)
+                        return content
+                    },
+                    commitSnippet: { [weak self] snippet in
+                        // Commit-time resolution (contract 5): newest live
+                        // occurrence → content → the ONE shared
+                        // no-re-capture copy path.
+                        guard let self,
+                              let event = self.resolveNewestLiveOccurrence(
+                                  contentHash: snippet.contentHash
+                              ),
                               let content = try? self.reader.content(for: event) else {
                             return nil
                         }
@@ -334,6 +381,42 @@ final class ClipboardMenuBarApp: NSObject,
 
     private func markQuickPickerCacheDirty() {
         quickPickerCacheDirty = true
+        snippetCacheDirty = true
+    }
+
+    /// Snippet entries for the picker's top section: title + load-time
+    /// enablement (commit re-resolves). Cached beside the event cache.
+    private func quickPickerSnippets() -> [QuickPickerPanelController.SnippetItem] {
+        if !snippetCacheDirty {
+            return snippetCache
+        }
+        snippetCache = annotationsStore.snippets().map { entry in
+            let resolved = resolveNewestLiveOccurrence(contentHash: entry.contentHash)
+            let title = entry.record.snippetTitle
+                ?? resolved.map { trimmedPreview($0.contentPreview) }
+                ?? "Snippet"
+            return QuickPickerPanelController.SnippetItem(
+                contentHash: entry.contentHash,
+                title: title,
+                hasLiveOccurrence: resolved != nil
+            )
+        }
+        snippetCacheDirty = false
+        return snippetCache
+    }
+
+    /// Newest live occurrence of a content hash: resolver ids (newest
+    /// first, suppression-filtered) → the first that still fetches by id.
+    private func resolveNewestLiveOccurrence(contentHash: String) -> StoredClipboardEvent? {
+        guard let ids = try? occurrenceResolver.liveOccurrenceIDs(contentHash: contentHash) else {
+            return nil
+        }
+        for id in ids {
+            if let event = try? reader.event(withID: id) {
+                return event
+            }
+        }
+        return nil
     }
 
     /// Registers (or clears) the quick picker hotkey from settings. Called
@@ -522,7 +605,21 @@ final class ClipboardMenuBarApp: NSObject,
         do {
             try settingsStore.save(settings)
             if screen == "history" {
-                try seedSyntheticUIFixtures()
+                if environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_RETENTION_FLOW"] == "pin-prune" {
+                    // Pin→prune→survives receipt: this flow is the ONLY
+                    // seeding (14 events, pin the 2 oldest, enforce a
+                    // limit of 10) so the counts in the receipt are exact.
+                    try runPinPruneRetentionFlow()
+                } else {
+                    try seedSyntheticUIFixtures()
+                }
+                if let duplicateSeed = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_SEED_DUPLICATES"],
+                   let duplicateCount = Int(duplicateSeed), duplicateCount > 1 {
+                    try seedDuplicateFixtures(count: duplicateCount)
+                }
+                if environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_ANNOTATIONS_FIXTURE"] == "future-version" {
+                    try seedFutureVersionAnnotationsFixture()
+                }
                 let scopeRequest = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_SCOPE"] ?? "working"
                 if scopeRequest == "all-history" {
                     try seedAllHistoryDriftFixtures()
@@ -545,12 +642,29 @@ final class ClipboardMenuBarApp: NSObject,
                    !appFilter.isEmpty {
                     panelController?.performAutomationAppFilter(appFilter)
                 }
+                if environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_GROUP_DUPLICATES"] == "1" {
+                    panelController?.performAutomationGroupDuplicates(true)
+                }
+                if let collectionFilter = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_COLLECTION_FILTER"],
+                   !collectionFilter.isEmpty {
+                    panelController?.performAutomationCollectionFilter(collectionFilter)
+                }
             } else if screen == "settings" {
                 showSettingsWindow(activate: false)
             } else if screen == "onboarding" {
                 showOnboarding(activate: false)
             } else if screen == "quickpicker" {
                 try seedSyntheticUIFixtures()
+                if environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_SEED_SNIPPET"] == "1",
+                   let newest = try reader.recentItems(since: .distantPast, limit: 1).first {
+                    // Snippet fixture for the picker's top section: mark
+                    // the newest seeded clip (production store API).
+                    try annotationsStore.setSnippet(
+                        true,
+                        title: "Launch checklist snippet",
+                        forContentHash: newest.contentHash
+                    )
+                }
                 // Same entry point the global hotkey invokes; automation
                 // mode never registers the Carbon hotkey itself.
                 toggleQuickPicker()
@@ -578,13 +692,32 @@ final class ClipboardMenuBarApp: NSObject,
             let deadline = Date().addingTimeInterval(5.0)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                 self?.pollHistoryAutomationSettled(deadline: deadline) { [weak self] in
+                    guard let self else {
+                        return
+                    }
+                    // Gestures run through production handlers AFTER the
+                    // initial state settled, then one capture-poll tick
+                    // proves a history copy is never re-captured.
+                    let eventCountBefore = self.archiveEventCount()
+                    if let gestures = ProcessInfo.processInfo
+                        .environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_HISTORY_GESTURES"],
+                       !gestures.isEmpty {
+                        for gesture in gestures.split(separator: ",") {
+                            self.panelController?.performAutomationHistoryGesture(String(gesture))
+                        }
+                    }
+                    self.pollPasteboard()
+                    let eventCountAfter = self.archiveEventCount()
                     let url = URL(fileURLWithPath: snapshotPath)
                     do {
-                        try self?.panelController?.writeSnapshot(to: url)
+                        try self.panelController?.writeSnapshot(to: url)
                     } catch {
                         FileHandle.standardError.write(Data("UI snapshot failed: \(error)\n".utf8))
                     }
-                    self?.writeHistoryAutomationResult()
+                    self.writeHistoryAutomationResult(
+                        eventCountBefore: eventCountBefore,
+                        eventCountAfter: eventCountAfter
+                    )
                     NSApp.terminate(nil)
                 }
             }
@@ -702,34 +835,161 @@ final class ClipboardMenuBarApp: NSObject,
     }
 
     /// Machine-readable receipt for the history automation run: counts,
-    /// state, and proof that the drifted and doNotIndex fixtures stayed
+    /// state, row kinds, pin facts, annotations-file facts, no-re-capture
+    /// counts, and proof that the drifted and doNotIndex fixtures stayed
     /// invisible.
-    private func writeHistoryAutomationResult() {
+    private func writeHistoryAutomationResult(
+        eventCountBefore: Int = -1,
+        eventCountAfter: Int = -1
+    ) {
         let environment = ProcessInfo.processInfo.environment
         guard let resultPath = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_RESULT_PATH"],
               !resultPath.isEmpty else {
             return
         }
         let visibleIDs = panelController?.automationVisibleResultIDs ?? []
-        let result: [String: Any] = [
+        let annotationsFileURL = annotationsStore.annotationsFileURL
+        let annotationsBytesNow = try? Data(contentsOf: annotationsFileURL)
+        var result: [String: Any] = [
             "scope": environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_SCOPE"] ?? "working",
             "state": panelController?.automationStateName ?? "unknown",
             "settled": panelController?.automationIsSettled ?? false,
             "resultCount": panelController?.automationRowCount ?? -1,
             "visibleIDs": visibleIDs,
+            "rowKinds": panelController?.automationRowKinds ?? [],
+            "pinnedVisibleIDs": panelController?.automationPinnedVisibleIDs ?? [],
+            "statusText": panelController?.automationStatusText ?? "",
             "driftedEventID": automationDriftedEventID,
             "doNotIndexEventID": automationDoNotIndexEventID,
             "driftedEventVisible": !automationDriftedEventID.isEmpty
                 && visibleIDs.contains(automationDriftedEventID),
             "doNotIndexEventVisible": !automationDoNotIndexEventID.isEmpty
-                && visibleIDs.contains(automationDoNotIndexEventID)
+                && visibleIDs.contains(automationDoNotIndexEventID),
+            "eventCountBefore": eventCountBefore,
+            "eventCountAfter": eventCountAfter,
+            "pasteboardPrefix": String((pasteboard.string(forType: .string) ?? "").prefix(24)),
+            "annotationsDirectoryExists": FileManager.default.fileExists(
+                atPath: annotationsStore.annotationsDirectoryURL.path
+            ),
+            "annotationsFileExists": FileManager.default.fileExists(
+                atPath: annotationsFileURL.path
+            )
         ]
+        if !automationRetentionReceipt.isEmpty {
+            result["retentionFlow"] = automationRetentionReceipt
+        }
+        if let before = automationAnnotationsBytesBefore {
+            result["annotationsFileByteIdentical"] = before == annotationsBytesNow
+            result["annotationsBytesBefore"] = before.count
+            result["annotationsBytesAfter"] = annotationsBytesNow?.count ?? -1
+        }
         if let data = try? JSONSerialization.data(
             withJSONObject: result,
             options: [.prettyPrinted, .sortedKeys]
         ) {
             try? data.write(to: URL(fileURLWithPath: resultPath), options: [.atomic])
         }
+    }
+
+    /// Seeds `count` captures of IDENTICAL content (same sha256 content
+    /// hash) from alternating apps, minutes apart, for duplicate-grouping
+    /// receipts.
+    private func seedDuplicateFixtures(count: Int) throws {
+        let content = "synthetic duplicate fixture — the same text copied again and again"
+        let apps = [
+            ClipboardSourceApp(name: "Notes", bundleIdentifier: "com.apple.Notes"),
+            ClipboardSourceApp(name: "Safari", bundleIdentifier: "com.apple.Safari"),
+            ClipboardSourceApp(name: "TextEdit", bundleIdentifier: "com.apple.TextEdit")
+        ]
+        for slot in 0..<count {
+            _ = try archiveWriter.archiveAllowedCapture(
+                ClipboardCapture(
+                    capturedAt: Date().addingTimeInterval(TimeInterval(-(slot * 9 + 2)) * 60),
+                    content: content,
+                    sourceApp: apps[slot % apps.count],
+                    pasteboardTypes: ["public.utf8-plain-text"]
+                )
+            )
+        }
+    }
+
+    /// Pin→prune→survives flow (contract 5 receipt): seed 14 synthetic
+    /// events, pin the 2 OLDEST, run incremental retention enforcement with
+    /// a limit of 10, and record the receipt facts. Expected: the 2 pinned
+    /// events survive OUTSIDE the limit, the 2 oldest UNPINNED events are
+    /// pruned, and 10 unpinned events remain counted.
+    private func runPinPruneRetentionFlow() throws {
+        var seeded: [StoredClipboardEvent] = []
+        for slot in 0..<14 {
+            let event = try archiveWriter.archiveAllowedCapture(
+                ClipboardCapture(
+                    capturedAt: Date().addingTimeInterval(TimeInterval(-(14 - slot)) * 600),
+                    content: "synthetic retention fixture clip \(slot) of 14",
+                    sourceApp: ClipboardSourceApp(name: "Notes", bundleIdentifier: "com.apple.Notes"),
+                    pasteboardTypes: ["public.utf8-plain-text"]
+                )
+            )
+            seeded.append(event)
+        }
+        let oldestTwo = Array(seeded.prefix(2))
+        for event in oldestTwo {
+            try annotationsStore.setPinned(true, forContentHash: event.contentHash)
+        }
+        let result = try ClipboardArchivePruner(archiveRoot: archiveRoot)
+            .enforceRetentionLimit(keepingMostRecent: 10, reason: "ui-automation-retention")
+        let liveIDs = Set(
+            ((try? reader.recentItems(since: .distantPast, limit: 100)) ?? []).map(\.id)
+        )
+        automationRetentionReceipt = [
+            "seededEvents": seeded.count,
+            "retainedItemLimit": 10,
+            "pinnedEventIDs": oldestTwo.map(\.id),
+            "pinnedContentHashes": oldestTwo.map(\.contentHash),
+            "liveEvents": result.liveEvents,
+            "prunedEvents": result.prunedEvents,
+            "exemptPinnedEvents": result.exemptPinnedEvents,
+            "keptCountedEvents": result.keptCountedEvents,
+            "pinnedEventsSurvived": oldestTwo.allSatisfy { liveIDs.contains($0.id) }
+        ]
+    }
+
+    /// Writes an annotations.json claiming a NEWER format version (with a
+    /// pin on the newest seeded clip plus unknown fields). The store must
+    /// read pins, refuse every mutation, and leave the file byte-identical.
+    private func seedFutureVersionAnnotationsFixture() throws {
+        guard let target = try reader.recentItems(since: .distantPast, limit: 1).first else {
+            return
+        }
+        let json = """
+        {
+          "annotationsVersion": 2,
+          "updatedAt": "2027-01-01T00:00:00Z",
+          "futureTopLevelField": { "shape": "unknown" },
+          "annotations": {
+            "\(target.contentHash)": {
+              "pinned": true,
+              "pinnedAt": "2027-01-01T00:00:00Z",
+              "tags": ["from-the-future"],
+              "snippet": false,
+              "futureRecordField": 7
+            }
+          },
+          "collections": []
+        }
+        """
+        let directory = annotationsStore.annotationsDirectoryURL
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o700))],
+            ofItemAtPath: directory.path
+        )
+        let data = Data(json.utf8)
+        try data.write(to: annotationsStore.annotationsFileURL, options: [.atomic])
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: annotationsStore.annotationsFileURL.path
+        )
+        automationAnnotationsBytesBefore = data
     }
 
     /// Applies the requested gesture list through the picker's production
@@ -869,7 +1129,11 @@ final class ClipboardMenuBarApp: NSObject,
                     keepingMostRecent: limit,
                     reason: "retention-\(settings.retentionMode.rawValue)"
                 )
-            liveEventCountEstimate = result.keptEvents
+            // Estimate semantics (Slice 4): the estimate tracks COUNTED
+            // (unpinned) events — pinned clips sit outside the limit, so
+            // seeding from keptEvents would let pins consume limit slots
+            // in the in-memory check and force needless scans.
+            liveEventCountEstimate = result.keptCountedEvents
             if result.prunedEvents > 0 {
                 lastStatus = "Kept latest \(limit), pruned \(result.prunedEvents)"
                 markQuickPickerCacheDirty()

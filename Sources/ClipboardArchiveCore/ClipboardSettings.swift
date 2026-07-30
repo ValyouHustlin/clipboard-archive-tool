@@ -77,6 +77,9 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
     /// Opt-in direct paste after a quick picker commit. Requires
     /// Accessibility trust at use time and degrades to copy-back silently.
     public var quickPickerDirectPasteEnabled: Bool
+    /// History window "Group duplicates" toggle (Slice 4). Presentation
+    /// only; defaults off so older settings files change nothing.
+    public var historyGroupDuplicates: Bool
 
     private enum CodingKeys: String, CodingKey {
         case excludedBundleIdentifiers
@@ -90,6 +93,7 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         case hasCompletedOnboarding
         case shortcuts
         case quickPickerDirectPasteEnabled
+        case historyGroupDuplicates
     }
 
     public init(
@@ -103,7 +107,8 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         retentionMode: ClipboardRetentionMode = .recent50,
         hasCompletedOnboarding: Bool = false,
         shortcuts: [String: ClipboardShortcutSetting] = [:],
-        quickPickerDirectPasteEnabled: Bool = false
+        quickPickerDirectPasteEnabled: Bool = false,
+        historyGroupDuplicates: Bool = false
     ) {
         self.excludedBundleIdentifiers = excludedBundleIdentifiers
         self.excludedAppNameFragments = excludedAppNameFragments
@@ -116,6 +121,7 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         self.hasCompletedOnboarding = hasCompletedOnboarding
         self.shortcuts = shortcuts
         self.quickPickerDirectPasteEnabled = quickPickerDirectPasteEnabled
+        self.historyGroupDuplicates = historyGroupDuplicates
     }
 
     /// The quick picker shortcut, falling back to the disabled ⌥⌘V default
@@ -163,6 +169,10 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         quickPickerDirectPasteEnabled = try container.decodeIfPresent(
             Bool.self,
             forKey: .quickPickerDirectPasteEnabled
+        ) ?? false
+        historyGroupDuplicates = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .historyGroupDuplicates
         ) ?? false
     }
 

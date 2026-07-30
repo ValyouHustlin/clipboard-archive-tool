@@ -834,7 +834,7 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
             return
         }
         let mode = selectedRetentionMode()
-        statusLabel.stringValue = mode.storesLongTermHistory ? "Full long-term archive will be on" : "\(mode.displayName) will prune older content"
+        statusLabel.stringValue = mode.storesLongTermHistory ? "Full long-term archive will be on" : "\(mode.displayName) will prune older content · pinned clips are always kept in addition to the limit"
     }
 
     private func wrappingLabel(_ value: String) -> NSTextField {

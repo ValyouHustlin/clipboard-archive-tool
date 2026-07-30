@@ -42,12 +42,37 @@ final class QuickPickerPanelController: NSObject,
     NSTableViewDelegate,
     NSTextFieldDelegate,
     NSControlTextEditingDelegate {
+    /// One snippet entry for the picker's top section (contract 5).
+    /// `hasLiveOccurrence` is resolved at LOAD for enablement; the commit
+    /// re-resolves at commit time (newest live occurrence wins).
+    struct SnippetItem {
+        var contentHash: String
+        var title: String
+        var hasLiveOccurrence: Bool
+    }
+
+    /// Rows the table renders. Snippets (with a section header) appear only
+    /// while the query is empty and snippets exist; typing filters events
+    /// only.
+    private enum PickerRow {
+        case header(String)
+        case snippet(SnippetItem)
+        case event(StoredClipboardEvent)
+    }
+
     struct Dependencies {
         /// Loads the picker's event list (app delegate cache; warm opens are O(1)).
         var loadEvents: () -> [StoredClipboardEvent]
+        /// Loads snippet entries (cached beside the event cache; invalidated
+        /// on every archive/annotations mutation).
+        var loadSnippets: () -> [SnippetItem]
         /// Shared no-re-capture copy path. Returns the copied content on
         /// success, nil on failure (event body unreadable).
         var copyToPasteboard: (StoredClipboardEvent) -> String?
+        /// Commit-time snippet resolution: newest live occurrence →
+        /// content → shared no-re-capture copy path. Returns the copied
+        /// content, or nil when no live occurrence remains.
+        var commitSnippet: (SnippetItem) -> String?
         /// Whether direct paste may run right now (setting enabled AND
         /// Accessibility trusted — re-checked at every use).
         var directPasteAllowed: () -> Bool
@@ -65,6 +90,8 @@ final class QuickPickerPanelController: NSObject,
 
     private var events: [StoredClipboardEvent] = []
     private var filteredEvents: [StoredClipboardEvent] = []
+    private var snippets: [SnippetItem] = []
+    private var rows: [PickerRow] = []
     /// Guards the resign-key dismissal path so the deliberate teardown during
     /// a commit is not treated as a click-away dismissal.
     private var isCommitting = false
@@ -139,6 +166,7 @@ final class QuickPickerPanelController: NSObject,
     func present() {
         let start = DispatchTime.now()
         events = dependencies.loadEvents()
+        snippets = dependencies.loadSnippets()
         searchField.stringValue = ""
         applyFilter()
         statusLabel.stringValue = ""
@@ -184,41 +212,94 @@ final class QuickPickerPanelController: NSObject,
             events: events,
             query: searchField.stringValue
         )
+        let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        var built: [PickerRow] = []
+        // Snippets: top section, only when the query is empty and snippets
+        // exist (typing means "search my recent clips").
+        if query.isEmpty, !snippets.isEmpty {
+            built.append(.header("Snippets"))
+            built.append(contentsOf: snippets.map { .snippet($0) })
+            built.append(.header("Recent Clips"))
+        }
+        built.append(contentsOf: filteredEvents.map { .event($0) })
+        rows = built
         tableView.reloadData()
-        selectRow(0)
+        selectFirstSelectableRow()
     }
 
-    private func selectRow(_ row: Int) {
-        guard !filteredEvents.isEmpty else {
+    private func isSelectable(_ row: Int) -> Bool {
+        guard row >= 0, row < rows.count else {
+            return false
+        }
+        switch rows[row] {
+        case .header:
+            return false
+        case let .snippet(snippet):
+            return snippet.hasLiveOccurrence
+        case .event:
+            return true
+        }
+    }
+
+    private func selectFirstSelectableRow() {
+        guard let first = rows.indices.first(where: { isSelectable($0) }) else {
             tableView.deselectAll(nil)
             rememberSelection()
             return
         }
-        let clamped = max(0, min(filteredEvents.count - 1, row))
-        tableView.selectRowIndexes(IndexSet(integer: clamped), byExtendingSelection: false)
-        tableView.scrollRowToVisible(clamped)
+        tableView.selectRowIndexes(IndexSet(integer: first), byExtendingSelection: false)
+        tableView.scrollRowToVisible(first)
         rememberSelection()
     }
 
+    /// Moves the selection to the next selectable row in `delta`'s
+    /// direction, skipping headers and disabled snippet rows.
     private func moveSelection(by delta: Int) {
-        guard !filteredEvents.isEmpty else {
+        guard rows.contains(where: { _ in true }) else {
             return
         }
-        let current = tableView.selectedRow
-        selectRow(current < 0 ? 0 : current + delta)
+        let direction = delta >= 0 ? 1 : -1
+        var candidate = tableView.selectedRow
+        if candidate < 0 {
+            selectFirstSelectableRow()
+            return
+        }
+        repeat {
+            candidate += direction
+        } while candidate >= 0 && candidate < rows.count && !isSelectable(candidate)
+        guard candidate >= 0, candidate < rows.count else {
+            return
+        }
+        tableView.selectRowIndexes(IndexSet(integer: candidate), byExtendingSelection: false)
+        tableView.scrollRowToVisible(candidate)
+        rememberSelection()
+    }
+
+    private var selectedRow: PickerRow? {
+        let row = tableView.selectedRow
+        guard row >= 0, row < rows.count else {
+            return nil
+        }
+        return rows[row]
     }
 
     private var selectedEvent: StoredClipboardEvent? {
-        let row = tableView.selectedRow
-        guard row >= 0, row < filteredEvents.count else {
-            return nil
+        if case let .event(event)? = selectedRow {
+            return event
         }
-        return filteredEvents[row]
+        return nil
     }
 
     private func rememberSelection() {
 #if DEBUG
-        automationLastSelectedPreview = selectedEvent?.contentPreview ?? ""
+        switch selectedRow {
+        case let .event(event):
+            automationLastSelectedPreview = event.contentPreview
+        case let .snippet(snippet):
+            automationLastSelectedPreview = snippet.title
+        default:
+            automationLastSelectedPreview = ""
+        }
 #endif
     }
 
@@ -228,15 +309,30 @@ final class QuickPickerPanelController: NSObject,
     /// copy BEFORE teardown → dismiss → optionally schedule direct paste
     /// 80 ms later so the panel has resigned key and ⌘V lands in the
     /// user's app. On copy failure the panel stays open with inline status.
+    ///
+    /// Snippet rows resolve AT COMMIT TIME (newest live occurrence →
+    /// content → shared no-re-capture copy path).
     private func commit(directPaste: Bool) {
-        guard let event = selectedEvent else {
+        let content: String?
+        switch selectedRow {
+        case let .event(event):
+            isCommitting = true
+            content = dependencies.copyToPasteboard(event)
+            if content == nil {
+                isCommitting = false
+                statusLabel.stringValue = "Could not copy that item"
+                return
+            }
+        case let .snippet(snippet):
+            isCommitting = true
+            content = dependencies.commitSnippet(snippet)
+            if content == nil {
+                isCommitting = false
+                statusLabel.stringValue = "That snippet has no copies left in the archive"
+                return
+            }
+        default:
             statusLabel.stringValue = "Nothing to copy"
-            return
-        }
-        isCommitting = true
-        guard let content = dependencies.copyToPasteboard(event) else {
-            isCommitting = false
-            statusLabel.stringValue = "Could not copy that item"
             return
         }
 #if DEBUG
@@ -292,7 +388,21 @@ final class QuickPickerPanelController: NSObject,
     // MARK: - Table
 
     func numberOfRows(in tableView: NSTableView) -> Int {
-        filteredEvents.count
+        rows.count
+    }
+
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
+        isSelectable(row)
+    }
+
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        guard row < rows.count else {
+            return 44
+        }
+        if case .header = rows[row] {
+            return 22
+        }
+        return 44
     }
 
     func tableView(
@@ -300,10 +410,79 @@ final class QuickPickerPanelController: NSObject,
         viewFor tableColumn: NSTableColumn?,
         row: Int
     ) -> NSView? {
-        guard row < filteredEvents.count else {
+        guard row < rows.count else {
             return nil
         }
-        let event = filteredEvents[row]
+        switch rows[row] {
+        case let .header(title):
+            return headerCell(title: title)
+        case let .snippet(snippet):
+            return snippetCell(snippet: snippet)
+        case let .event(event):
+            return eventCell(event: event)
+        }
+    }
+
+    private func headerCell(title: String) -> NSView {
+        let cell = NSTableCellView()
+        let label = NSTextField(labelWithString: title.uppercased())
+        label.font = .systemFont(ofSize: 10, weight: .semibold)
+        label.textColor = .tertiaryLabelColor
+        label.translatesAutoresizingMaskIntoConstraints = false
+        cell.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 8),
+            label.bottomAnchor.constraint(equalTo: cell.bottomAnchor, constant: -2)
+        ])
+        return cell
+    }
+
+    private func snippetCell(snippet: SnippetItem) -> NSView {
+        let cell = NSTableCellView()
+
+        let icon = NSImageView()
+        icon.image = NSImage(
+            systemSymbolName: "text.badge.star",
+            accessibilityDescription: "Snippet"
+        )
+        icon.contentTintColor = snippet.hasLiveOccurrence ? .systemOrange : .tertiaryLabelColor
+        icon.translatesAutoresizingMaskIntoConstraints = false
+
+        let titleField = NSTextField(labelWithString: snippet.title)
+        titleField.font = .systemFont(ofSize: 12, weight: .medium)
+        titleField.textColor = snippet.hasLiveOccurrence ? .labelColor : .tertiaryLabelColor
+        titleField.lineBreakMode = .byTruncatingTail
+        titleField.translatesAutoresizingMaskIntoConstraints = false
+
+        let metadata = NSTextField(
+            labelWithString: snippet.hasLiveOccurrence
+                ? "Snippet"
+                : "Snippet · no copies left in the archive"
+        )
+        metadata.font = .systemFont(ofSize: 10, weight: .medium)
+        metadata.textColor = .secondaryLabelColor
+        metadata.lineBreakMode = .byTruncatingTail
+        metadata.translatesAutoresizingMaskIntoConstraints = false
+
+        cell.addSubview(icon)
+        cell.addSubview(titleField)
+        cell.addSubview(metadata)
+        NSLayoutConstraint.activate([
+            icon.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 8),
+            icon.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 18),
+            icon.heightAnchor.constraint(equalToConstant: 18),
+            titleField.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 8),
+            titleField.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
+            titleField.topAnchor.constraint(equalTo: cell.topAnchor, constant: 6),
+            metadata.leadingAnchor.constraint(equalTo: titleField.leadingAnchor),
+            metadata.trailingAnchor.constraint(equalTo: titleField.trailingAnchor),
+            metadata.topAnchor.constraint(equalTo: titleField.bottomAnchor, constant: 2)
+        ])
+        return cell
+    }
+
+    private func eventCell(event: StoredClipboardEvent) -> NSView {
         let cell = NSTableCellView()
 
         let icon = NSImageView()
