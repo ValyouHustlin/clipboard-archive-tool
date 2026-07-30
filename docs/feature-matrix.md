@@ -9,9 +9,9 @@ Legend: status = planned | in-progress | integrated | verified.
 
 | # | Feature | Source surfaces | Migration | Tests | Runtime verification | Status |
 |---|---------|-----------------|-----------|-------|----------------------|--------|
-| 0a | Event schema versioning + tolerant decode | `ClipboardModels.swift`, `ClipboardArchiveWriter.swift`, all readers | v1 lines decode as version 1; `archive-format.json` marker | old→new fixture decode, unknown-content-type skip, benchmark-schema drift guard | synthetic mixed-version archive read | planned |
-| 0b | Suppression unification + perf fixes (ledger cache, incremental retention prune, copy-back re-capture fix) | `ClipboardArchiveReader/Searcher/Pruner/DerivedIndex`, `main.swift`, `ClipboardPanelController.swift` | none (behavior-preserving) | suppression parity tests, prune-increment tests, no-recapture test | 50k synthetic scale benchmark before/after | planned |
-| 0c | Synthetic fixture builders (every content type + migration path) | new `Tests` + `ClipboardArchiveChecks` support | n/a | fixture round-trips | n/a | planned |
+| 0a | Event schema versioning + tolerant decode | `ClipboardModels.swift`, `ClipboardArchiveWriter.swift`, all readers | v1 lines decode as version 1; `archive-format.json` marker | old→new fixture decode, unknown-content-type skip, benchmark-schema drift guard | synthetic mixed-version archive read | integrated (`a77819a`) |
+| 0b | Suppression unification + perf fixes (ledger cache, incremental retention prune, copy-back re-capture fix) | `ClipboardSuppression.swift` (new), `ClipboardArchiveReader/Searcher/Pruner/DerivedIndex`, `main.swift`, `ClipboardPanelController.swift` | none (behavior-preserving) | suppression parity tests, prune-increment tests, ledger-cache tests, timing bound | 50k synthetic scale benchmark (pending Slice 2 gate) | integrated (Slice 1 merge) |
+| 0c | Synthetic fixture builders (every content type + migration path) | `Tests/.../SyntheticFixtures.swift` | n/a | fixture round-trips | n/a | integrated (`a77819a`) |
 | 1 | Quick picker + configurable global shortcut | new `QuickPickerPanelController`, hotkey manager in MenuBar target; settings keys | settings keys default disabled | shortcut persistence, picker filter model | isolated AppKit gesture: open, arrow-navigate, copy-back, dismiss; <100 ms @50k | planned |
 | 2 | Full-archive search + filters (date/app/type/window) | `ClipboardDerivedIndex` structured search, `ClipboardPanelController` archive mode | index `user_version` bump + rebuild | structured-search tests, filter tests | synthetic archive-wide search in isolated app | planned |
 | 3 | Pins/favorites with retention protection | annotations store (new `ClipboardAnnotations.swift`), pruner exemption, panel UI | new sidecar file, absent = none | pin round-trip, prune-exemption, bulk-exemption | isolated app pin → prune → survives | planned |
@@ -30,6 +30,7 @@ Legend: status = planned | in-progress | integrated | verified.
 | Date | Commit | Contents | Gate receipts |
 |------|--------|----------|---------------|
 | 2026-07-30 | `43ab766` (baseline) | pre-expansion baseline | 28/28 tests, 25 checks ok, package+validate+local-only+rollback ok |
+| 2026-07-30 | Slice 1 (`a77819a` + perf merge) | schema versioning, tolerant content types, fixtures, `--index-path`, suppression unification, ledger cache, incremental retention, copy-back re-capture fix | 41/41 tests (3 suites), 28 checks ok, package+validate+local-only+rollback ok |
 
 ## Discovered issues (running log)
 
