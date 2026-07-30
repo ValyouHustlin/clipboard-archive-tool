@@ -56,3 +56,4 @@ Legend: status = planned | in-progress | integrated | verified.
 | 2026-07-30 review | CRITICAL: hotkey conflict at launch has no durable surface (settings window not yet created; menu status overwritten) | fix queued post-Slice-3: persistent warning menu item + pending-failure push into Settings on creation + save-time alert |
 | 2026-07-30 review | Settings save hides the window in the same run-loop turn as a conflict label write | fold into the same fix |
 | 2026-07-30 review | One malformed shortcuts entry reset ALL settings to defaults (capture off, exclusions lost) | fixed: FailableDecodable per-entry tolerance + tests |
+| 2026-07-30 design | PRE-EXISTING PRIVACY BUG: pause exit never resyncs lastChangeCount → the last item copied during a pause is retro-captured on resume | fix owned by Slice 5 (private mode + pause exit resync) |
