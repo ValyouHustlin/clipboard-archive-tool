@@ -164,6 +164,17 @@ final class ClipboardMenuBarApp: NSObject,
                 isPaused = true
                 configureStatusIcon()
             }
+            // Private mode may expire WHILE a pause is still active: clear
+            // its stale key and tell the user now, not when the pause ends.
+            // The pause keeps gating capture; no resync happens until the
+            // whole gate lifts.
+            if let privateUntil = settings.privateModeUntil, privateUntil <= Date() {
+                settings.privateModeUntil = nil
+                try? settingsStore.save(settings)
+                lastStatus = "Private mode ended"
+                configureStatusIcon()
+                rebuildMenu()
+            }
             captureGateWasActive = true
             return
         case .resyncWithoutIngesting:
@@ -2075,6 +2086,7 @@ final class ClipboardMenuBarApp: NSObject,
 
     private func rebuildMenu() {
         let menu = NSMenu()
+        refreshMenuRestrictedHashes()
 
         let pauseLine = settings.pauseUntil.map { " until \(shortDate($0))" } ?? ""
         let statusTitle: String
@@ -2227,14 +2239,21 @@ final class ClipboardMenuBarApp: NSObject,
         rebuildMenu()
     }
 
+    /// Restricted hashes snapshot, refreshed ONCE per menu rebuild so the
+    /// per-item badge check is a set lookup instead of a store read per
+    /// item (contract 9: no repeated annotation rescans on menu rebuild).
+    private var menuRestrictedHashes: Set<String> = []
+
+    private func refreshMenuRestrictedHashes() {
+        menuRestrictedHashes = ClipboardAnnotationsStore(archiveRoot: archiveRoot)
+            .restrictedContentHashes()
+    }
+
     /// Restricted display state (stored label OR manual annotation
-    /// override). The annotations read rides the store's stat-validated
-    /// cache, so per-menu-rebuild cost is one stat when clean.
+    /// override).
     private func eventIsRestricted(_ event: StoredClipboardEvent) -> Bool {
         event.privacyLabel == .restricted
-            || ClipboardAnnotationsStore(archiveRoot: archiveRoot)
-                .restrictedContentHashes()
-                .contains(event.contentHash)
+            || menuRestrictedHashes.contains(event.contentHash)
     }
 
     private func applyRestrictedBadge(_ item: NSMenuItem, for event: StoredClipboardEvent) {

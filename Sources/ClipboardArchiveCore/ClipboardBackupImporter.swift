@@ -464,8 +464,16 @@ public struct ClipboardBackupImporter: Sendable {
                 if let event = try? decoder.decode(StoredClipboardEvent.self, from: data) {
                     if localLedgerIDs.contains(event.id) {
                         plan.skippedDeletedHere += 1
+                        // Local deletion is authoritative for EVERY body the
+                        // event references: the plain-text fallback AND any
+                        // rich payload (image/RTF/file-list spill). Missing
+                        // the rich path resurrected deleted image bytes as
+                        // orphaned files on disk (contract 6 violation).
                         if let bodyPath = event.rawContentPath {
                             deletedHereBodyPaths.insert(bodyPath)
+                        }
+                        if let richBodyPath = event.richContent?.bodyPath {
+                            deletedHereBodyPaths.insert(richBodyPath)
                         }
                     } else if localEventIDs.contains(event.id) {
                         plan.skippedExistingEvents += 1
