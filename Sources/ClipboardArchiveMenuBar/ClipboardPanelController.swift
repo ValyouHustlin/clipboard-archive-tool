@@ -239,7 +239,18 @@ final class ClipboardPanelController: NSWindowController,
         window.setFrameAutosaveName("ClipboardHistoryWindowV2")
         super.init(window: window)
         window.onPinKeyEquivalent = { [weak self] in
-            self?.togglePinOnSelection() ?? false
+            guard let self else {
+                return false
+            }
+            // Never steal ⌘P from an active text edit: toggling a pin
+            // refreshes the annotation controls, which would overwrite an
+            // uncommitted tag token or search text mid-typing.
+            if let responder = self.window?.firstResponder as? NSTextView,
+               responder.delegate === self.tagsField
+                || responder.delegate === self.searchField {
+                return false
+            }
+            return self.togglePinOnSelection()
         }
         buildUI()
         reload()
@@ -1663,7 +1674,15 @@ final class ClipboardPanelController: NSWindowController,
                         ? try index.metaRows(filters: filters)
                         : try index.browse(filters: filters, limit: 200)
                 } else {
-                    rows = try index.structuredSearch(query, filters: filters, limit: 200)
+                    // Deep reach mirrors the empty-query branch: a collection
+                    // member (or duplicate group occurrence) that ranks
+                    // outside the top 200 full-text hits must not silently
+                    // vanish after the hash post-filter below.
+                    rows = try index.structuredSearch(
+                        query,
+                        filters: filters,
+                        limit: needsDeepReach ? 5000 : 200
+                    )
                 }
                 if let hashConstraint {
                     rows = rows.filter { hashConstraint.hashes.contains($0.contentHash) }

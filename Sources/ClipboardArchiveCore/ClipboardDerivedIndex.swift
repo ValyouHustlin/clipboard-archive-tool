@@ -339,7 +339,10 @@ public struct ClipboardDerivedIndex: Sendable {
             return try browse(filters: filters, limit: limit)
         }
         try ensureCurrentSchema()
-        let boundedLimit = max(1, min(limit, 500))
+        // The upper bound matches metaRows so hash-post-filtered callers
+        // (collection scope, duplicate grouping) can deep-reach past the
+        // default page without a second query path.
+        let boundedLimit = max(1, min(limit, Self.metaRowsMaximumLimit))
         // `m.content_type <> 'blocked'` is defense in depth: blocked events
         // never reach the index writers, so any such row is foreign data.
         // The FTS table stays unaliased — sqlite3's FTS5 aux functions
