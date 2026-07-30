@@ -663,6 +663,17 @@ final class ClipboardMenuBarApp: NSObject,
                         self.copyEventToPasteboardWithoutRecapture(event)
                         return content
                     },
+                    copyPlainTextToPasteboard: { [weak self] event in
+                        // ⌥↩ (Slice 7): the stored plain-text fallback
+                        // through the SAME shared no-re-capture path —
+                        // rich representations deliberately skipped.
+                        guard let self,
+                              let content = try? self.reader.content(for: event) else {
+                            return nil
+                        }
+                        self.copyToPasteboardWithoutRecapture(content)
+                        return content
+                    },
                     commitSnippet: { [weak self] snippet in
                         // Commit-time resolution (contract 5): newest live
                         // occurrence → content → the ONE shared
@@ -975,6 +986,11 @@ final class ClipboardMenuBarApp: NSObject,
                 } else {
                     try seedSyntheticUIFixtures()
                 }
+                if environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_SEED_TRACKING_URL"] == "1" {
+                    // Slice 7 cleaned-links receipt: a newest clip whose
+                    // URLs carry tracking parameters.
+                    try seedTrackingURLFixture()
+                }
                 if let duplicateSeed = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_SEED_DUPLICATES"],
                    let duplicateCount = Int(duplicateSeed), duplicateCount > 1 {
                     try seedDuplicateFixtures(count: duplicateCount)
@@ -1092,6 +1108,10 @@ final class ClipboardMenuBarApp: NSObject,
                     // initial state settled, then one capture-poll tick
                     // proves a history copy is never re-captured.
                     let eventCountBefore = self.archiveEventCount()
+                    // Slice 7 receipt: the NDJSON bytes must be identical
+                    // after copy/transform/edit gestures — clip actions
+                    // never write back to the archive.
+                    let archiveRawBefore = self.archiveNDJSONSnapshot()
                     if let gestures = ProcessInfo.processInfo
                         .environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_HISTORY_GESTURES"],
                        !gestures.isEmpty {
@@ -1122,6 +1142,8 @@ final class ClipboardMenuBarApp: NSObject,
                         }
                         self.pollPasteboard()
                         let eventCountAfter = self.archiveEventCount()
+                        let archiveLinesIdentical =
+                            archiveRawBefore == self.archiveNDJSONSnapshot()
                         let url = URL(fileURLWithPath: snapshotPath)
                         do {
                             try self.panelController?.writeSnapshot(to: url)
@@ -1130,7 +1152,8 @@ final class ClipboardMenuBarApp: NSObject,
                         }
                         self.writeHistoryAutomationResult(
                             eventCountBefore: eventCountBefore,
-                            eventCountAfter: eventCountAfter
+                            eventCountAfter: eventCountAfter,
+                            archiveLinesIdentical: archiveLinesIdentical
                         )
                         NSApp.terminate(nil)
                     }
@@ -1524,7 +1547,8 @@ final class ClipboardMenuBarApp: NSObject,
     /// invisible.
     private func writeHistoryAutomationResult(
         eventCountBefore: Int = -1,
-        eventCountAfter: Int = -1
+        eventCountAfter: Int = -1,
+        archiveLinesIdentical: Bool? = nil
     ) {
         let environment = ProcessInfo.processInfo.environment
         guard let resultPath = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_RESULT_PATH"],
@@ -1552,6 +1576,8 @@ final class ClipboardMenuBarApp: NSObject,
             "eventCountBefore": eventCountBefore,
             "eventCountAfter": eventCountAfter,
             "pasteboardPrefix": String((pasteboard.string(forType: .string) ?? "").prefix(24)),
+            // Slice 7 receipts need the transformed text itself (bounded).
+            "pasteboardValue": String((pasteboard.string(forType: .string) ?? "").prefix(200)),
             "annotationsDirectoryExists": FileManager.default.fileExists(
                 atPath: annotationsStore.annotationsDirectoryURL.path
             ),
@@ -1559,6 +1585,9 @@ final class ClipboardMenuBarApp: NSObject,
                 atPath: annotationsFileURL.path
             )
         ]
+        if let archiveLinesIdentical {
+            result["archiveLinesIdentical"] = archiveLinesIdentical
+        }
         if !automationRetentionReceipt.isEmpty {
             result["retentionFlow"] = automationRetentionReceipt
         }
@@ -1719,6 +1748,8 @@ final class ClipboardMenuBarApp: NSObject,
                     (quickPickerController?.automationLastSelectedPreview ?? "").prefix(24)
                 ),
                 "pasteboardMatchesSelection": committed != nil && pasteboardString == committed,
+                "pasteboardValue": String((pasteboardString ?? "").prefix(200)),
+                "hintText": quickPickerController?.automationHintText ?? "",
                 "pickerVisibleAfterGestures": quickPickerController?.isVisible ?? false,
                 "openElapsedMilliseconds":
                     quickPickerController?.automationLastOpenElapsedMilliseconds ?? -1,
@@ -1737,6 +1768,38 @@ final class ClipboardMenuBarApp: NSObject,
     private func archiveEventCount() -> Int {
         let epoch = Date(timeIntervalSince1970: 0)
         return (try? reader.recentItems(since: epoch, limit: Int.max))?.count ?? -1
+    }
+
+    /// Concatenated bytes of every NDJSON day file (sorted by path) —
+    /// fixture archives are tiny, so a whole-bytes equality receipt is the
+    /// simplest truthful "no line changed" proof (Slice 7).
+    private func archiveNDJSONSnapshot() -> Data {
+        let rawRoot = archiveRoot.appendingPathComponent("raw")
+        let urls = (FileManager.default.enumerator(
+            at: rawRoot,
+            includingPropertiesForKeys: nil
+        )?.compactMap { $0 as? URL } ?? [])
+            .filter { $0.pathExtension == "ndjson" }
+            .sorted { $0.path < $1.path }
+        var combined = Data()
+        for url in urls {
+            combined.append((try? Data(contentsOf: url)) ?? Data())
+        }
+        return combined
+    }
+
+    /// Newest fixture for the cleaned-links receipt (Slice 7): two URLs
+    /// with mixed tracking + real parameters plus a fragment, in prose.
+    private func seedTrackingURLFixture() throws {
+        let content = "Launch recap: https://example.com/launch?utm_source=newsletter&utm_medium=email&page=2&fbclid=abc123#agenda and docs at https://example.com/docs?id=7&gclid=zz"
+        _ = try archiveWriter.archiveAllowedCapture(
+            ClipboardCapture(
+                capturedAt: Date().addingTimeInterval(-60),
+                content: content,
+                sourceApp: ClipboardSourceApp(name: "Safari", bundleIdentifier: "com.apple.Safari"),
+                pasteboardTypes: ["public.utf8-plain-text"]
+            )
+        )
     }
 
     // MARK: - Rich-format automation (Slice 6)

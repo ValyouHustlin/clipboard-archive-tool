@@ -218,6 +218,12 @@ final class ClipboardPanelController: NSWindowController,
     private let collectionMembershipButton = NSPopUpButton()
     private var detailCardHeightConstraint: NSLayoutConstraint?
 
+    // MARK: - Edit-before-copy sheet state (Slice 7)
+
+    private var editSheet: NSWindow?
+    private var editSheetTextView: NSTextView?
+    private var editSheetCopyButton: NSButton?
+
     init(
         archiveRoot: URL,
         recentItemLimit: Int,
@@ -418,6 +424,31 @@ final class ClipboardPanelController: NSWindowController,
             refreshAnnotationState()
             onArchiveMutation(.annotationsChanged(pinRemoved: false))
             refreshAfterAnnotationChange()
+        case "select-first-two":
+            // Multi-select gesture for the join receipt.
+            if displayRows.count >= 2 {
+                tableView.selectRowIndexes(IndexSet([0, 1]), byExtendingSelection: false)
+            }
+        case "edit-before-copy-commit":
+            // Slice 7 receipt: open the production sheet, edit the text,
+            // and commit through the production Copy button — proving the
+            // pasteboard gets the EDIT while the archive stays unchanged.
+            presentEditBeforeCopySheet()
+            editSheetTextView?.string += " — edited for automation"
+            editSheetCopyButton?.performClick(nil)
+        case let gesture where gesture.hasPrefix("copy-as:"):
+            // Slice 7 transformation copies through the production funnel.
+            if let transform = ClipCopyTransform(
+                rawValue: String(gesture.dropFirst("copy-as:".count))
+            ) {
+                copyTransformedSelection(transform)
+            }
+        case let gesture where gesture.hasPrefix("join-selected:"):
+            if let separator = ClipTransformations.JoinSeparator(
+                rawValue: String(gesture.dropFirst("join-selected:".count))
+            ) {
+                joinSelected(separator)
+            }
         case let gesture where gesture.hasPrefix("select-index:"):
             // Rich-detail receipts (Slice 6): select an arbitrary row so
             // the harness can capture one detail render per kind.
@@ -2235,6 +2266,269 @@ final class ClipboardPanelController: NSWindowController,
         statusLabel.stringValue = "Copied \(contents.count) items"
     }
 
+    // MARK: - Clip actions (Slice 7)
+
+    /// UI-side naming for the Core transformations. The math lives in
+    /// `ClipTransformations`; this enum only maps menu titles and DEBUG
+    /// automation names onto it.
+    private enum ClipCopyTransform: String, CaseIterable {
+        case plainText = "plain"
+        case cleanedLinks = "cleaned-links"
+        case normalizedWhitespace = "normalized-whitespace"
+        case strippedFormatting = "stripped-formatting"
+
+        var menuTitle: String {
+            switch self {
+            case .plainText:
+                return "Plain Text"
+            case .cleanedLinks:
+                return "Cleaned Links"
+            case .normalizedWhitespace:
+                return "Normalized Whitespace"
+            case .strippedFormatting:
+                return "Stripped Formatting"
+            }
+        }
+
+        var statusLabel: String {
+            switch self {
+            case .plainText:
+                return "Copied as plain text"
+            case .cleanedLinks:
+                return "Copied with tracking parameters removed"
+            case .normalizedWhitespace:
+                return "Copied with normalized whitespace"
+            case .strippedFormatting:
+                return "Copied with formatting stripped"
+            }
+        }
+
+        func apply(_ text: String) -> String {
+            switch self {
+            case .plainText:
+                return ClipTransformations.plainText(from: text)
+            case .cleanedLinks:
+                return ClipTransformations.cleanURL(text)
+            case .normalizedWhitespace:
+                return ClipTransformations.normalizeWhitespace(text)
+            case .strippedFormatting:
+                return ClipTransformations.stripFormatting(text)
+            }
+        }
+    }
+
+    /// Plain-text contents backing the current selection, for the
+    /// transformation copies. This Window resolves every selected event
+    /// through the reader; All History only offers clip actions once the
+    /// detail fetch for a SINGLE selection has loaded (no synchronous
+    /// archive reads on the UI thread — contract 3).
+    private func selectedTransformableContents() -> [String] {
+        if scope == .allHistory {
+            guard let result = selectedArchiveResult(),
+                  let event = archiveDetailEvent, event.id == result.id,
+                  let content = archiveDetailContent else {
+                return []
+            }
+            return [content]
+        }
+        return selectedEvents().compactMap { try? reader.content(for: $0) }
+    }
+
+    private func canTransformSelection() -> Bool {
+        if scope == .allHistory {
+            guard let result = selectedArchiveResult() else {
+                return false
+            }
+            return archiveDetailEvent?.id == result.id && archiveDetailContent != nil
+        }
+        return !selectedEvents().isEmpty
+    }
+
+    /// Single-selection guard for Edit Before Copy.
+    private func isSingleTransformableSelection() -> Bool {
+        if scope == .allHistory {
+            return canTransformSelection()
+        }
+        return selectedEvents().count == 1
+    }
+
+    /// The one transformation-copy funnel: transformed text ALWAYS routes
+    /// through the shared no-re-capture plain-text path. Multi-select
+    /// mirrors the plain Copy behavior (blank line between clips) before
+    /// the transformation is applied.
+    private func copyTransformedSelection(_ transform: ClipCopyTransform) {
+        let contents = selectedTransformableContents()
+        guard !contents.isEmpty else {
+            statusLabel.stringValue = "Could not read the selected item"
+            return
+        }
+        let combined = contents.count == 1
+            ? contents[0]
+            : contents.joined(separator: "\n\n")
+        copyPlainTextToPasteboard(transform.apply(combined))
+        statusLabel.stringValue = transform.statusLabel
+    }
+
+    @objc private func copyAsFromMenu(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let transform = ClipCopyTransform(rawValue: raw) else {
+            return
+        }
+        copyTransformedSelection(transform)
+    }
+
+    /// Joins the selected clips (This Window, 2+) with a standard separator
+    /// through the shared no-re-capture plain-text path.
+    private func joinSelected(_ separator: ClipTransformations.JoinSeparator) {
+        guard scope == .thisWindow else {
+            return
+        }
+        let contents = selectedEvents().compactMap { try? reader.content(for: $0) }
+        guard contents.count >= 2 else {
+            statusLabel.stringValue = "Select at least two clips to join"
+            return
+        }
+        copyPlainTextToPasteboard(ClipTransformations.join(contents, separator: separator))
+        statusLabel.stringValue = "Joined \(contents.count) clips to the clipboard"
+    }
+
+    @objc private func joinSelectedFromMenu(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let separator = ClipTransformations.JoinSeparator(rawValue: raw) else {
+            return
+        }
+        joinSelected(separator)
+    }
+
+    @objc private func editBeforeCopyFromMenu() {
+        presentEditBeforeCopySheet()
+    }
+
+    // MARK: - Edit before copy (Slice 7)
+
+    /// Sheet with an editable copy of the clip. The edited text is COPIED
+    /// through the shared no-re-capture plain-text path and NEVER written
+    /// back to the archive: the archive is immutable history (append +
+    /// tombstone redaction only), so no code path here rewrites an event
+    /// line or body file.
+    private func presentEditBeforeCopySheet() {
+        guard editSheet == nil,
+              let window,
+              isSingleTransformableSelection(),
+              let content = selectedTransformableContents().first else {
+            return
+        }
+        let sheet = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 400),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        sheet.title = "Edit Before Copy"
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 10
+        stack.edgeInsets = NSEdgeInsets(top: 18, left: 20, bottom: 16, right: 20)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let title = NSTextField(labelWithString: "Edit Before Copy")
+        title.font = .systemFont(ofSize: 15, weight: .semibold)
+        let subtitle = NSTextField(
+            labelWithString: "Edits are copied, not saved to history."
+        )
+        subtitle.font = .systemFont(ofSize: 11)
+        subtitle.textColor = .secondaryLabelColor
+        stack.addArrangedSubview(title)
+        stack.addArrangedSubview(subtitle)
+
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        let textView = NSTextView()
+        textView.isEditable = true
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.allowsUndo = true
+        textView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        textView.string = content
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainerInset = NSSize(width: 4, height: 6)
+        textView.frame = scroll.contentView.bounds
+        scroll.documentView = textView
+        stack.addArrangedSubview(scroll)
+        scroll.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40).isActive = true
+        scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 240).isActive = true
+
+        let cancelButton = NSButton(
+            title: "Cancel",
+            target: self,
+            action: #selector(editSheetCancelClicked)
+        )
+        cancelButton.bezelStyle = .rounded
+        cancelButton.keyEquivalent = "\u{1b}"
+        // ⌘↩ commits (plain Return stays with the text view for newlines).
+        let copyButton = NSButton(
+            title: "Copy",
+            target: self,
+            action: #selector(editSheetCopyClicked)
+        )
+        copyButton.bezelStyle = .rounded
+        copyButton.keyEquivalent = "\r"
+        copyButton.keyEquivalentModifierMask = [.command]
+        copyButton.toolTip = "Copy the edited text (⌘↩)"
+        let buttonRow = NSStackView()
+        buttonRow.orientation = .horizontal
+        buttonRow.alignment = .centerY
+        buttonRow.spacing = 8
+        buttonRow.addArrangedSubview(NSView())
+        buttonRow.addArrangedSubview(cancelButton)
+        buttonRow.addArrangedSubview(copyButton)
+        stack.addArrangedSubview(buttonRow)
+        buttonRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40).isActive = true
+
+        let contentView = NSView()
+        contentView.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: contentView.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
+        ])
+        sheet.contentView = contentView
+
+        editSheet = sheet
+        editSheetTextView = textView
+        editSheetCopyButton = copyButton
+        window.beginSheet(sheet)
+        sheet.makeFirstResponder(textView)
+    }
+
+    @objc private func editSheetCopyClicked() {
+        let text = editSheetTextView?.string ?? ""
+        // Shared no-re-capture path; the archive is never touched.
+        copyPlainTextToPasteboard(text)
+        statusLabel.stringValue = "Edited copy placed on the clipboard"
+        closeEditSheet()
+    }
+
+    @objc private func editSheetCancelClicked() {
+        closeEditSheet()
+    }
+
+    private func closeEditSheet() {
+        if let editSheet {
+            window?.endSheet(editSheet)
+        }
+        editSheet = nil
+        editSheetTextView = nil
+        editSheetCopyButton = nil
+    }
+
     @objc private func deleteSelected() {
         // Deletion stays a This Window operation; archive-wide deletion
         // lives in the Bulk Cleanup sheet.
@@ -2484,6 +2778,53 @@ final class ClipboardPanelController: NSWindowController,
         )
         copyItem.target = self
         menu.addItem(copyItem)
+
+        // Clip actions (Slice 7): Copy As, Join Selected, Edit Before Copy.
+        // Every one of these copies through the shared no-re-capture
+        // plain-text path; none of them ever writes back into the archive.
+        if canTransformSelection() {
+            let copyAs = NSMenuItem(title: "Copy As", action: nil, keyEquivalent: "")
+            let copyAsSubmenu = NSMenu()
+            for transform in ClipCopyTransform.allCases {
+                let item = NSMenuItem(
+                    title: transform.menuTitle,
+                    action: #selector(copyAsFromMenu(_:)),
+                    keyEquivalent: ""
+                )
+                item.target = self
+                item.representedObject = transform.rawValue
+                copyAsSubmenu.addItem(item)
+            }
+            copyAs.submenu = copyAsSubmenu
+            menu.addItem(copyAs)
+
+            if scope == .thisWindow, selectedEvents().count >= 2 {
+                let join = NSMenuItem(title: "Join Selected", action: nil, keyEquivalent: "")
+                let joinSubmenu = NSMenu()
+                for separator in ClipTransformations.JoinSeparator.allCases {
+                    let item = NSMenuItem(
+                        title: separator.displayName,
+                        action: #selector(joinSelectedFromMenu(_:)),
+                        keyEquivalent: ""
+                    )
+                    item.target = self
+                    item.representedObject = separator.rawValue
+                    joinSubmenu.addItem(item)
+                }
+                join.submenu = joinSubmenu
+                menu.addItem(join)
+            }
+
+            if isSingleTransformableSelection() {
+                let edit = NSMenuItem(
+                    title: "Edit Before Copy…",
+                    action: #selector(editBeforeCopyFromMenu),
+                    keyEquivalent: ""
+                )
+                edit.target = self
+                menu.addItem(edit)
+            }
+        }
 
         let hashes = selectedContentHashes()
         if !hashes.isEmpty {

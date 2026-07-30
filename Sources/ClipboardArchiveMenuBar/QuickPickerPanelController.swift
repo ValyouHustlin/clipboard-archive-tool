@@ -10,6 +10,7 @@ import Foundation
 /// land in the right place.
 final class QuickPickerPanel: NSPanel {
     var onCommandReturn: (() -> Void)?
+    var onOptionReturn: (() -> Void)?
 
     override var canBecomeKey: Bool {
         true
@@ -21,12 +22,21 @@ final class QuickPickerPanel: NSPanel {
 
     /// ⌘↩ is a key equivalent, so it never reaches the field editor's
     /// `doCommandBy` routing — intercept it here (design: commit with
-    /// direct paste).
+    /// direct paste). ⌥↩ (Slice 7: commit as plain text) is intercepted
+    /// the same way; the field editor's `insertNewlineIgnoringFieldEditor`
+    /// route in the controller backs it up when AppKit delivers ⌥↩ to the
+    /// field editor instead.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if event.keyCode == 36,
-           event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command {
-            onCommandReturn?()
-            return true
+        if event.keyCode == 36 {
+            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if modifiers == .command {
+                onCommandReturn?()
+                return true
+            }
+            if modifiers == .option {
+                onOptionReturn?()
+                return true
+            }
         }
         return super.performKeyEquivalent(with: event)
     }
@@ -69,6 +79,11 @@ final class QuickPickerPanelController: NSObject,
         /// Shared no-re-capture copy path. Returns the copied content on
         /// success, nil on failure (event body unreadable).
         var copyToPasteboard: (StoredClipboardEvent) -> String?
+        /// Plain-text variant of the shared no-re-capture copy path
+        /// (Slice 7, ⌥↩): copies the stored plain fallback instead of the
+        /// original rich representations. Returns the copied content, nil
+        /// on failure.
+        var copyPlainTextToPasteboard: (StoredClipboardEvent) -> String?
         /// Commit-time snippet resolution: newest live occurrence →
         /// content → shared no-re-capture copy path. Returns the copied
         /// content, or nil when no live occurrence remains.
@@ -129,6 +144,9 @@ final class QuickPickerPanelController: NSObject,
         panel.isOpaque = false
         panel.onCommandReturn = { [weak self] in
             self?.commit(directPaste: true)
+        }
+        panel.onOptionReturn = { [weak self] in
+            self?.commit(directPaste: false, asPlainText: true)
         }
         buildUI()
 
@@ -203,10 +221,18 @@ final class QuickPickerPanelController: NSObject,
         panel.setFrameOrigin(NSPoint(x: x, y: max(visible.minY, y)))
     }
 
+    /// Footer hint. The ⌥↩ plain-text hint appears only when it applies —
+    /// the selected clip carries a rich representation (Slice 7).
     private func updateHint() {
-        hintLabel.stringValue = dependencies.directPasteAllowed()
-            ? "↩ copy   ⌘↩ paste   esc close"
-            : "↩ copy   esc close"
+        var hints = ["↩ copy"]
+        if case let .event(event)? = selectedRow, event.richContent != nil {
+            hints.append("⌥↩ plain text")
+        }
+        if dependencies.directPasteAllowed() {
+            hints.append("⌘↩ paste")
+        }
+        hints.append("esc close")
+        hintLabel.stringValue = hints.joined(separator: "   ")
     }
 
     // MARK: - Filtering and selection
@@ -316,12 +342,19 @@ final class QuickPickerPanelController: NSObject,
     ///
     /// Snippet rows resolve AT COMMIT TIME (newest live occurrence →
     /// content → shared no-re-capture copy path).
-    private func commit(directPaste: Bool) {
+    ///
+    /// `asPlainText` (Slice 7, ⌥↩) commits an event's stored plain-text
+    /// fallback instead of its rich representations — same shared
+    /// no-re-capture path, plain variant. Snippets are already plain, so
+    /// the flag is a no-op for them.
+    private func commit(directPaste: Bool, asPlainText: Bool = false) {
         let content: String?
         switch selectedRow {
         case let .event(event):
             isCommitting = true
-            content = dependencies.copyToPasteboard(event)
+            content = asPlainText
+                ? dependencies.copyPlainTextToPasteboard(event)
+                : dependencies.copyToPasteboard(event)
             if content == nil {
                 isCommitting = false
                 statusLabel.stringValue = "Could not copy that item"
@@ -370,6 +403,11 @@ final class QuickPickerPanelController: NSObject,
             return true
         case #selector(NSResponder.insertNewline(_:)):
             commit(directPaste: false)
+            return true
+        case #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)):
+            // ⌥↩ arriving through the field editor (Slice 7): commit the
+            // selection as plain text.
+            commit(directPaste: false, asPlainText: true)
             return true
         case #selector(NSResponder.cancelOperation(_:)):
             dismiss()
@@ -542,6 +580,8 @@ final class QuickPickerPanelController: NSObject,
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         rememberSelection()
+        // The ⌥↩ plain-text hint is selection-dependent (rich clips only).
+        updateHint()
     }
 
     // MARK: - UI construction
@@ -662,6 +702,11 @@ final class QuickPickerPanelController: NSObject,
         filteredEvents.count
     }
 
+    /// Footer hint text (Slice 7 receipt: ⌥↩ appears for rich selections).
+    var automationHintText: String {
+        hintLabel.stringValue
+    }
+
     func performAutomationQuery(_ query: String) {
         searchField.stringValue = query
         applyFilter()
@@ -677,6 +722,9 @@ final class QuickPickerPanelController: NSObject,
             moveSelection(by: -1)
         case "return":
             commit(directPaste: false)
+        case "option-return":
+            // Slice 7: commit as plain text through the production handler.
+            commit(directPaste: false, asPlainText: true)
         case "escape":
             dismiss()
         default:
