@@ -47,12 +47,16 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         fatalError("init(coder:) has not been implemented")
     }
 
-    func show(settings: ClipboardSettings) {
+    func show(settings: ClipboardSettings, activate: Bool = true) {
         self.settings = settings
         loadSettingsIntoControls()
         window?.center()
-        window?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        if activate {
+            window?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        } else {
+            window?.orderFrontRegardless()
+        }
     }
 
 #if DEBUG

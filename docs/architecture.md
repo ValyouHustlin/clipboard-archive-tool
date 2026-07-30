@@ -36,10 +36,11 @@ redaction, pruning, health reporting, settings, and the derived index.
 pause/storage controls, recent-history UI, settings, and the single-instance
 file lock.
 
-The primary UI is a native AppKit split-view window. Its left pane loads recent
-event metadata and filters it in memory; its right pane reads full content only
-for the selected event. Search from the menu focuses this same window instead
-of creating a separate modal result flow.
+The primary UI is a native AppKit split-view window. Its sidebar owns search,
+recent event metadata, and clip count; its detail surface reads full content
+only for the selected event and sizes the preview card from content metadata.
+Search from the menu focuses this same window instead of creating a separate
+modal result flow.
 
 `clipboard-archive` exposes local maintenance and retrieval commands.
 

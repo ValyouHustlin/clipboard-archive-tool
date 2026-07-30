@@ -328,6 +328,14 @@ intrinsic width and an overemphasized onboarding privacy panel—which were fixe
 before the final verification run. A debug search gesture filters the same
 synthetic history list used by the normal window.
 
+Owner review then rejected the first split-view composition as visually
+unbalanced. A second isolated pass moved search/count into a real sidebar,
+left-aligned clip rows, attached actions to the selection header, made preview
+height content-aware, and reset the saved window geometry for the new layout.
+The snapshot harness was also changed to render without app activation; a live
+check observed the same foreground application before and after both normal and
+filtered synthetic renders.
+
 An isolated debug app used separate synthetic archive, index, settings, and
 lock roots. The onboarding window was rendered to a debug-only AppKit snapshot
 and visually inspected. A debug-only `NSButton.performClick` selected

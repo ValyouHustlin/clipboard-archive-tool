@@ -31,10 +31,14 @@ final class ClipboardOnboardingWindowController: NSWindowController {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func show() {
+    func show(activate: Bool = true) {
         window?.center()
-        window?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        if activate {
+            window?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        } else {
+            window?.orderFrontRegardless()
+        }
     }
 
 #if DEBUG

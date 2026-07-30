@@ -5,6 +5,10 @@
 - Rebuilt the seven-day history window as a searchable split view with rich
   source/type/time rows, a readable full-content detail pane, multi-selection,
   and clearer copy/delete feedback.
+- Rebalanced the history layout after daily-use review: search and clip status
+  now live in a true sidebar, rows align consistently, actions stay with the
+  selected clip, and preview height adapts to the amount of content instead of
+  reserving a large empty pane.
 - Simplified the menu-bar menu to five recent clips and direct History, Search,
   Pause, and Settings actions; moved occasional controls under Maintenance.
 - Reworked first-run setup around a clear local-privacy explanation and three
@@ -13,6 +17,8 @@
   sections.
 - Added a debug-only, `/tmp`-guarded synthetic UI fixture and snapshot path so
   the app can be visually tested without opening a real clipboard archive.
+- Kept synthetic UI snapshots from activating the debug app or stealing
+  keyboard focus from the current foreground application.
 - Recorded the owner direction: polished personal utility and open-source
   download, not a paid-product push.
 

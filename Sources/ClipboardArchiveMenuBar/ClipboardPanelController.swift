@@ -21,8 +21,12 @@ final class ClipboardPanelController: NSWindowController,
     private let detailTitle = NSTextField(labelWithString: "Select an item")
     private let detailMetadata = NSTextField(labelWithString: "Choose a clip to preview its full text.")
     private let detailTextView = NSTextView()
+    private let detailCapturedValue = NSTextField(labelWithString: "—")
+    private let detailFormatValue = NSTextField(labelWithString: "—")
+    private let detailSizeValue = NSTextField(labelWithString: "—")
     private let copyButton = NSButton(title: "Copy", target: nil, action: nil)
     private let deleteButton = NSButton(title: "Delete", target: nil, action: nil)
+    private var detailCardHeightConstraint: NSLayoutConstraint?
 
     init(archiveRoot: URL, pasteboard: NSPasteboard, recentItemLimit: Int) {
         self.archiveRoot = archiveRoot
@@ -32,14 +36,15 @@ final class ClipboardPanelController: NSWindowController,
         self.recentItemLimit = recentItemLimit
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 980, height: 620),
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 520),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "Clipboard History"
-        window.minSize = NSSize(width: 760, height: 480)
-        window.setFrameAutosaveName("ClipboardHistoryWindow")
+        window.minSize = NSSize(width: 720, height: 440)
+        window.center()
+        window.setFrameAutosaveName("ClipboardHistoryWindowV2")
         super.init(window: window)
         buildUI()
         reload()
@@ -49,15 +54,39 @@ final class ClipboardPanelController: NSWindowController,
         fatalError("init(coder:) has not been implemented")
     }
 
-    func show(recentItemLimit: Int, focusSearch: Bool = false) {
+    func show(
+        recentItemLimit: Int,
+        focusSearch: Bool = false,
+        activate: Bool = true
+    ) {
         self.recentItemLimit = recentItemLimit
         reload()
-        window?.center()
-        window?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        if focusSearch {
+        if activate {
+            window?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        } else {
+            window?.orderFrontRegardless()
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.resizeTableToViewport()
+        }
+        if focusSearch, activate {
             window?.makeFirstResponder(searchField)
         }
+    }
+
+    private func resizeTableToViewport() {
+        guard let scrollView = tableView.enclosingScrollView,
+              let column = tableView.tableColumns.first else {
+            return
+        }
+        scrollView.layoutSubtreeIfNeeded()
+        let availableWidth = max(1, scrollView.contentSize.width)
+        tableView.setFrameSize(
+            NSSize(width: availableWidth, height: tableView.frame.height)
+        )
+        column.width = availableWidth
+        tableView.needsDisplay = true
     }
 
 #if DEBUG
@@ -87,93 +116,125 @@ final class ClipboardPanelController: NSWindowController,
             return
         }
 
-        let root = NSStackView()
-        root.orientation = .vertical
-        root.alignment = .width
-        root.spacing = 14
-        root.edgeInsets = NSEdgeInsets(top: 18, left: 18, bottom: 14, right: 18)
-        root.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(root)
-        NSLayoutConstraint.activate([
-            root.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            root.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            root.topAnchor.constraint(equalTo: contentView.topAnchor),
-            root.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
-        ])
-
-        let header = NSStackView()
-        header.orientation = .horizontal
-        header.alignment = .centerY
-        header.spacing = 16
-
-        let headings = NSStackView()
-        headings.orientation = .vertical
-        headings.spacing = 2
-        let title = NSTextField(labelWithString: "Clipboard History")
-        title.font = .systemFont(ofSize: 24, weight: .semibold)
-        let subtitle = NSTextField(labelWithString: "Your last 7 days, stored locally on this Mac")
-        subtitle.font = .systemFont(ofSize: 12)
-        subtitle.textColor = .secondaryLabelColor
-        headings.addArrangedSubview(title)
-        headings.addArrangedSubview(subtitle)
-
-        searchField.placeholderString = "Search recent clips"
-        searchField.delegate = self
-        searchField.sendsSearchStringImmediately = true
-        searchField.widthAnchor.constraint(equalToConstant: 300).isActive = true
-
-        header.addArrangedSubview(headings)
-        header.addArrangedSubview(NSView())
-        header.addArrangedSubview(searchField)
-        root.addArrangedSubview(header)
-
         let splitView = NSSplitView()
         splitView.isVertical = true
         splitView.dividerStyle = .thin
         splitView.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(splitView)
+        NSLayoutConstraint.activate([
+            splitView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            splitView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            splitView.topAnchor.constraint(equalTo: contentView.topAnchor),
+            splitView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
+        ])
 
-        let listPane = NSView()
+        let listPane = NSVisualEffectView()
+        listPane.material = .sidebar
+        listPane.blendingMode = .behindWindow
+        listPane.state = .active
         listPane.translatesAutoresizingMaskIntoConstraints = false
+
+        let listStack = NSStackView()
+        listStack.orientation = .vertical
+        listStack.alignment = .leading
+        listStack.spacing = 12
+        listStack.edgeInsets = NSEdgeInsets(top: 18, left: 14, bottom: 12, right: 14)
+        listStack.translatesAutoresizingMaskIntoConstraints = false
+        listPane.addSubview(listStack)
+        NSLayoutConstraint.activate([
+            listStack.leadingAnchor.constraint(equalTo: listPane.leadingAnchor),
+            listStack.trailingAnchor.constraint(equalTo: listPane.trailingAnchor),
+            listStack.topAnchor.constraint(equalTo: listPane.topAnchor),
+            listStack.bottomAnchor.constraint(equalTo: listPane.bottomAnchor),
+            listPane.widthAnchor.constraint(greaterThanOrEqualToConstant: 290)
+        ])
+        let preferredSidebarWidth = listPane.widthAnchor.constraint(equalToConstant: 340)
+        preferredSidebarWidth.priority = .defaultHigh
+        preferredSidebarWidth.isActive = true
+
+        let listHeading = NSStackView()
+        listHeading.orientation = .vertical
+        listHeading.alignment = .leading
+        listHeading.spacing = 2
+        let title = NSTextField(labelWithString: "History")
+        title.font = .systemFont(ofSize: 19, weight: .semibold)
+        let subtitle = NSTextField(labelWithString: "Last 7 days · local to this Mac")
+        subtitle.font = .systemFont(ofSize: 11)
+        subtitle.textColor = .secondaryLabelColor
+        listHeading.addArrangedSubview(title)
+        listHeading.addArrangedSubview(subtitle)
+        listStack.addArrangedSubview(listHeading)
+        listHeading.widthAnchor.constraint(
+            equalTo: listStack.widthAnchor,
+            constant: -28
+        ).isActive = true
+
+        searchField.placeholderString = "Search clips"
+        searchField.delegate = self
+        searchField.sendsSearchStringImmediately = true
+        listStack.addArrangedSubview(searchField)
+        searchField.widthAnchor.constraint(
+            equalTo: listStack.widthAnchor,
+            constant: -28
+        ).isActive = true
+
         let listScroll = NSScrollView()
         listScroll.hasVerticalScroller = true
         listScroll.drawsBackground = false
-        listScroll.translatesAutoresizingMaskIntoConstraints = false
-        listPane.addSubview(listScroll)
-        NSLayoutConstraint.activate([
-            listScroll.leadingAnchor.constraint(equalTo: listPane.leadingAnchor),
-            listScroll.trailingAnchor.constraint(equalTo: listPane.trailingAnchor),
-            listScroll.topAnchor.constraint(equalTo: listPane.topAnchor),
-            listScroll.bottomAnchor.constraint(equalTo: listPane.bottomAnchor),
-            listPane.widthAnchor.constraint(greaterThanOrEqualToConstant: 350)
-        ])
+        listStack.addArrangedSubview(listScroll)
+        listScroll.widthAnchor.constraint(
+            equalTo: listStack.widthAnchor,
+            constant: -28
+        ).isActive = true
 
         tableView.headerView = nil
         tableView.allowsMultipleSelection = true
         tableView.allowsEmptySelection = true
-        tableView.rowHeight = 70
-        tableView.intercellSpacing = NSSize(width: 0, height: 2)
+        tableView.rowHeight = 58
+        tableView.intercellSpacing = NSSize(width: 0, height: 1)
         tableView.backgroundColor = .clear
+        tableView.selectionHighlightStyle = .regular
         tableView.dataSource = self
         tableView.delegate = self
         tableView.target = self
         tableView.doubleAction = #selector(copySelected)
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("clipboard"))
         column.resizingMask = .autoresizingMask
+        column.width = 312
         tableView.addTableColumn(column)
+        tableView.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         tableView.frame = listScroll.contentView.bounds
         tableView.autoresizingMask = [.width]
         listScroll.documentView = tableView
 
-        let detailPane = NSVisualEffectView()
-        detailPane.material = .contentBackground
-        detailPane.blendingMode = .withinWindow
-        detailPane.state = .active
+        let listFooter = NSStackView()
+        listFooter.orientation = .horizontal
+        listFooter.alignment = .centerY
+        listFooter.spacing = 8
+        statusLabel.font = .systemFont(ofSize: 11)
+        statusLabel.textColor = .secondaryLabelColor
+        let refreshButton = symbolButton(
+            symbol: "arrow.clockwise",
+            accessibilityLabel: "Refresh history",
+            action: #selector(refresh)
+        )
+        listFooter.addArrangedSubview(statusLabel)
+        listFooter.addArrangedSubview(NSView())
+        listFooter.addArrangedSubview(refreshButton)
+        listStack.addArrangedSubview(listFooter)
+        listFooter.widthAnchor.constraint(
+            equalTo: listStack.widthAnchor,
+            constant: -28
+        ).isActive = true
+
+        let detailPane = NSView()
         detailPane.translatesAutoresizingMaskIntoConstraints = false
 
         let detailStack = NSStackView()
         detailStack.orientation = .vertical
-        detailStack.spacing = 12
-        detailStack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 16, right: 20)
+        detailStack.alignment = .leading
+        detailStack.spacing = 14
+        detailStack.edgeInsets = NSEdgeInsets(top: 22, left: 26, bottom: 20, right: 26)
         detailStack.translatesAutoresizingMaskIntoConstraints = false
         detailPane.addSubview(detailStack)
         NSLayoutConstraint.activate([
@@ -181,16 +242,70 @@ final class ClipboardPanelController: NSWindowController,
             detailStack.trailingAnchor.constraint(equalTo: detailPane.trailingAnchor),
             detailStack.topAnchor.constraint(equalTo: detailPane.topAnchor),
             detailStack.bottomAnchor.constraint(equalTo: detailPane.bottomAnchor),
-            detailPane.widthAnchor.constraint(greaterThanOrEqualToConstant: 360)
+            detailPane.widthAnchor.constraint(greaterThanOrEqualToConstant: 400)
         ])
 
+        let detailHeader = NSStackView()
+        detailHeader.orientation = .horizontal
+        detailHeader.alignment = .top
+        detailHeader.spacing = 14
+
+        let detailHeadings = NSStackView()
+        detailHeadings.orientation = .vertical
+        detailHeadings.alignment = .leading
+        detailHeadings.spacing = 4
         detailTitle.font = .systemFont(ofSize: 18, weight: .semibold)
         detailTitle.lineBreakMode = .byTruncatingTail
         detailMetadata.font = .systemFont(ofSize: 11)
         detailMetadata.textColor = .secondaryLabelColor
         detailMetadata.lineBreakMode = .byTruncatingMiddle
-        detailStack.addArrangedSubview(detailTitle)
-        detailStack.addArrangedSubview(detailMetadata)
+        detailHeadings.addArrangedSubview(detailTitle)
+        detailHeadings.addArrangedSubview(detailMetadata)
+
+        copyButton.target = self
+        copyButton.action = #selector(copySelected)
+        copyButton.keyEquivalent = "\r"
+        copyButton.bezelStyle = .rounded
+        deleteButton.target = self
+        deleteButton.action = #selector(deleteSelected)
+        deleteButton.bezelStyle = .texturedRounded
+        deleteButton.title = ""
+        deleteButton.image = NSImage(
+            systemSymbolName: "trash",
+            accessibilityDescription: "Delete selected clips"
+        )
+        deleteButton.toolTip = "Delete selected clips"
+        deleteButton.setAccessibilityLabel("Delete selected clips")
+
+        let revealButton = symbolButton(
+            symbol: "folder",
+            accessibilityLabel: "Show archive in Finder",
+            action: #selector(openArchive)
+        )
+
+        let actions = NSStackView()
+        actions.orientation = .horizontal
+        actions.spacing = 8
+        actions.alignment = .centerY
+        actions.addArrangedSubview(revealButton)
+        actions.addArrangedSubview(deleteButton)
+        actions.addArrangedSubview(copyButton)
+
+        detailHeader.addArrangedSubview(detailHeadings)
+        detailHeader.addArrangedSubview(NSView())
+        detailHeader.addArrangedSubview(actions)
+        detailStack.addArrangedSubview(detailHeader)
+        detailHeader.widthAnchor.constraint(
+            equalTo: detailStack.widthAnchor,
+            constant: -52
+        ).isActive = true
+        detailHeadings.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let detailSeparator = separatorView()
+        detailStack.addArrangedSubview(detailSeparator)
+        detailSeparator.widthAnchor.constraint(
+            equalTo: detailStack.widthAnchor,
+            constant: -52
+        ).isActive = true
 
         let detailScroll = NSScrollView()
         detailScroll.hasVerticalScroller = true
@@ -199,64 +314,111 @@ final class ClipboardPanelController: NSWindowController,
         detailTextView.isEditable = false
         detailTextView.isSelectable = true
         detailTextView.drawsBackground = false
-        detailTextView.textContainerInset = NSSize(width: 4, height: 8)
-        detailTextView.font = .systemFont(ofSize: 14)
+        detailTextView.textContainerInset = NSSize(width: 0, height: 8)
+        detailTextView.font = .systemFont(ofSize: 15)
         detailTextView.string = ""
+        detailTextView.isVerticallyResizable = true
+        detailTextView.isHorizontallyResizable = false
         detailTextView.autoresizingMask = [.width]
+        detailTextView.textContainer?.widthTracksTextView = true
+        detailTextView.frame = detailScroll.contentView.bounds
         detailScroll.documentView = detailTextView
-        detailStack.addArrangedSubview(detailScroll)
-        detailScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 260).isActive = true
 
-        let actions = NSStackView()
-        actions.orientation = .horizontal
-        actions.spacing = 8
-        actions.alignment = .centerY
+        let contentCard = NSVisualEffectView()
+        contentCard.material = .contentBackground
+        contentCard.blendingMode = .withinWindow
+        contentCard.state = .active
+        contentCard.wantsLayer = true
+        contentCard.layer?.cornerRadius = 10
+        contentCard.layer?.borderWidth = 1
+        contentCard.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.45).cgColor
+        detailScroll.translatesAutoresizingMaskIntoConstraints = false
+        contentCard.addSubview(detailScroll)
+        let detailCardHeight = contentCard.heightAnchor.constraint(equalToConstant: 150)
+        detailCardHeightConstraint = detailCardHeight
+        NSLayoutConstraint.activate([
+            detailScroll.leadingAnchor.constraint(equalTo: contentCard.leadingAnchor, constant: 18),
+            detailScroll.trailingAnchor.constraint(equalTo: contentCard.trailingAnchor, constant: -18),
+            detailScroll.topAnchor.constraint(equalTo: contentCard.topAnchor, constant: 12),
+            detailScroll.bottomAnchor.constraint(equalTo: contentCard.bottomAnchor, constant: -12),
+            detailCardHeight
+        ])
+        detailStack.addArrangedSubview(contentCard)
+        contentCard.widthAnchor.constraint(
+            equalTo: detailStack.widthAnchor,
+            constant: -52
+        ).isActive = true
 
-        copyButton.target = self
-        copyButton.action = #selector(copySelected)
-        copyButton.keyEquivalent = "\r"
-        copyButton.bezelStyle = .rounded
-        deleteButton.target = self
-        deleteButton.action = #selector(deleteSelected)
-        deleteButton.bezelStyle = .rounded
+        let detailsTitle = NSTextField(labelWithString: "Details")
+        detailsTitle.font = .systemFont(ofSize: 12, weight: .semibold)
+        detailsTitle.textColor = .secondaryLabelColor
+        detailStack.addArrangedSubview(detailsTitle)
 
-        let revealButton = NSButton(
-            title: "Show Archive",
-            target: self,
-            action: #selector(openArchive)
+        let details = NSStackView()
+        details.orientation = .horizontal
+        details.distribution = .fillEqually
+        details.alignment = .top
+        details.spacing = 18
+        details.addArrangedSubview(detailFact(title: "Copied", value: detailCapturedValue))
+        details.addArrangedSubview(detailFact(title: "Format", value: detailFormatValue))
+        details.addArrangedSubview(detailFact(title: "Size", value: detailSizeValue))
+        detailStack.addArrangedSubview(details)
+        details.widthAnchor.constraint(
+            equalTo: detailStack.widthAnchor,
+            constant: -52
+        ).isActive = true
+
+        detailStack.addArrangedSubview(NSView())
+        let localNote = NSStackView()
+        localNote.orientation = .horizontal
+        localNote.alignment = .centerY
+        localNote.spacing = 6
+        let lock = NSImageView()
+        lock.image = NSImage(
+            systemSymbolName: "lock.fill",
+            accessibilityDescription: "Stored locally"
         )
-        revealButton.bezelStyle = .rounded
-        actions.addArrangedSubview(copyButton)
-        actions.addArrangedSubview(deleteButton)
-        actions.addArrangedSubview(NSView())
-        actions.addArrangedSubview(revealButton)
-        detailStack.addArrangedSubview(actions)
+        lock.contentTintColor = .tertiaryLabelColor
+        lock.widthAnchor.constraint(equalToConstant: 13).isActive = true
+        lock.heightAnchor.constraint(equalToConstant: 13).isActive = true
+        let localText = NSTextField(labelWithString: "Stored locally on this Mac")
+        localText.font = .systemFont(ofSize: 11)
+        localText.textColor = .tertiaryLabelColor
+        localNote.addArrangedSubview(lock)
+        localNote.addArrangedSubview(localText)
+        localNote.addArrangedSubview(NSView())
+        detailStack.addArrangedSubview(localNote)
+        localNote.widthAnchor.constraint(
+            equalTo: detailStack.widthAnchor,
+            constant: -52
+        ).isActive = true
 
         splitView.addArrangedSubview(listPane)
         splitView.addArrangedSubview(detailPane)
         splitView.setHoldingPriority(.defaultHigh, forSubviewAt: 0)
-        root.addArrangedSubview(splitView)
-        splitView.widthAnchor.constraint(
-            equalTo: contentView.widthAnchor,
-            constant: -36
-        ).isActive = true
-        splitView.heightAnchor.constraint(greaterThanOrEqualToConstant: 390).isActive = true
+    }
 
-        let footer = NSStackView()
-        footer.orientation = .horizontal
-        footer.alignment = .centerY
-        footer.spacing = 8
-        statusLabel.font = .systemFont(ofSize: 11)
-        statusLabel.textColor = .secondaryLabelColor
-        let refreshButton = symbolButton(
-            symbol: "arrow.clockwise",
-            accessibilityLabel: "Refresh history",
-            action: #selector(refresh)
-        )
-        footer.addArrangedSubview(statusLabel)
-        footer.addArrangedSubview(NSView())
-        footer.addArrangedSubview(refreshButton)
-        root.addArrangedSubview(footer)
+    private func detailFact(title: String, value: NSTextField) -> NSView {
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 3
+        let titleLabel = NSTextField(labelWithString: title.uppercased())
+        titleLabel.font = .systemFont(ofSize: 9, weight: .semibold)
+        titleLabel.textColor = .tertiaryLabelColor
+        value.font = .systemFont(ofSize: 12, weight: .medium)
+        value.lineBreakMode = .byTruncatingTail
+        stack.addArrangedSubview(titleLabel)
+        stack.addArrangedSubview(value)
+        return stack
+    }
+
+    private func separatorView() -> NSView {
+        let separator = NSView()
+        separator.wantsLayer = true
+        separator.layer?.backgroundColor = NSColor.separatorColor.cgColor
+        separator.heightAnchor.constraint(equalToConstant: 1).isActive = true
+        return separator
     }
 
     private func symbolButton(
@@ -385,36 +547,37 @@ final class ClipboardPanelController: NSWindowController,
         icon.contentTintColor = .secondaryLabelColor
         icon.translatesAutoresizingMaskIntoConstraints = false
 
-        let textStack = NSStackView()
-        textStack.orientation = .vertical
-        textStack.spacing = 5
-        textStack.translatesAutoresizingMaskIntoConstraints = false
-
         let metadata = NSTextField(
             labelWithString: "\(event.sourceApp.name)  ·  \(relativeDate(event.capturedAt))"
         )
         metadata.font = .systemFont(ofSize: 11, weight: .medium)
         metadata.textColor = .secondaryLabelColor
         metadata.lineBreakMode = .byTruncatingTail
+        metadata.alignment = .left
 
         let preview = NSTextField(labelWithString: singleLine(event.contentPreview))
         preview.font = event.contentType == .code
             ? .monospacedSystemFont(ofSize: 13, weight: .regular)
             : .systemFont(ofSize: 13)
         preview.lineBreakMode = .byTruncatingTail
+        preview.alignment = .left
 
-        textStack.addArrangedSubview(metadata)
-        textStack.addArrangedSubview(preview)
+        metadata.translatesAutoresizingMaskIntoConstraints = false
+        preview.translatesAutoresizingMaskIntoConstraints = false
         cell.addSubview(icon)
-        cell.addSubview(textStack)
+        cell.addSubview(preview)
+        cell.addSubview(metadata)
         NSLayoutConstraint.activate([
             icon.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 10),
             icon.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
             icon.widthAnchor.constraint(equalToConstant: 22),
             icon.heightAnchor.constraint(equalToConstant: 22),
-            textStack.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 10),
-            textStack.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -10),
-            textStack.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
+            preview.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 10),
+            preview.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -10),
+            preview.topAnchor.constraint(equalTo: cell.topAnchor, constant: 11),
+            metadata.leadingAnchor.constraint(equalTo: preview.leadingAnchor),
+            metadata.trailingAnchor.constraint(equalTo: preview.trailingAnchor),
+            metadata.topAnchor.constraint(equalTo: preview.bottomAnchor, constant: 4)
         ])
         return cell
     }
@@ -448,6 +611,10 @@ final class ClipboardPanelController: NSWindowController,
         let selected = selectedEvents()
         copyButton.isEnabled = !selected.isEmpty
         deleteButton.isEnabled = !selected.isEmpty
+        detailCapturedValue.stringValue = "—"
+        detailFormatValue.stringValue = "—"
+        detailSizeValue.stringValue = "—"
+        detailCardHeightConstraint?.constant = 150
 
         guard selected.count == 1, let event = selected.first else {
             if selected.count > 1 {
@@ -465,15 +632,24 @@ final class ClipboardPanelController: NSWindowController,
         }
 
         detailTitle.stringValue = event.sourceApp.name
-        detailMetadata.stringValue = [
-            fullDate(event.capturedAt),
-            event.contentType.rawValue.capitalized,
-            ByteCountFormatter.string(fromByteCount: Int64(event.byteCount), countStyle: .file)
-        ].joined(separator: "  ·  ")
+        detailMetadata.stringValue = "Copied \(relativeDate(event.capturedAt))"
+        detailCapturedValue.stringValue = fullDate(event.capturedAt)
+        detailFormatValue.stringValue = event.contentType.rawValue.capitalized
+        detailSizeValue.stringValue = ByteCountFormatter.string(
+            fromByteCount: Int64(event.byteCount),
+            countStyle: .file
+        )
+        detailCardHeightConstraint?.constant = preferredDetailCardHeight(for: event)
         detailTextView.font = event.contentType == .code
             ? .monospacedSystemFont(ofSize: 13, weight: .regular)
-            : .systemFont(ofSize: 14)
+            : .systemFont(ofSize: 15)
         detailTextView.string = (try? reader.content(for: event)) ?? event.contentPreview
+    }
+
+    private func preferredDetailCardHeight(for event: StoredClipboardEvent) -> CGFloat {
+        let wrappedLineEstimate = Int(ceil(Double(event.characterCount) / 64.0))
+        let visibleLines = max(event.lineCount, wrappedLineEstimate)
+        return min(220, max(112, CGFloat(68 + min(visibleLines, 7) * 22)))
     }
 
     private func symbolName(for contentType: ClipboardContentType) -> String {

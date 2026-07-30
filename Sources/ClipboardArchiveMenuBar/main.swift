@@ -182,14 +182,14 @@ final class ClipboardMenuBarApp: NSObject,
     }
 
     @objc private func openClipboardWindow() {
-        showClipboardWindow(focusSearch: false)
+        showClipboardWindow(focusSearch: false, activate: true)
     }
 
     @objc private func openClipboardSearch() {
-        showClipboardWindow(focusSearch: true)
+        showClipboardWindow(focusSearch: true, activate: true)
     }
 
-    private func showClipboardWindow(focusSearch: Bool) {
+    private func showClipboardWindow(focusSearch: Bool, activate: Bool) {
         if panelController == nil {
             panelController = ClipboardPanelController(
                 archiveRoot: archiveRoot,
@@ -199,11 +199,16 @@ final class ClipboardMenuBarApp: NSObject,
         }
         panelController?.show(
             recentItemLimit: settings.recentItemLimit,
-            focusSearch: focusSearch
+            focusSearch: focusSearch,
+            activate: activate
         )
     }
 
     @objc private func showPreferences() {
+        showSettingsWindow(activate: true)
+    }
+
+    private func showSettingsWindow(activate: Bool) {
         if settingsWindowController == nil {
             let controller = ClipboardSettingsWindowController(
                 settings: settings,
@@ -213,7 +218,7 @@ final class ClipboardMenuBarApp: NSObject,
             controller.delegate = self
             settingsWindowController = controller
         }
-        settingsWindowController?.show(settings: settings)
+        settingsWindowController?.show(settings: settings, activate: activate)
     }
 
     func clipboardSettingsWindow(_ controller: ClipboardSettingsWindowController, didSave settings: ClipboardSettings) {
@@ -230,13 +235,13 @@ final class ClipboardMenuBarApp: NSObject,
         rebuildMenu()
     }
 
-    private func showOnboarding() {
+    private func showOnboarding(activate: Bool = true) {
         if onboardingWindowController == nil {
             let controller = ClipboardOnboardingWindowController(archiveRoot: archiveRoot)
             controller.delegate = self
             onboardingWindowController = controller
         }
-        onboardingWindowController?.show()
+        onboardingWindowController?.show(activate: activate)
 #if DEBUG
         if let choice = ProcessInfo.processInfo.environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_CHOICE"],
            !choice.isEmpty {
@@ -281,14 +286,14 @@ final class ClipboardMenuBarApp: NSObject,
             try settingsStore.save(settings)
             if screen == "history" {
                 try seedSyntheticUIFixtures()
-                showClipboardWindow(focusSearch: false)
-                if let query = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_QUERY"] {
-                    panelController?.performAutomationSearch(query)
-                }
+                showClipboardWindow(focusSearch: false, activate: false)
+                panelController?.performAutomationSearch(
+                    environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_QUERY"] ?? ""
+                )
             } else if screen == "settings" {
-                showPreferences()
+                showSettingsWindow(activate: false)
             } else if screen == "onboarding" {
-                showOnboarding()
+                showOnboarding(activate: false)
             } else {
                 throw NSError(
                     domain: "ClipboardArchiveUIAutomation",
@@ -337,7 +342,7 @@ final class ClipboardMenuBarApp: NSObject,
             ),
             (
                 47,
-                "struct ClipRow {\\n    let title: String\\n    let copiedAt: Date\\n}",
+                "struct ClipRow {\n    let title: String\n    let copiedAt: Date\n}",
                 ClipboardSourceApp(name: "Xcode", bundleIdentifier: "com.apple.dt.Xcode")
             ),
             (
