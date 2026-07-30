@@ -101,6 +101,10 @@ contracts; changes to a contract require a lead decision recorded here.
   (ledger ids + `privacyLabel == .doNotIndex`) becomes the ONE gate used by
   reader, searcher, index rebuild, pruner, and every new read path. No third
   suppression mechanism may be added.
+- `PrivacyLabel.restricted` currently has no reader semantics and is outside
+  the suppression gate. Any slice that starts assigning it (manual
+  sensitivity, Slice 5) MUST simultaneously define and test its read/index
+  behavior — never tag events `.restricted` and assume they hide.
 - The deletion ledger stays append-only; bulk operations write one ledger
   record per event with a machine-readable `reason` (`bulk-<criterion>`).
 
