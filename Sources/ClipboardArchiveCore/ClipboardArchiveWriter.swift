@@ -58,10 +58,12 @@ public struct ClipboardArchiveWriter: Sendable {
             privacyLabel: .privateLocal,
             allowedUse: [.localSearch, .localAnalysis],
             sensitivityFlags: [],
-            uiVisibleUntil: uiVisibleUntil
+            uiVisibleUntil: uiVisibleUntil,
+            schemaVersion: StoredClipboardEvent.currentSchemaVersion
         )
 
         try appendJSONLine(event, to: dailyEventsURL(for: capture.capturedAt))
+        try ensureArchiveFormatMarker()
         return event
     }
 
@@ -72,6 +74,20 @@ public struct ClipboardArchiveWriter: Sendable {
             sourceApp: capture.sourceApp
         )
         try appendJSONLine(event, to: dailyEventsURL(for: capture.capturedAt))
+        try ensureArchiveFormatMarker()
+    }
+
+    /// Writes `<archiveRoot>/archive-format.json` after the first successful
+    /// archive write if it does not already exist. Never rewrites an existing
+    /// marker; absence of the file means format 1 (expansion contract 1).
+    private func ensureArchiveFormatMarker() throws {
+        let markerURL = archiveRoot.appendingPathComponent("archive-format.json")
+        guard !FileManager.default.fileExists(atPath: markerURL.path) else {
+            return
+        }
+        let marker = Data("{\"archiveFormatVersion\":1,\"minReader\":1}\n".utf8)
+        try marker.write(to: markerURL, options: [.atomic])
+        try ClipboardPrivateFileSystem.secureFile(markerURL)
     }
 
     private func dailyEventsURL(for date: Date) -> URL {

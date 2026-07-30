@@ -741,6 +741,8 @@ final class ClipboardPanelController: NSWindowController,
             return "hand.raised.fill"
         case .text:
             return "doc.text"
+        case .other:
+            return "questionmark.square.dashed"
         }
     }
 

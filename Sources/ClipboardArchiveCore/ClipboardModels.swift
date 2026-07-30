@@ -1,10 +1,54 @@
 import Foundation
 
-public enum ClipboardContentType: String, Codable, Sendable {
+/// Tolerant content type: known values decode to their named case, unknown
+/// raw values decode losslessly to `.other(rawValue)` and re-encode as the
+/// original string. This keeps older readers able to decode newer archives.
+public enum ClipboardContentType: Codable, Equatable, Hashable, Sendable {
     case text
     case url
     case code
     case blocked
+    case other(String)
+
+    public init(rawValue: String) {
+        switch rawValue {
+        case "text":
+            self = .text
+        case "url":
+            self = .url
+        case "code":
+            self = .code
+        case "blocked":
+            self = .blocked
+        default:
+            self = .other(rawValue)
+        }
+    }
+
+    public var rawValue: String {
+        switch self {
+        case .text:
+            return "text"
+        case .url:
+            return "url"
+        case .code:
+            return "code"
+        case .blocked:
+            return "blocked"
+        case let .other(raw):
+            return raw
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        self.init(rawValue: try container.decode(String.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 }
 
 public enum PrivacyLabel: String, Codable, Sendable {
@@ -51,6 +95,12 @@ public struct ClipboardCapture: Equatable, Sendable {
 }
 
 public struct StoredClipboardEvent: Codable, Equatable, Sendable {
+    /// Bump only for semantic changes to the event schema. Fields added after
+    /// version 1 must decode with `decodeIfPresent` and a safe default; no new
+    /// required fields, ever, within the NDJSON format (expansion contract 1).
+    public static let currentSchemaVersion = 1
+
+    public var schemaVersion: Int
     public var id: String
     public var capturedAt: Date
     public var contentType: ClipboardContentType
@@ -84,8 +134,10 @@ public struct StoredClipboardEvent: Codable, Equatable, Sendable {
         privacyLabel: PrivacyLabel,
         allowedUse: [AllowedUse],
         sensitivityFlags: [String],
-        uiVisibleUntil: Date
+        uiVisibleUntil: Date,
+        schemaVersion: Int = StoredClipboardEvent.currentSchemaVersion
     ) {
+        self.schemaVersion = schemaVersion
         self.id = id
         self.capturedAt = capturedAt
         self.contentType = contentType
@@ -102,6 +154,51 @@ public struct StoredClipboardEvent: Codable, Equatable, Sendable {
         self.allowedUse = allowedUse
         self.sensitivityFlags = sensitivityFlags
         self.uiVisibleUntil = uiVisibleUntil
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case id
+        case capturedAt
+        case contentType
+        case contentHash
+        case contentPreview
+        case contentInline
+        case rawContentPath
+        case sourceApp
+        case pasteboardTypes
+        case byteCount
+        case characterCount
+        case lineCount
+        case privacyLabel
+        case allowedUse
+        case sensitivityFlags
+        case uiVisibleUntil
+    }
+
+    /// Tolerant decoder (expansion contract 1). Every archive line written
+    /// before schema versioning existed is version 1 by definition, so a
+    /// missing `schemaVersion` decodes as 1. Fields added after version 1
+    /// must use `decodeIfPresent` with a safe default.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        id = try container.decode(String.self, forKey: .id)
+        capturedAt = try container.decode(Date.self, forKey: .capturedAt)
+        contentType = try container.decode(ClipboardContentType.self, forKey: .contentType)
+        contentHash = try container.decode(String.self, forKey: .contentHash)
+        contentPreview = try container.decode(String.self, forKey: .contentPreview)
+        contentInline = try container.decodeIfPresent(String.self, forKey: .contentInline)
+        rawContentPath = try container.decodeIfPresent(String.self, forKey: .rawContentPath)
+        sourceApp = try container.decode(ClipboardSourceApp.self, forKey: .sourceApp)
+        pasteboardTypes = try container.decode([String].self, forKey: .pasteboardTypes)
+        byteCount = try container.decode(Int.self, forKey: .byteCount)
+        characterCount = try container.decode(Int.self, forKey: .characterCount)
+        lineCount = try container.decode(Int.self, forKey: .lineCount)
+        privacyLabel = try container.decode(PrivacyLabel.self, forKey: .privacyLabel)
+        allowedUse = try container.decode([AllowedUse].self, forKey: .allowedUse)
+        sensitivityFlags = try container.decode([String].self, forKey: .sensitivityFlags)
+        uiVisibleUntil = try container.decode(Date.self, forKey: .uiVisibleUntil)
     }
 }
 
