@@ -150,6 +150,10 @@ visibility.
 
 Accepted archive and index content are plaintext and readable by processes with
 the same macOS user permissions. CryptoKit is used for hashing, not encryption.
+Settings are also plaintext. New and saved settings files use mode `0600`;
+loading a legacy regular settings file repairs broader permissions, while a
+file that cannot be repaired falls back to capture-off defaults. A symlinked
+settings path is rejected rather than followed.
 
 ## Current Startup Behavior
 

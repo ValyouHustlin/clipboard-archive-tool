@@ -633,6 +633,55 @@ struct ClipboardArchiveCoreTests {
     }
 
     @Test
+    func testSettingsLoadRepairsLegacyFilePermissions() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let settingsURL = root.appendingPathComponent("settings.json")
+        let data = try JSONEncoder().encode(ClipboardSettings(archiveEnabled: true))
+        try data.write(to: settingsURL)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o644))],
+            ofItemAtPath: settingsURL.path
+        )
+
+        let settings = ClipboardSettingsStore(settingsURL: settingsURL).load()
+        let permissions = try #require(
+            FileManager.default.attributesOfItem(atPath: settingsURL.path)[.posixPermissions]
+                as? NSNumber
+        )
+
+        #expect(settings.archiveEnabled)
+        #expect(permissions.intValue == 0o600)
+    }
+
+    @Test
+    func testSettingsLoadRejectsSymlinkWithoutChangingTargetPermissions() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let targetURL = root.appendingPathComponent("unrelated.json")
+        let settingsURL = root.appendingPathComponent("settings.json")
+        let data = try JSONEncoder().encode(ClipboardSettings(archiveEnabled: true))
+        try data.write(to: targetURL)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o644))],
+            ofItemAtPath: targetURL.path
+        )
+        try FileManager.default.createSymbolicLink(
+            at: settingsURL,
+            withDestinationURL: targetURL
+        )
+
+        let settings = ClipboardSettingsStore(settingsURL: settingsURL).load()
+        let permissions = try #require(
+            FileManager.default.attributesOfItem(atPath: targetURL.path)[.posixPermissions]
+                as? NSNumber
+        )
+
+        #expect(!settings.archiveEnabled)
+        #expect(permissions.intValue == 0o644)
+    }
+
+    @Test
     func testApplicationSupportRootCanBeIsolated() {
         let root = ClipboardDefaults.applicationSupportRoot(
             environment: [ClipboardDefaults.applicationSupportEnvironmentKey: "/tmp/synthetic-app-support"]

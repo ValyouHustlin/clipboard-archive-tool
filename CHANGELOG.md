@@ -18,6 +18,9 @@
 - Reworked Settings into a branded, color-coded surface with an app mark,
   version/build information, properly padded cards, and focused capture,
   retention, timeline, exclusion, and local-storage sections.
+- Existing settings files are repaired to owner-only `0600` permissions when
+  loaded. Insecure files fail closed if they cannot be repaired, and symlinked
+  settings paths are rejected without touching their targets.
 - Added a debug-only, `/tmp`-guarded synthetic UI fixture and snapshot path so
   the app can be visually tested without opening a real clipboard archive.
 - Kept synthetic UI snapshots from activating the debug app or stealing
@@ -32,7 +35,7 @@
 
 - Added first-run privacy disclosure and explicit capture/retention choice;
   new profiles start with capture off and last-50 as the recommended option.
-- Added 25 synthetic Swift Testing tests for filtering, blocked-content
+- Expanded to 28 synthetic Swift Testing tests for filtering, blocked-content
   non-retention, traversal and symlink containment, redaction boundaries,
   permissions, health windows, daily manifests, settings migration, and
   failure-safe SQLite rebuilds.

@@ -39,6 +39,9 @@ archive/search/privacy check used synthetic fixtures authored by this lane.
 - Archive body paths are contained beneath the archive root before read or
   deletion. Absolute, traversal, and symlink-escape paths are rejected.
 - App-created directories use mode `0700`; files use mode `0600`.
+- Legacy regular settings files are repaired to mode `0600` on load. A
+  file that cannot be repaired falls back to capture-off defaults; a symlinked
+  settings path is rejected without changing the target file.
 - Future events no longer inflate current health windows; daily manifests now
   contain day-scoped counts.
 - SQLite rebuilds use a private sibling temporary database, run
@@ -76,9 +79,10 @@ Current settings/history redesign test run:
 Build complete! (1.82s)
 
 /usr/bin/xcrun swift test
-✔ Test testSettingsRoundTripHistoryWindow() passed after 0.003 seconds.
-✔ Suite "Clipboard Archive Core" passed after 0.239 seconds.
-✔ Test run with 26 tests in 1 suite passed after 0.239 seconds.
+✔ Test testSettingsLoadRepairsLegacyFilePermissions() passed after 0.004 seconds.
+✔ Test testSettingsLoadRejectsSymlinkWithoutChangingTargetPermissions() passed after 0.004 seconds.
+✔ Suite "Clipboard Archive Core" passed after 0.209 seconds.
+✔ Test run with 28 tests in 1 suite passed after 0.210 seconds.
 
 /usr/bin/xcrun swift run clipboard-archive-checks
 26 named checks printed "ok"

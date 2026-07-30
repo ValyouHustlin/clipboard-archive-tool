@@ -141,6 +141,17 @@ public struct ClipboardSettingsStore: Sendable {
     }
 
     public func load() -> ClipboardSettings {
+        guard let attributes = try? FileManager.default.attributesOfItem(
+            atPath: settingsURL.path
+        ),
+              attributes[.type] as? FileAttributeType == .typeRegular else {
+            return ClipboardSettings()
+        }
+        do {
+            try ClipboardPrivateFileSystem.secureFile(settingsURL)
+        } catch {
+            return ClipboardSettings()
+        }
         guard let data = try? Data(contentsOf: settingsURL),
               let settings = try? JSONDecoder().decode(ClipboardSettings.self, from: data) else {
             return ClipboardSettings()
