@@ -46,6 +46,9 @@ final class ClipboardPanelController: NSWindowController,
     private let archiveRoot: URL
     private let reader: ClipboardArchiveReader
     private let redactor: ClipboardArchiveRedactor
+    /// Notifies the app delegate after this window redacts events so shared
+    /// caches (quick picker warm list, retention estimate) stay truthful.
+    private let onArchiveMutation: () -> Void
     private let derivedIndex: ClipboardDerivedIndex
     /// Shared copy-back path owned by the app delegate
     /// (`copyToPasteboardWithoutRecapture` in main.swift). It sets the
@@ -110,13 +113,15 @@ final class ClipboardPanelController: NSWindowController,
         archiveRoot: URL,
         recentItemLimit: Int,
         historyWindow: ClipboardHistoryWindow,
-        copyToPasteboard: @escaping (String) -> Void
+        copyToPasteboard: @escaping (String) -> Void,
+        onArchiveMutation: @escaping () -> Void = {}
     ) {
         self.archiveRoot = archiveRoot
         self.reader = ClipboardArchiveReader(archiveRoot: archiveRoot)
         self.redactor = ClipboardArchiveRedactor(archiveRoot: archiveRoot)
         self.derivedIndex = ClipboardDerivedIndex(archiveRoot: archiveRoot)
         self.copyToPasteboard = copyToPasteboard
+        self.onArchiveMutation = onArchiveMutation
         self.recentItemLimit = recentItemLimit
         self.historyWindow = historyWindow
 
@@ -1121,9 +1126,11 @@ final class ClipboardPanelController: NSWindowController,
             for event in selected {
                 try redactor.redact(eventID: event.id)
             }
+            onArchiveMutation()
             reload()
             statusLabel.stringValue = selected.count == 1 ? "Clip deleted" : "\(selected.count) clips deleted"
         } catch {
+            onArchiveMutation()
             statusLabel.stringValue = "Delete failed"
         }
     }

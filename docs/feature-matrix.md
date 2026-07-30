@@ -53,8 +53,8 @@ Legend: status = planned | in-progress | integrated | verified.
 | 2026-07-30 security | Split-string URL literals in checks binary set an evasion precedent vs check-local-only.sh | fixed: plain literals + explicit `https://example.com/` allowlist in the gate |
 | 2026-07-30 security | Legacy `ClipboardDerivedIndex.search()` passes user query SQL via argv (pre-existing; contract 3 wants stdin) | fixed in Slice 3: SQL streams over stdin (`-batch`), raw-text CLI output preserved |
 | 2026-07-30 security | `PrivacyLabel.restricted` exists but is outside the suppression gate; future manual-sensitivity work must define its semantics | assigned to Slice 5 privacy rules; contract note |
-| 2026-07-30 review | CRITICAL: History-panel delete never dirties quick-picker cache → deleted content copyable from stale in-memory events | fix queued immediately post-Slice-3 merge (panel files in flight) |
-| 2026-07-30 review | CRITICAL: hotkey conflict at launch has no durable surface (settings window not yet created; menu status overwritten) | fix queued post-Slice-3: persistent warning menu item + pending-failure push into Settings on creation + save-time alert |
-| 2026-07-30 review | Settings save hides the window in the same run-loop turn as a conflict label write | fold into the same fix |
+| 2026-07-30 review | CRITICAL: History-panel delete never dirties quick-picker cache → deleted content copyable from stale in-memory events | fixed post-Slice-3: panel `onArchiveMutation` closure → markQuickPickerCacheDirty |
+| 2026-07-30 review | CRITICAL: hotkey conflict at launch has no durable surface (settings window not yet created; menu status overwritten) | fixed: persistent ⚠ menu item + pending-failure push into Settings on creation |
+| 2026-07-30 review | Settings save hides the window in the same run-loop turn as a conflict label write | fixed: save-time registration failure shows an alert |
 | 2026-07-30 review | One malformed shortcuts entry reset ALL settings to defaults (capture off, exclusions lost) | fixed: FailableDecodable per-entry tolerance + tests |
 | 2026-07-30 design | PRE-EXISTING PRIVACY BUG: pause exit never resyncs lastChangeCount → the last item copied during a pause is retro-captured on resume | fix owned by Slice 5 (private mode + pause exit resync) |

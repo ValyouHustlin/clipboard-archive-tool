@@ -43,6 +43,10 @@ final class ClipboardMenuBarApp: NSObject,
     private var liveEventCountEstimate: Int?
     private var capturesSinceRetentionScan = 0
     private static let retentionRescanInterval = 10
+    /// Non-nil while the configured quick-picker shortcut failed to
+    /// register (conflict or Carbon error). Drives the persistent menu
+    /// warning and is pushed into Settings on creation.
+    private var shortcutFailureMessage: String?
     private var lastStatus = "Ready"
     private var lastNonSelfApp = ClipboardSourceApp(name: "Unknown", bundleIdentifier: nil)
     private var panelController: ClipboardPanelController?
@@ -243,6 +247,13 @@ final class ClipboardMenuBarApp: NSObject,
                 historyWindow: settings.historyWindow,
                 copyToPasteboard: { [weak self] content in
                     self?.copyToPasteboardWithoutRecapture(content)
+                },
+                onArchiveMutation: { [weak self] in
+                    // History-window deletes must invalidate the picker's
+                    // warm cache: a stale in-memory event still carries
+                    // contentInline, and copy-back would resurrect content
+                    // the user explicitly deleted.
+                    self?.markQuickPickerCacheDirty()
                 }
             )
         }
@@ -336,6 +347,7 @@ final class ClipboardMenuBarApp: NSObject,
         }
 #endif
         hotKeyManager.unregister(id: Self.quickPickerHotKeyID)
+        shortcutFailureMessage = nil
         settingsWindowController?.showShortcutRegistrationFailure(nil)
         let shortcut = settings.quickPickerShortcut
         guard shortcut.enabled, shortcut.isValid else {
@@ -360,6 +372,10 @@ final class ClipboardMenuBarApp: NSObject,
     }
 
     private func surfaceShortcutFailure(_ message: String) {
+        // Durable surfaces (contract 8: never silent): a persistent menu
+        // warning item survives status-line churn, and the message is pushed
+        // into the Settings window whenever it exists or is later created.
+        shortcutFailureMessage = message
         lastStatus = "Quick picker shortcut not active"
         settingsWindowController?.showShortcutRegistrationFailure(message)
         rebuildMenu()
@@ -399,6 +415,9 @@ final class ClipboardMenuBarApp: NSObject,
             settingsWindowController = controller
         }
         settingsWindowController?.show(settings: settings, activate: activate)
+        if let shortcutFailureMessage {
+            settingsWindowController?.showShortcutRegistrationFailure(shortcutFailureMessage)
+        }
     }
 
     func clipboardSettingsWindow(_ controller: ClipboardSettingsWindowController, didSave settings: ClipboardSettings) {
@@ -419,6 +438,16 @@ final class ClipboardMenuBarApp: NSObject,
         applyQuickPickerShortcut()
         lastStatus = settings.archiveEnabled ? "Settings saved" : "Archive tracking off"
         rebuildMenu()
+        // The settings window hides itself right after save, so a
+        // registration failure discovered here needs its own visible
+        // surface, not just the (now hidden) conflict label.
+        if let shortcutFailureMessage {
+            let alert = NSAlert()
+            alert.messageText = "Quick Picker Shortcut Not Active"
+            alert.informativeText = shortcutFailureMessage
+            alert.alertStyle = .warning
+            alert.runModal()
+        }
     }
 
     func clipboardSettingsWindowWillBeginShortcutRecording(_ controller: ClipboardSettingsWindowController) {
@@ -908,6 +937,16 @@ final class ClipboardMenuBarApp: NSObject,
         let counters = NSMenuItem(title: "\(capturedCount) captured, \(blockedCount) blocked this run", action: nil, keyEquivalent: "")
         counters.isEnabled = false
         menu.addItem(counters)
+        if shortcutFailureMessage != nil {
+            let warning = NSMenuItem(
+                title: "⚠ Quick Picker Shortcut Not Active…",
+                action: #selector(showPreferences),
+                keyEquivalent: ""
+            )
+            warning.target = self
+            warning.toolTip = shortcutFailureMessage
+            menu.addItem(warning)
+        }
         menu.addItem(NSMenuItem.separator())
 
         let recent = (try? reader.recentItems(since: sevenDaysAgo(), limit: 60)) ?? []
