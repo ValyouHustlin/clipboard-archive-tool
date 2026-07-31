@@ -22,7 +22,11 @@ subscription product. It has two jobs:
   floating, keyboard-first panel with copy-back that needs no permissions
   and an optional Accessibility-based direct paste.
 - First-run privacy disclosure with capture-off, last-50, or full-archive
-  choices before the first item can be stored.
+  choices before the first item can be stored, followed by an optional
+  What's New tour.
+- A What's New window that appears once per app version after an upgrade
+  (never again for the same version, even if dismissed by quitting), with
+  deep links into Settings, History, and Storage & Health.
 - Continuous local clipboard capture: text plus optional rich formats —
   images (size-capped), file references (metadata only), rich text, colors,
   and titled links, each with faithful copy-back.

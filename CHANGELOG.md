@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- What's New onboarding: a once-per-version window listing the headline
+  features (quick picker, all-history search, pins & snippets, private mode
+  and app privacy rules, encrypted backup, storage & health) with deep
+  links into Settings, History, and the Storage & Health dashboard. Shown
+  after upgrading (tracked by a new tolerant `lastSeenAppVersion` settings
+  key — settings files from older builds qualify exactly once) and as an
+  optional, skippable second step after the unchanged first-run privacy
+  choice. The seen-version is persisted the moment the window appears, so
+  quitting with it open never causes a second showing.
+
 ## 0.2.0 - 2026-07-30
 
 The complete 2026-07 feature expansion: twelve feature slices, two fixed
