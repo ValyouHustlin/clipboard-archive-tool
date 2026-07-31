@@ -39,6 +39,15 @@ public struct ClipboardVersionInfo: Equatable, Sendable {
         self.indexSchemaVersion = indexSchemaVersion
     }
 
+    /// The running app's marketing version from the bundle — the SAME
+    /// source the Settings About block reports, so the What's New gate and
+    /// every display surface agree. Development binaries (no Info.plist)
+    /// report the honest "development" literal.
+    public static func currentAppVersion(bundle: Bundle = .main) -> String {
+        bundle.infoDictionary?["CFBundleShortVersionString"] as? String
+            ?? "development"
+    }
+
     /// "Version 0.2.0 (5)" or "Version 0.2.0"; development builds pass the
     /// literal they want shown.
     public var versionDisplay: String {

@@ -159,6 +159,11 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
     /// Size cap for stored image payloads; larger images are blocked with a
     /// visible `image_exceeds_size_cap` reason (contract 7).
     public var richImageMaxBytes: Int
+    /// The app version whose "What's New" window the user has already been
+    /// shown. Empty means "never shown" (contract 4: missing key decodes to
+    /// the conservative default), so both fresh installs and files written
+    /// by older builds naturally qualify for one post-upgrade showing.
+    public var lastSeenAppVersion: String
 
     private enum CodingKeys: String, CodingKey {
         case excludedBundleIdentifiers
@@ -179,6 +184,7 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         case showBlockedEventStatus
         case captureRichContent
         case richImageMaxBytes
+        case lastSeenAppVersion
     }
 
     public init(
@@ -199,7 +205,8 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         privateModeUntil: Date? = nil,
         showBlockedEventStatus: Bool = true,
         captureRichContent: Bool = true,
-        richImageMaxBytes: Int = ClipboardSettings.defaultRichImageMaxBytes
+        richImageMaxBytes: Int = ClipboardSettings.defaultRichImageMaxBytes,
+        lastSeenAppVersion: String = ""
     ) {
         self.excludedBundleIdentifiers = excludedBundleIdentifiers
         self.excludedAppNameFragments = excludedAppNameFragments
@@ -219,6 +226,7 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         self.showBlockedEventStatus = showBlockedEventStatus
         self.captureRichContent = captureRichContent
         self.richImageMaxBytes = Self.clampRichImageMaxBytes(richImageMaxBytes)
+        self.lastSeenAppVersion = lastSeenAppVersion
     }
 
     /// Rule keys are canonically lowercased bundle identifiers. When a
@@ -315,6 +323,10 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
             try container.decodeIfPresent(Int.self, forKey: .richImageMaxBytes)
                 ?? Self.defaultRichImageMaxBytes
         )
+        lastSeenAppVersion = try container.decodeIfPresent(
+            String.self,
+            forKey: .lastSeenAppVersion
+        ) ?? ""
     }
 
     public static func clampRecentItemLimit(_ value: Int) -> Int {

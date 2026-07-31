@@ -57,6 +57,7 @@ final class ClipboardMenuBarApp: NSObject,
     private var panelController: ClipboardPanelController?
     private var settingsWindowController: ClipboardSettingsWindowController?
     private var onboardingWindowController: ClipboardOnboardingWindowController?
+    private var whatsNewWindowController: ClipboardWhatsNewWindowController?
     private var dashboardWindowController: ClipboardDashboardWindowController?
     /// True when the previous poll was gated (private mode or pause) — the
     /// capture gate turns the first ungated poll into a resync-only pass so
@@ -95,6 +96,9 @@ final class ClipboardMenuBarApp: NSObject,
     private var automationAnnotationsBytesBefore: Data?
     /// Expiry-sweep receipt captured when the harness requests a sweep.
     private var automationSweepReceipt: [String: Any] = [:]
+    /// The `shouldShow` decision computed BEFORE the What's New screen was
+    /// presented (the harness receipt proves show → persist → never again).
+    private var automationWhatsNewFirstDecision = false
 #endif
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -139,6 +143,16 @@ final class ClipboardMenuBarApp: NSObject,
             lastStatus = "Choose privacy settings to begin"
             rebuildMenu()
             showOnboarding()
+        } else if ClipboardWhatsNew.shouldShow(
+            hasCompletedOnboarding: settings.hasCompletedOnboarding,
+            lastSeenVersion: settings.lastSeenAppVersion,
+            currentVersion: ClipboardVersionInfo.currentAppVersion()
+        ) {
+            // Post-upgrade (or migrated pre-key settings file): show the
+            // What's New window once for this version. Presentation
+            // persists the version immediately, so quitting with the
+            // window open never causes a second showing.
+            showWhatsNew(activate: true)
         }
     }
 
@@ -922,6 +936,35 @@ final class ClipboardMenuBarApp: NSObject,
         applyQuickPickerShortcut()
     }
 
+    /// Presents the What's New window (post-upgrade launch path AND the
+    /// optional second step after first-run onboarding), then persists the
+    /// current version as seen IMMEDIATELY — before any dismissal — so the
+    /// window can never nag twice even if the app quits while it is open.
+    private func showWhatsNew(activate: Bool = true) {
+        if whatsNewWindowController == nil {
+            let controller = ClipboardWhatsNewWindowController(
+                appVersion: ClipboardVersionInfo.currentAppVersion()
+            )
+            // Deep links through the app delegate's existing entry points
+            // (same injected-closure pattern as Settings and Dashboard).
+            controller.onOpenSettings = { [weak self] in
+                self?.showSettingsWindow(activate: true)
+            }
+            controller.onOpenHistory = { [weak self] in
+                self?.showClipboardWindow(focusSearch: false, activate: true)
+            }
+            controller.onOpenDashboard = { [weak self] in
+                self?.openDashboard()
+            }
+            whatsNewWindowController = controller
+        }
+        whatsNewWindowController?.show(activate: activate)
+        if settings.lastSeenAppVersion != ClipboardVersionInfo.currentAppVersion() {
+            settings.lastSeenAppVersion = ClipboardVersionInfo.currentAppVersion()
+            try? settingsStore.save(settings)
+        }
+    }
+
     private func showOnboarding(activate: Bool = true) {
         if onboardingWindowController == nil {
             let controller = ClipboardOnboardingWindowController(archiveRoot: archiveRoot)
@@ -1073,6 +1116,15 @@ final class ClipboardMenuBarApp: NSObject,
                 }
             } else if screen == "onboarding" {
                 showOnboarding(activate: false)
+            } else if screen == "whatsnew" {
+                // First-decision fact BEFORE presenting: the seeded settings
+                // carry no lastSeenAppVersion, so this must be true.
+                automationWhatsNewFirstDecision = ClipboardWhatsNew.shouldShow(
+                    hasCompletedOnboarding: settings.hasCompletedOnboarding,
+                    lastSeenVersion: settings.lastSeenAppVersion,
+                    currentVersion: ClipboardVersionInfo.currentAppVersion()
+                )
+                showWhatsNew(activate: false)
             } else if screen == "dashboard" {
                 try seedSyntheticUIFixtures()
                 try seedBlockedEventFixtures()
@@ -1241,6 +1293,9 @@ final class ClipboardMenuBarApp: NSObject,
                     try self?.settingsWindowController?.writeSnapshot(to: url)
                 case "onboarding":
                     try self?.onboardingWindowController?.writeSnapshot(to: url)
+                case "whatsnew":
+                    try self?.whatsNewWindowController?.writeSnapshot(to: url)
+                    self?.writeWhatsNewAutomationResult()
                 case "quickpicker":
                     self?.runQuickPickerAutomation(snapshotURL: url)
                 default:
@@ -1337,6 +1392,52 @@ final class ClipboardMenuBarApp: NSObject,
             "blockedExplanations": dashboardWindowController?.automationBlockedExplanations ?? [],
             "cleanupResultText": dashboardWindowController?.automationCleanupResultText ?? "",
             "deleteEnabled": dashboardWindowController?.automationDeleteEnabled ?? false
+        ]
+        if let data = try? JSONSerialization.data(
+            withJSONObject: result,
+            options: [.prettyPrinted, .sortedKeys]
+        ) {
+            try? data.write(to: URL(fileURLWithPath: resultPath), options: [.atomic])
+        }
+    }
+
+    /// What's New receipt: show → persist → never again. Runs any requested
+    /// dismissal gesture, reads the ISOLATED settings file from disk (never
+    /// in-memory state) to prove the version was persisted at show time,
+    /// then re-runs the pure launch decision as a second simulated launch.
+    private func writeWhatsNewAutomationResult() {
+        let environment = ProcessInfo.processInfo.environment
+        guard let resultPath = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_RESULT_PATH"],
+              !resultPath.isEmpty else {
+            return
+        }
+        if environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_GESTURES"] == "done" {
+            whatsNewWindowController?.performAutomationDone()
+        }
+        let currentVersion = ClipboardVersionInfo.currentAppVersion()
+        // Raw file facts: the key must exist in the JSON on disk.
+        var keyPresentOnDisk = false
+        var persistedValueOnDisk = ""
+        if let data = try? Data(contentsOf: settingsStore.settingsURL),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            keyPresentOnDisk = object["lastSeenAppVersion"] != nil
+            persistedValueOnDisk = object["lastSeenAppVersion"] as? String ?? ""
+        }
+        // Second simulated launch: reload through the production store and
+        // re-run the ONE pure decision — must be false after persist.
+        let reloaded = settingsStore.load()
+        let secondLaunchShouldShow = ClipboardWhatsNew.shouldShow(
+            hasCompletedOnboarding: reloaded.hasCompletedOnboarding,
+            lastSeenVersion: reloaded.lastSeenAppVersion,
+            currentVersion: currentVersion
+        )
+        let result: [String: Any] = [
+            "currentVersion": currentVersion,
+            "firstLaunchShouldShow": automationWhatsNewFirstDecision,
+            "lastSeenKeyPresentOnDisk": keyPresentOnDisk,
+            "persistedLastSeenAppVersion": persistedValueOnDisk,
+            "secondLaunchShouldShow": secondLaunchShouldShow,
+            "windowVisibleAfterGestures": whatsNewWindowController?.window?.isVisible ?? false
         ]
         if let data = try? JSONSerialization.data(
             withJSONObject: result,
@@ -2132,6 +2233,18 @@ final class ClipboardMenuBarApp: NSObject,
                 ? "\(retentionMode.displayName) capture enabled"
                 : "Capture remains off"
         )
+#if DEBUG
+        // Automation drives the privacy-choice flow directly; the optional
+        // second step only appears when a harness run requests the
+        // `whatsnew` screen itself.
+        if isAutomationMode {
+            return
+        }
+#endif
+        // Optional, skippable second step after the retention choice (all
+        // three choices, including Not Now). The privacy-choice flow above
+        // is untouched; this only appears once per version.
+        showWhatsNew(activate: true)
     }
 
     private func applyRetentionLimitIfNeeded() {
