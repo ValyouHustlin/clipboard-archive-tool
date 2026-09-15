@@ -13,6 +13,13 @@
 
 ## Unreleased
 
+- Keep capturing while a menu is held open, a window is being resized, or a
+  modal panel is up. The poll timer ran in the default run-loop mode only, so
+  those states stopped it outright, and because the pasteboard reports only its
+  latest change, everything copied during the gap but the last item was gone.
+  The poll and the expiry sweep now run in the common modes, as the heartbeat
+  already did, and the process holds a user-initiated activity so App Nap
+  cannot stretch their wakeups; an idle machine may still sleep.
 - Keep an interrupted archive append from costing more than the row being
   written: a day file that does not end in a newline is closed with one before
   the next row, so a tail torn by a kill stays a single unreadable line instead

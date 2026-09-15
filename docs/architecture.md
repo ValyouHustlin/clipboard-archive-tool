@@ -37,6 +37,19 @@ CLI
   -> the same core library and archive format
 ```
 
+The polling loop's timer is installed in the `.common` run-loop modes, not
+the `.default` mode a scheduled timer gets on its own. Menu tracking, live
+resize, and modal panels each switch the main run loop out of `.default`, and
+a poll skipped there is not merely late: the pasteboard reports only its most
+recent change, so every clip copied during the gap except the last is
+unrecoverable. The half-hourly expiry sweep and the heartbeat are scheduled the
+same way, each with a tolerance the system may use to coalesce wakeups. The
+process also holds a `beginActivity` token of
+`.userInitiatedAllowingIdleSystemSleep` for its whole lifetime, because an
+agent app with no window is what App Nap throttles first; the token is held
+while capture is paused as well, since a paused app still polls to notice that
+the pause has ended, and it allows an idle machine to sleep.
+
 `ClipboardArchiveCore` owns the data model (versioned event schema with
 tolerant decoding), filtering, the capture gate, archive reader/writer,
 redaction, the promoted pruner core, the bulk engine
@@ -325,3 +338,8 @@ Debug UI automation requires both the archive and Application Support roots to
 be explicit `/tmp` paths. It can author synthetic fixtures and render the
 history, settings, or onboarding surface, then terminates. The guard exists so
 visual testing cannot silently point at a real archive.
+
+`scripts/dev-run-runloop-harness.sh` drives the `runloopmodes` screen, which
+renders nothing: it runs the main run loop in one named mode for a fixed span
+and writes a JSON receipt of how many times the capture poll fired, which is
+how the run-loop mode claim above is checked rather than asserted.

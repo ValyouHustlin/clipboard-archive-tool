@@ -109,6 +109,22 @@ final class ClipboardMenuBarApp: NSObject,
     private var lastBlockedReason: String?
     /// 30-minute expiry enforcement timer (never the capture poll).
     private var expiryTimer: Timer?
+    /// App Nap exemption, held for as long as this process is alive.
+    ///
+    /// A `LSUIElement` process with no visible window is exactly what App
+    /// Nap targets: the system may coalesce its timers into far coarser
+    /// wakeups, and a stretched poll gap loses every clip but the last to
+    /// change-count dedup. The token has to be STORED — releasing it ends
+    /// the activity — and it is deliberately NOT released when capture is
+    /// paused, because a paused app still polls to notice that the pause
+    /// has expired.
+    ///
+    /// `userInitiatedAllowingIdleSystemSleep`: the work exists because the
+    /// user is typing and copying, but it is no reason to keep a machine
+    /// nobody is touching awake. The option also disables sudden and
+    /// automatic termination, which is wanted here — it is what guarantees
+    /// the termination handler runs and the `app_stop` row is written.
+    private var captureActivity: NSObjectProtocol?
     private static let quickPickerHotKeyID: UInt32 = 1
     private let hotKeyManager = GlobalHotKeyManager()
     private var quickPickerController: QuickPickerPanelController?
@@ -160,6 +176,10 @@ final class ClipboardMenuBarApp: NSObject,
         case nil:
             break
         }
+        captureActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiatedAllowingIdleSystemSleep],
+            reason: "Clipboard capture"
+        )
         startHeartbeat()
         NSApp.setActivationPolicy(.accessory)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -179,6 +199,9 @@ final class ClipboardMenuBarApp: NSObject,
         }
         rebuildMenu()
 #if DEBUG
+        if runPollModeReceiptIfRequested() {
+            return
+        }
         if runUIAutomationIfRequested() {
             return
         }
@@ -190,11 +213,17 @@ final class ClipboardMenuBarApp: NSObject,
         // Expiry enforcement points (Slice 5): launch, a 30-minute timer,
         // and lazy checks when read surfaces open — never the capture poll.
         sweepExpiredIfDue()
-        expiryTimer = Timer.scheduledTimer(withTimeInterval: 30 * 60, repeats: true) { [weak self] _ in
+        // `.common` for the same reason as the poll and the heartbeat: a
+        // half-hourly sweep that lands while a menu is open should not be
+        // skipped until the next half hour.
+        let expiry = Timer(timeInterval: 30 * 60, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.sweepExpiredIfDue()
             }
         }
+        expiry.tolerance = 60
+        RunLoop.main.add(expiry, forMode: .common)
+        expiryTimer = expiry
         restartTimer()
         if !settings.hasCompletedOnboarding {
             lastStatus = "Choose privacy settings to begin"
@@ -1095,6 +1124,80 @@ final class ClipboardMenuBarApp: NSObject,
     }
 
 #if DEBUG
+    /// Run-loop mode receipt. Runs the main run loop in ONE named mode
+    /// for a fixed span and reports how many times the capture poll
+    /// actually fired, so "does capture keep running while a menu is held
+    /// open" is a measured number rather than a reading of the scheduling
+    /// call. A timer scheduled in `.default` alone answers zero here; one
+    /// added in `.common` answers roughly span / interval.
+    ///
+    /// Isolated like every other harness screen: `/tmp`-rooted stores, the
+    /// private automation pasteboard, and archiving off, because the
+    /// receipt is about the timer firing and nothing else.
+    private func runPollModeReceiptIfRequested() -> Bool {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_SCREEN"] == "runloopmodes",
+              let resultPath = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_RESULT_PATH"],
+              !resultPath.isEmpty else {
+            return false
+        }
+        let supportRoot = ClipboardDefaults.applicationSupportRoot()
+        guard archiveRoot.standardizedFileURL.path.hasPrefix("/tmp/"),
+              supportRoot.standardizedFileURL.path.hasPrefix("/tmp/") else {
+            FileHandle.standardError.write(
+                Data("UI automation requires isolated /tmp archive and support roots.\n".utf8)
+            )
+            NSApp.terminate(nil)
+            return true
+        }
+
+        isAutomationMode = true
+        pasteboard = NSPasteboard(name: NSPasteboard.Name("app.clipboardarchive.ui-automation"))
+        lastChangeCount = pasteboard.changeCount
+        let interval = TimeInterval(
+            environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_POLL_INTERVAL"] ?? ""
+        ) ?? 0.2
+        settings = ClipboardSettings(
+            pollIntervalSeconds: interval,
+            archiveEnabled: false,
+            hasCompletedOnboarding: true
+        )
+        let seconds = TimeInterval(
+            environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_RUNLOOP_SECONDS"] ?? ""
+        ) ?? 2.0
+        let modeName = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_RUNLOOP_MODE"] ?? "eventTracking"
+        let mode: RunLoop.Mode = modeName == "default" ? .default : .eventTracking
+
+        // The beat zeroes the poll counter this receipt reads, so it has
+        // no place in a measurement of the poll. Stopping it also removes
+        // the one other repeating source from the loop under test.
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = nil
+        restartTimer()
+        heartbeatPolls = 0
+        // `run(mode:before:)` returns as soon as it has serviced one input
+        // source, so the span is held by the loop around it, not by the
+        // limit date alone.
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            RunLoop.main.run(mode: mode, before: deadline)
+        }
+        let receipt: [String: Any] = [
+            "mode": modeName,
+            "seconds": seconds,
+            "interval": interval,
+            "poll_ticks": heartbeatPolls,
+            "activity_token_present": captureActivity != nil
+        ]
+        if let data = try? JSONSerialization.data(
+            withJSONObject: receipt,
+            options: [.prettyPrinted, .sortedKeys]
+        ) {
+            try? data.write(to: URL(fileURLWithPath: resultPath), options: [.atomic])
+        }
+        exit(0)
+    }
+
     private func runUIAutomationIfRequested() -> Bool {
         let environment = ProcessInfo.processInfo.environment
         guard let screen = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_SCREEN"],
@@ -3131,16 +3234,58 @@ final class ClipboardMenuBarApp: NSObject,
         // exactly the reading the heartbeat exists to make trustworthy.
         heartbeatTimer?.invalidate()
         heartbeatTimer = nil
+        // The poll and the expiry sweep write rows too — a capture or an
+        // expiry landing after `app_stop` would say the app was working
+        // after it had quit. They fire in the common modes now, which
+        // includes the menu tracking Quit is chosen from.
+        timer?.invalidate()
+        timer = nil
+        expiryTimer?.invalidate()
+        expiryTimer = nil
+        if let captureActivity {
+            ProcessInfo.processInfo.endActivity(captureActivity)
+            self.captureActivity = nil
+        }
         operationalLog.record(.appStop)
     }
 
+    /// Schedules the capture poll in `.common` run-loop modes.
+    ///
+    /// `Timer.scheduledTimer` installs in `.default` only, which is a
+    /// capture hole rather than a scheduling detail: while a menu is
+    /// tracking, a window is live-resizing, or a modal panel is up, the
+    /// run loop is in `.eventTracking`/`.modalPanel` and the poll simply
+    /// does not fire. Everything copied in that gap is lost for good,
+    /// because the pasteboard reports only its LATEST change and the
+    /// change-count dedup then treats the whole gap as one event.
+    ///
+    /// The tolerance is a tenth of the interval, the largest slack the
+    /// system may take when coalescing this timer with others; at the
+    /// default 0.2 s poll that is 20 ms, far inside the interval budget
+    /// and enough for the kernel to batch wakeups instead of forcing one
+    /// of its own. The interval itself is clamped here: only the settings
+    /// window enforces a range, and this timer is also built from whatever
+    /// a settings file on disk happens to say.
+    ///
+    /// The timer body hops through `Task { @MainActor }` rather than
+    /// touching state directly: the timer fires on the main THREAD, which
+    /// is not by itself a promise of main-ACTOR isolation, and the hop is
+    /// serviced inside the same run loop in every common mode.
     private func restartTimer() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: settings.pollIntervalSeconds, repeats: true) { [weak self] _ in
+        // The settings WINDOW clamps this, but the decoder accepts whatever
+        // the file holds: zero or a negative interval would spin the run
+        // loop and hand the timer a negative tolerance. Clamped to the same
+        // range the window offers.
+        let interval = min(max(settings.pollIntervalSeconds, 0.1), 5.0)
+        let poll = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.pollPasteboard()
             }
         }
+        poll.tolerance = interval / 10
+        RunLoop.main.add(poll, forMode: .common)
+        timer = poll
     }
 
     private func formatBytes(_ bytes: Int64) -> String {
