@@ -19,6 +19,7 @@ required=(
   "README.md"
   "PRIVACY.md"
   "LICENSE"
+  "docs/CLI.md"
 )
 
 for path in "${required[@]}"; do
@@ -31,7 +32,29 @@ done
 plutil -lint "$RELEASE_DIR/ClipboardArchive.app/Contents/Info.plist" >/dev/null
 bash -n "$RELEASE_DIR/install.sh"
 bash -n "$RELEASE_DIR/uninstall.sh"
-"$RELEASE_DIR/bin/clipboard-archive" self-test >/dev/null
+# Validation is self-contained even when the caller has live store variables.
+VERIFY_ROOT="$(mktemp -d /tmp/clipboard-release-validation.XXXXXX)"
+trap 'rm -rf "$VERIFY_ROOT"' EXIT
+export CLIPBOARD_ARCHIVE_APPLICATION_SUPPORT_ROOT="$VERIFY_ROOT/support"
+export CLIPBOARD_ARCHIVE_ARCHIVE_ROOT="$VERIFY_ROOT/archive"
+export CLIPBOARD_ARCHIVE_INDEX_PATH="$VERIFY_ROOT/index.sqlite"
+unset CLIPBOARD_ARCHIVE_VERSION CLIPBOARD_ARCHIVE_BUILD
+mkdir -p "$VERIFY_ROOT/bin"
+cp "$RELEASE_DIR/bin/clipboard-archive" "$VERIFY_ROOT/bin/clipboard-archive"
+CLI="$VERIFY_ROOT/bin/clipboard-archive"
+"$CLI" self-test >/dev/null
+"$CLI" version --json > "$VERIFY_ROOT/version.json"
+"$CLI" version > "$VERIFY_ROOT/version.txt"
+VERSION="$(/usr/bin/plutil -extract version raw -o - "$RELEASE_DIR/manifest.json")"
+BUILD="$(/usr/bin/plutil -extract build raw -o - "$RELEASE_DIR/manifest.json")"
+APP_INFO="$RELEASE_DIR/ClipboardArchive.app/Contents/Info.plist"
+[ "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP_INFO")" = "$VERSION" ]
+[ "$(/usr/bin/plutil -extract CFBundleVersion raw -o - "$APP_INFO")" = "$BUILD" ]
+[ "$(/usr/bin/plutil -extract app_version raw -o - "$VERIFY_ROOT/version.json")" = "$VERSION" ]
+[ "$(/usr/bin/plutil -extract build raw -o - "$VERIFY_ROOT/version.json")" = "$BUILD" ]
+[ "$(head -n 1 "$VERIFY_ROOT/version.txt")" = "Version $VERSION ($BUILD)" ]
+/usr/bin/codesign --verify --deep --strict "$RELEASE_DIR/ClipboardArchive.app"
+/usr/bin/codesign --verify --strict "$CLI"
 "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-local-only.sh" "$RELEASE_DIR" >/dev/null
 (
   cd "$RELEASE_DIR"

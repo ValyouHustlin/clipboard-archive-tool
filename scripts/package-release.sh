@@ -3,8 +3,8 @@ set -euo pipefail
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${CLIPBOARD_ARCHIVE_VERSION:-0.2.0}"
-BUILD_NUMBER="${CLIPBOARD_ARCHIVE_BUILD:-5}"
+VERSION="${CLIPBOARD_ARCHIVE_VERSION:-0.3.0}"
+BUILD_NUMBER="${CLIPBOARD_ARCHIVE_BUILD:-7}"
 ARCH="$(uname -m)"
 NAME="ClipboardArchive-${VERSION}-macos-${ARCH}"
 RELEASE_ROOT="$ROOT/releases"
@@ -18,7 +18,32 @@ CLIPBOARD_ARCHIVE_VERSION="$VERSION" \
 CLIPBOARD_ARCHIVE_BUILD="$BUILD_NUMBER" \
 CLIPBOARD_ARCHIVE_APP_OUTPUT="$PACKAGE_APP" \
   ./scripts/build-menu-bar-app.sh >/dev/null
-/usr/bin/xcrun swift build -c release --product clipboard-archive >/dev/null
+# Embed identity in the standalone executable; it must survive installation
+# away from the app and must never borrow a neighboring bundle's version.
+CLI_PLIST="$ROOT/.build/clipboard-archive-package/CLI-Info.plist"
+case "$VERSION" in
+  *[!0-9.]*|"") echo "invalid release version" >&2; exit 1 ;;
+esac
+case "$BUILD_NUMBER" in
+  *[!0-9]*|"") echo "invalid build number" >&2; exit 1 ;;
+esac
+cat > "$CLI_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>app.clipboardarchive.cli</string>
+<key>CFBundleExecutable</key><string>clipboard-archive</string>
+<key>CFBundleName</key><string>Clipboard Archive CLI</string>
+<key>CFBundlePackageType</key><string>TOOL</string>
+<key>CFBundleShortVersionString</key><string>$VERSION</string>
+<key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
+</dict></plist>
+PLIST
+# SwiftPM does not track the contents of linker input files: force relinking
+# when packaging a new version with the same plist pathname.
+rm -f "$ROOT/.build/release/clipboard-archive"
+/usr/bin/xcrun swift build -c release --product clipboard-archive \
+  -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$CLI_PLIST" >/dev/null
+/usr/bin/codesign --force --sign - "$ROOT/.build/release/clipboard-archive" >/dev/null
 
 rm -rf "$STAGE" "$ARCHIVE" "$ZIP"
 mkdir -p "$STAGE/docs" "$STAGE/bin"
@@ -32,6 +57,7 @@ cp "$ROOT/LICENSE" "$STAGE/LICENSE"
 cp "$ROOT/PRIVACY.md" "$STAGE/PRIVACY.md"
 cp "$ROOT/SECURITY.md" "$STAGE/SECURITY.md"
 cp "$ROOT/CHANGELOG.md" "$STAGE/CHANGELOG.md"
+cp "$ROOT/docs/CLI.md" "$STAGE/docs/CLI.md"
 cp "$ROOT/docs/INSTALL.md" "$STAGE/docs/INSTALL.md"
 cp "$ROOT/docs/DISTRIBUTION.md" "$STAGE/docs/DISTRIBUTION.md"
 cp "$ROOT/docs/UPDATES.md" "$STAGE/docs/UPDATES.md"

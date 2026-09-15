@@ -1,17 +1,11 @@
 # Changelog
 
-## 0.2.0 build 6 - 2026-09-15
+## 0.3.0 build 7 - 2026-09-15
 
-- Search literal case-insensitive substrings across full clip text in both
-  history scopes, including text beyond the preview; punctuation stays literal.
-- Share the native SQLite and window matcher without changing index schema.
-- Bound search snippets before accumulating results.
-- Add capped, content-free local usage diagnostics for search, copy, picker,
-  capture, blocked items, rebuilds, application starts, and errors.
-- Record pasteboard write outcomes for plain and rich copy-back.
-
-
-## Unreleased
+- Embed the standalone command-line version in its executable, so it reports
+  the installed release without environment overrides or a neighboring app.
+- Include the command reference in the release package and validate app and
+  standalone command identity against the release manifest.
 
 - Make the command line answer to a script. Every command now exits with a
   number that means one thing — 2 for a usage mistake, 3 for stores that are
@@ -134,6 +128,17 @@
   optional, skippable second step after the unchanged first-run privacy
   choice. The seen-version is persisted the moment the window appears, so
   quitting with it open never causes a second showing.
+
+## 0.2.0 build 6 - 2026-09-15
+
+- Search literal case-insensitive substrings across full clip text in both
+  history scopes, including text beyond the preview; punctuation stays literal.
+- Share the native SQLite and window matcher without changing index schema.
+- Bound search snippets before accumulating results.
+- Add capped, content-free local usage diagnostics for search, copy, picker,
+  capture, blocked items, rebuilds, application starts, and errors.
+- Record pasteboard write outcomes for plain and rich copy-back.
+
 
 ## 0.2.0 - 2026-07-30
 
