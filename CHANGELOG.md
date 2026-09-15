@@ -13,6 +13,20 @@
 
 ## Unreleased
 
+- Open the history window without freezing it. The working-window load read
+  and decoded every day file on the main thread, which at a five-thousand-clip
+  window was about a second of a window that does not draw, scroll or respond.
+  The load now runs on the same background queue All History already used, the
+  rows already on screen stay there while it runs, and a load overtaken by a
+  newer one is discarded instead of putting stale rows back. A load that takes
+  longer than a tenth of a second says "Loading…" beside the window name; one
+  that beats that says nothing at all.
+- Read day files about ten times faster. Reading a file into a `String` asks
+  the system to work out its encoding first, which on a 280 KB day file cost
+  27 ms against well under one to read the same bytes, and the archive is
+  UTF-8 by construction. Reading five thousand clips went from about a second
+  to about 150 ms, and every other reader of the archive gets the same cut.
+
 - Cut the cost of storing a clip from about 70 ms to about 11 ms, and of
   opening All History from about 73 ms to about 1 ms. Every index read and
   write ran the `sqlite3` command as a separate process, and creating that

@@ -156,6 +156,13 @@ final class ClipboardMenuBarApp: NSObject,
     /// The `shouldShow` decision computed BEFORE the What's New screen was
     /// presented (the harness receipt proves show → persist → never again).
     private var automationWhatsNewFirstDecision = false
+    /// Watches the main thread from a background thread for the whole
+    /// history run, so the receipt's longest-block number comes from outside
+    /// the code being graded.
+    private let automationMainThreadWatchdog = MainThreadWatchdog()
+    /// Watchdog reading taken before the snapshot render, so the receipt
+    /// reports the app's blocks and not the harness's.
+    private var automationWatchdogReading: (maxGapMs: Double, pings: Int)?
 #endif
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -1240,7 +1247,9 @@ final class ClipboardMenuBarApp: NSObject,
             excludedBundleIdentifiers: ["com.example.passwords"],
             pollIntervalSeconds: 0.2,
             archiveEnabled: environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_ARCHIVE_ENABLED"] == "1",
-            recentItemLimit: 50,
+            recentItemLimit: Int(
+                environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_RECENT_LIMIT"] ?? ""
+            ) ?? 50,
             historyWindow: .fourteenDays,
             retentionMode: .recent50,
             hasCompletedOnboarding: true,
@@ -1294,6 +1303,7 @@ final class ClipboardMenuBarApp: NSObject,
                 if scopeRequest == "all-history" {
                     try seedAllHistoryDriftFixtures()
                 }
+                automationMainThreadWatchdog.start()
                 showClipboardWindow(focusSearch: false, activate: false)
                 if scopeRequest == "all-history" {
                     panelController?.performAutomationScope("all-history")
@@ -1451,6 +1461,14 @@ final class ClipboardMenuBarApp: NSObject,
                         ]
                         self.panelController?.reloadFromExternalMutation()
                     }
+                    if ProcessInfo.processInfo
+                        .environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_RELOAD_PROBE"] == "1" {
+                        // One window load graded on its own: the watchdog
+                        // forgets the launch, then the production reload
+                        // path runs against a window that is already built.
+                        self.automationMainThreadWatchdog.reset()
+                        self.panelController?.reloadForAutomation()
+                    }
                     // Second settle pass (Slice 6): a gesture can select an
                     // image clip whose detail thumbnail renders async; wait
                     // for it so per-kind detail PNGs show the real render.
@@ -1459,6 +1477,11 @@ final class ClipboardMenuBarApp: NSObject,
                         guard let self else {
                             return
                         }
+                        // Read the watchdog before the snapshot render: that
+                        // render is a long main-thread block of the
+                        // harness's own making and has nothing to say about
+                        // the window load being graded.
+                        self.automationWatchdogReading = self.automationMainThreadWatchdog.stop()
                         self.pollPasteboard()
                         let eventCountAfter = self.archiveEventCount()
                         let archiveLinesIdentical =
@@ -1923,6 +1946,7 @@ final class ClipboardMenuBarApp: NSObject,
               !resultPath.isEmpty else {
             return
         }
+        let watchdog = automationWatchdogReading ?? automationMainThreadWatchdog.stop()
         let visibleIDs = panelController?.automationVisibleResultIDs ?? []
         let annotationsFileURL = annotationsStore.annotationsFileURL
         let annotationsBytesNow = try? Data(contentsOf: annotationsFileURL)
@@ -1941,6 +1965,14 @@ final class ClipboardMenuBarApp: NSObject,
                 && visibleIDs.contains(automationDriftedEventID),
             "doNotIndexEventVisible": !automationDoNotIndexEventID.isEmpty
                 && visibleIDs.contains(automationDoNotIndexEventID),
+            "maxMainGapMs": watchdog.maxGapMs,
+            "watchdogPings": watchdog.pings,
+            "windowLoadMs": panelController?.automationWindowLoadMs ?? -1,
+            // The effective limit after the settings clamp, not what the
+            // harness asked for: a receipt that reports the request would
+            // describe a run that did not happen.
+            "recentItemLimit": settings.recentItemLimit,
+            "eventsLoaded": panelController?.automationLoadedEventCount ?? -1,
             "eventCountBefore": eventCountBefore,
             "eventCountAfter": eventCountAfter,
             "pasteboardPrefix": String((pasteboard.string(forType: .string) ?? "").prefix(24)),
@@ -3329,3 +3361,86 @@ let app = NSApplication.shared
 let delegate = ClipboardMenuBarApp()
 app.delegate = delegate
 app.run()
+
+#if DEBUG
+/// Independent main-thread watchdog for automation receipts.
+///
+/// A background thread posts an empty block to the main queue every ten
+/// milliseconds and records how long the longest one waited to run. It
+/// measures the main thread from outside, so it cannot be fooled by a timer
+/// the same code placed around the work it wanted to grade: whatever blocks
+/// the main thread, for whatever reason, shows up as a gap.
+final class MainThreadWatchdog: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "app.clipboardarchive.main-thread-watchdog")
+    private let lock = NSLock()
+    private var maxGapMs: Double = 0
+    private var pings = 0
+    private var pending: [Int: Date] = [:]
+    private var nextPing = 0
+    private var running = false
+
+    func start() {
+        lock.lock()
+        running = true
+        lock.unlock()
+        schedule()
+    }
+
+    /// Forgets what it has seen so far, so a later span can be graded on
+    /// its own without the app's launch in the number.
+    func reset() {
+        lock.lock()
+        maxGapMs = 0
+        pings = 0
+        pending.removeAll()
+        lock.unlock()
+    }
+
+    /// Stops pinging and returns the longest wait seen, with the number of
+    /// pings that reported so a silent watchdog cannot read as a clean run.
+    ///
+    /// A ping still queued when the run ends counts for how long it has
+    /// waited so far. Without that, a main thread that never yielded at all
+    /// — the worst case there is — would be reported as a run with no
+    /// samples rather than as the block it was.
+    func stop() -> (maxGapMs: Double, pings: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        running = false
+        let now = Date()
+        for sentAt in pending.values {
+            maxGapMs = max(maxGapMs, now.timeIntervalSince(sentAt) * 1000)
+        }
+        return (maxGapMs, pings)
+    }
+
+    private func schedule() {
+        queue.asyncAfter(deadline: .now() + 0.01) { [weak self] in
+            guard let self else {
+                return
+            }
+            self.lock.lock()
+            let isRunning = self.running
+            let ping = self.nextPing
+            self.nextPing += 1
+            if isRunning {
+                self.pending[ping] = Date()
+            }
+            self.lock.unlock()
+            guard isRunning else {
+                return
+            }
+            DispatchQueue.main.async {
+                let ranAt = Date()
+                self.lock.lock()
+                if let sentAt = self.pending.removeValue(forKey: ping) {
+                    self.maxGapMs = max(self.maxGapMs, ranAt.timeIntervalSince(sentAt) * 1000)
+                    self.pings += 1
+                }
+                self.lock.unlock()
+            }
+            self.schedule()
+        }
+    }
+}
+#endif

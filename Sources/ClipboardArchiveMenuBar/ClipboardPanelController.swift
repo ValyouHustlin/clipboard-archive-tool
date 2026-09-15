@@ -171,9 +171,28 @@ final class ClipboardPanelController: NSWindowController,
     private let archiveQueue = DispatchQueue(
         label: "app.clipboardarchive.panel.archive-search"
     )
+    /// The window load gets its own queue rather than sharing the one
+    /// above: that one also carries whole-index rebuilds, and a window
+    /// opened during a rebuild would otherwise wait for it.
+    private let windowLoadQueue = DispatchQueue(
+        label: "app.clipboardarchive.panel.window-load",
+        qos: .userInitiated
+    )
     /// Debounce (250 ms) + generation counter: only the newest generation's
     /// completion is applied; anything older is dropped as stale.
     private var pendingQueryWork: DispatchWorkItem?
+    /// Same generation discipline for the working-window load, which runs
+    /// on `archiveQueue` too: the reader walks day files and decodes rows,
+    /// and at a large configured window that is long enough on the main
+    /// thread to be seen as a freeze.
+    private var windowLoad = ClipboardLoadGenerations()
+    /// Delayed "Loading…" hint, cancelled by a load that beats it.
+    private var pendingWindowLoadHint: DispatchWorkItem?
+    /// What to run once the newest window load has put its rows on screen.
+    /// A list, not a slot: an external mutation can start its own reload
+    /// while one carrying a message is in flight, and that reload reports
+    /// nothing itself — it must not swallow "3 clips deleted" with it.
+    private var pendingWindowLoadCompletions: [() -> Void] = []
     private var queryGeneration = 0
     private var completedQueryGeneration = 0
     private var detailFetchGeneration = 0
@@ -367,6 +386,12 @@ final class ClipboardPanelController: NSWindowController,
         typeFilter.performClick(nil)
     }
 
+    /// Re-runs the production reload path so a harness can measure one
+    /// window load on its own, after the window is already built.
+    func reloadForAutomation() {
+        reload()
+    }
+
     func performAutomationScope(_ scopeName: String) {
         scopeControl.selectedSegment = scopeName.lowercased() == "all-history" ? 1 : 0
         scopeChanged()
@@ -539,8 +564,9 @@ final class ClipboardPanelController: NSWindowController,
     /// The harness polls this (0.1 s steps, 5 s cap) instead of sleeping a
     /// fixed interval.
     var automationIsSettled: Bool {
-        // A pending image-thumbnail fetch is unsettled in EITHER scope.
-        if richDetailPending {
+        // A pending image-thumbnail fetch is unsettled in EITHER scope, and
+        // so is a working-window load that has not applied its rows yet.
+        if richDetailPending || windowLoad.isLoading {
             return false
         }
         guard scope == .allHistory else {
@@ -596,6 +622,14 @@ final class ClipboardPanelController: NSWindowController,
 
     var automationRowCount: Int {
         displayRows.count
+    }
+
+    var automationWindowLoadMs: Double {
+        windowLoadMs
+    }
+
+    var automationLoadedEventCount: Int {
+        events.count
     }
 
     var automationRowKinds: [String] {
@@ -1135,8 +1169,9 @@ final class ClipboardPanelController: NSWindowController,
     }
 
     @objc private func refresh() {
-        reload()
-        statusLabel.stringValue = "History refreshed"
+        reload { [weak self] in
+            self?.statusLabel.stringValue = "History refreshed"
+        }
     }
 
     @objc private func typeFilterChanged() {
@@ -1391,9 +1426,49 @@ final class ClipboardPanelController: NSWindowController,
     /// After any annotation change: re-filter when an annotation-driven
     /// filter is active (membership may have changed), otherwise just
     /// redraw badges and the detail pane.
+    /// Rebuilds the searchable text for the clips already loaded, off the
+    /// main thread.
+    ///
+    /// It reads a body file for every rich clip in the window, which is the
+    /// same cost the window load has, so it cannot run on the main thread
+    /// either. It takes a window-load generation, so a reload started
+    /// afterwards wins and this result is discarded rather than writing
+    /// pre-change text over post-change text.
+    private func recomputeSearchableText(then completion: @escaping () -> Void) {
+        let generation = windowLoad.begin()
+        let events = self.events
+        let reader = self.reader
+        pendingWindowLoadCompletions.append(completion)
+        windowLoadQueue.async { @Sendable [weak self] in
+            let text = ClipboardSearchText.windowText(events: events, reader: reader)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, self.windowLoad.accept(generation) else {
+                        return
+                    }
+                    self.searchableText = text
+                    self.runPendingWindowLoadCompletions()
+                }
+            }
+        }
+    }
+
+    private func runPendingWindowLoadCompletions() {
+        let completions = pendingWindowLoadCompletions
+        pendingWindowLoadCompletions.removeAll()
+        for completion in completions {
+            completion()
+        }
+    }
+
     private func refreshAfterAnnotationChange() {
         // Manual sensitivity changes must affect an active text query now.
-        searchableText = ClipboardSearchText.windowText(events: events, reader: reader)
+        recomputeSearchableText { [weak self] in
+            self?.applyAnnotationChange()
+        }
+    }
+
+    private func applyAnnotationChange() {
         if scope == .thisWindow && !ClipboardSearchText.terms(searchField.stringValue).isEmpty {
             applyFilter()
             return
@@ -2635,14 +2710,17 @@ final class ClipboardPanelController: NSWindowController,
         do {
             let result = try engine.execute(criteria)
             onArchiveMutation(.eventsDeleted)
-            reload()
             var status = result.matchedEvents == 1
                 ? "Clip deleted · reclaimed \(byteString(result.reclaimedBytes))"
                 : "\(result.matchedEvents) clips deleted · reclaimed \(byteString(result.reclaimedBytes))"
             if result.exemptedPinnedEvents > 0 {
                 status += " · \(result.exemptedPinnedEvents) pinned kept"
             }
-            statusLabel.stringValue = status
+            // The reload now finishes after this method returns, so the
+            // outcome is reported when the rows it describes are on screen.
+            reload { [weak self] in
+                self?.statusLabel.stringValue = status
+            }
         } catch {
             onArchiveMutation(.eventsDeleted)
             statusLabel.stringValue = "Delete failed"
@@ -2653,24 +2731,95 @@ final class ClipboardPanelController: NSWindowController,
         ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
     }
 
-    private func reload() {
+    /// Reloads the working window from disk on the serial archive queue.
+    ///
+    /// The reader walks day files newest-first and decodes rows, and
+    /// `windowText` reads a body for every rich clip it finds; on the main
+    /// thread at a five-thousand-clip window that is about a second of
+    /// nothing happening. The rows already on screen stay there while the
+    /// load runs, only the newest load applies its result, and `completion`
+    /// runs after the rows are applied so a caller's status message is not
+    /// overwritten by the refresh it asked for.
+    private func reload(then completion: (() -> Void)? = nil) {
         refreshAnnotationState()
         expandedGroupHashes.removeAll()
         if scope == .thisWindow {
-            historySubtitle.stringValue = "\(historyWindow.displayName) · local to this Mac"
+            historySubtitle.stringValue = workingWindowSubtitle
         }
         let since = Calendar.current.date(
             byAdding: .day,
             value: -historyWindow.dayCount,
             to: Date()
         ) ?? Date()
-        events = (try? reader.recentItems(since: since, limit: recentItemLimit)) ?? []
-        searchableText = ClipboardSearchText.windowText(events: events, reader: reader)
-        if scope == .allHistory {
-            scheduleArchiveQuery(debounced: false)
-        } else {
-            applyFilter()
+        let generation = windowLoad.begin()
+        let startingScope = scope
+        let limit = recentItemLimit
+        let reader = self.reader
+        let startedAt = Date()
+        if let completion {
+            pendingWindowLoadCompletions.append(completion)
         }
+        scheduleWindowLoadHint(for: generation)
+        windowLoadQueue.async { @Sendable [weak self] in
+            let events = (try? reader.recentItems(since: since, limit: limit)) ?? []
+            let searchableText = ClipboardSearchText.windowText(events: events, reader: reader)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else {
+                        return
+                    }
+                    guard self.windowLoad.accept(generation) else {
+                        return // a later reload is already in flight — drop
+                    }
+                    self.cancelWindowLoadHint()
+                    self.windowLoadMs = Date().timeIntervalSince(startedAt) * 1000
+                    self.events = events
+                    self.searchableText = searchableText
+                    if self.scope == .thisWindow {
+                        self.historySubtitle.stringValue = self.workingWindowSubtitle
+                        self.applyFilter()
+                    } else if startingScope == .allHistory {
+                        // A refresh asked for while All History was showing
+                        // re-runs its query. A scope switch that happened
+                        // while this load was in flight has already run one,
+                        // so that case is left alone.
+                        self.scheduleArchiveQuery(debounced: false)
+                    }
+                    self.runPendingWindowLoadCompletions()
+                }
+            }
+        }
+    }
+
+    /// Wall time of the last applied window load, for automation receipts.
+    private var windowLoadMs: Double = -1
+
+    private var workingWindowSubtitle: String {
+        "\(historyWindow.displayName) · local to this Mac"
+    }
+
+    /// A load that finishes quickly must not flash a message, so the hint
+    /// is a main-queue block a tenth of a second out that the completion
+    /// cancels. A load that beats it shows nothing at all.
+    private func scheduleWindowLoadHint(for generation: Int) {
+        pendingWindowLoadHint?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self,
+                      self.scope == .thisWindow,
+                      self.windowLoad.isOutstanding(generation) else {
+                    return
+                }
+                self.historySubtitle.stringValue = self.workingWindowSubtitle + " · Loading…"
+            }
+        }
+        pendingWindowLoadHint = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
+    }
+
+    private func cancelWindowLoadHint() {
+        pendingWindowLoadHint?.cancel()
+        pendingWindowLoadHint = nil
     }
 
     private func applyFilter() {
@@ -3288,6 +3437,10 @@ final class ClipboardPanelController: NSWindowController,
             }
             return
         }
+        if filteredEvents.isEmpty, windowLoad.isLoading {
+            statusLabel.stringValue = "Loading…"
+            return
+        }
         let selectedCount = tableView.selectedRowIndexes.count
         let total = filteredEvents.count
         let isFiltered = !searchField.stringValue.isEmpty
@@ -3440,6 +3593,11 @@ final class ClipboardPanelController: NSWindowController,
             if selected.count > 1 {
                 detailTitle.stringValue = "\(selected.count) clips selected"
                 detailMetadata.stringValue = "Copy combines them with a blank line between each clip."
+            } else if events.isEmpty, windowLoad.isLoading {
+                // Nothing has been read yet, so "no clips" would be a claim
+                // about the archive that this window cannot make.
+                detailTitle.stringValue = "Loading…"
+                detailMetadata.stringValue = ""
             } else if events.isEmpty {
                 detailTitle.stringValue = "No clips yet"
                 // Honest first-run hint (Slice 9): if capture is off or
