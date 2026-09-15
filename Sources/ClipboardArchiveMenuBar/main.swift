@@ -5,7 +5,12 @@ import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 
-private let archiveRoot = ClipboardDefaults.archiveRoot()
+/// One resolution for the whole app, so every surface — capture, panel,
+/// dashboard, bulk sheet — reads and writes the same two stores, and so the
+/// pointer published below names exactly what this process is using.
+let storeResolution = ClipboardStoreLocator.resolve()
+private let archiveRoot = storeResolution.archiveRoot
+let resolvedIndexURL = storeResolution.indexPath
 
 @MainActor
 final class ClipboardMenuBarApp: NSObject,
@@ -27,7 +32,7 @@ final class ClipboardMenuBarApp: NSObject,
     /// real clipboard; production always uses `NSPasteboard.general`.
     private var pasteboard = NSPasteboard.general
     private let archiveWriter = ClipboardArchiveWriter(archiveRoot: archiveRoot)
-    private let derivedIndex = ClipboardDerivedIndex(archiveRoot: archiveRoot)
+    private let derivedIndex = ClipboardDerivedIndex(archiveRoot: archiveRoot, indexURL: resolvedIndexURL)
     private lazy var ingestor = ClipboardIngestor(
         filter: ClipboardPrivacyFilter(settings: settings),
         archiveWriter: archiveWriter,
@@ -35,9 +40,9 @@ final class ClipboardMenuBarApp: NSObject,
         richImageMaxBytes: settings.richImageMaxBytes
     )
     private let reader = ClipboardArchiveReader(archiveRoot: archiveRoot)
-    private let redactor = ClipboardArchiveRedactor(archiveRoot: archiveRoot)
+    private let redactor = ClipboardArchiveRedactor(archiveRoot: archiveRoot, indexURL: resolvedIndexURL)
     private let annotationsStore = ClipboardAnnotationsStore(archiveRoot: archiveRoot)
-    private let occurrenceResolver = ClipboardOccurrenceResolver(archiveRoot: archiveRoot)
+    private let occurrenceResolver = ClipboardOccurrenceResolver(archiveRoot: archiveRoot, indexURL: resolvedIndexURL)
     private var capturedCount = 0
     private var blockedCount = 0
     /// In-memory estimate of live (unsuppressed) archive events, used so the
@@ -520,7 +525,7 @@ final class ClipboardMenuBarApp: NSObject,
     /// background sweep. Wired to launch, the 30-minute timer, and surface
     /// opens — NEVER the capture poll.
     private func sweepExpiredIfDue() {
-        let sweeper = ClipboardExpirySweeper(archiveRoot: archiveRoot)
+        let sweeper = ClipboardExpirySweeper(archiveRoot: archiveRoot, indexURL: resolvedIndexURL)
         guard let due = sweeper.nextDue(), due <= Date() else {
             return
         }
@@ -572,6 +577,7 @@ final class ClipboardMenuBarApp: NSObject,
         }
         let controller = ClipboardBackupUIController(
             archiveRoot: archiveRoot,
+            indexURL: resolvedIndexURL,
             onArchiveMutated: { [weak self] in
                 guard let self else {
                     return
@@ -628,7 +634,7 @@ final class ClipboardMenuBarApp: NSObject,
 
     @objc private func rebuildIndex() {
         do {
-            let count = try ClipboardDerivedIndex(archiveRoot: archiveRoot).rebuild()
+            let count = try ClipboardDerivedIndex(archiveRoot: archiveRoot, indexURL: resolvedIndexURL).rebuild()
             lastStatus = "Indexed \(count) items"
             rebuildMenu()
         } catch {
@@ -1282,7 +1288,7 @@ final class ClipboardMenuBarApp: NSObject,
                         .environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_SWEEP_EXPIRED"] == "1" {
                         // Synchronous sweep so the receipt is deterministic;
                         // production wiring uses the same sweeper off-main.
-                        let sweep = try? ClipboardExpirySweeper(archiveRoot: archiveRoot)
+                        let sweep = try? ClipboardExpirySweeper(archiveRoot: archiveRoot, indexURL: resolvedIndexURL)
                             .sweepIfDue()
                         self.automationSweepReceipt = [
                             "sweptHashes": sweep?.sweptContentHashes ?? -1,
@@ -1867,7 +1873,7 @@ final class ClipboardMenuBarApp: NSObject,
         for event in oldestTwo {
             try annotationsStore.setPinned(true, forContentHash: event.contentHash)
         }
-        let result = try ClipboardArchivePruner(archiveRoot: archiveRoot)
+        let result = try ClipboardArchivePruner(archiveRoot: archiveRoot, indexURL: resolvedIndexURL)
             .enforceRetentionLimit(keepingMostRecent: 10, reason: "ui-automation-retention")
         let liveIDs = Set(
             ((try? reader.recentItems(since: .distantPast, limit: 100)) ?? []).map(\.id)
@@ -2412,7 +2418,7 @@ final class ClipboardMenuBarApp: NSObject,
         }
         capturesSinceRetentionScan = 0
         do {
-            let result = try ClipboardArchivePruner(archiveRoot: archiveRoot)
+            let result = try ClipboardArchivePruner(archiveRoot: archiveRoot, indexURL: resolvedIndexURL)
                 .enforceRetentionLimit(
                     keepingMostRecent: limit,
                     reason: "retention-\(settings.retentionMode.rawValue)"
@@ -2977,6 +2983,25 @@ final class ClipboardMenuBarApp: NSObject,
 let instanceLock = AppInstanceLock()
 guard instanceLock.acquire() else {
     exit(0)
+}
+
+// This process is the one that holds the stores open, so it publishes where
+// they are for any command run later from a terminal that has none of its
+// environment. Only paths that came from an environment variable or an
+// explicit argument are published, so a hand launch with no environment can
+// never redirect those commands. Best effort by design: a pointer that
+// cannot be written is a lost convenience, never a failed launch.
+do {
+    _ = try ClipboardStoreLocator.publishPointer(
+        for: storeResolution,
+        writtenBy: "ClipboardArchive \(ClipboardVersionInfo.currentAppVersion())"
+            + " (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"))"
+    )
+} catch {
+    // The symptom of a silent failure here is a later command reading a
+    // different store, so it leaves a content-free trace rather than none.
+    ClipboardUsageLog(archiveRoot: storeResolution.archiveRoot)
+        .record(.error, outcome: .failed)
 }
 
 let app = NSApplication.shared

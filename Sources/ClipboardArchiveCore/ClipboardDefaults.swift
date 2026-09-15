@@ -11,7 +11,7 @@ public enum ClipboardDefaults {
         if let path = environment[archiveEnvironmentKey], !path.isEmpty {
             return URL(fileURLWithPath: path)
         }
-        return applicationSupportRoot()
+        return applicationSupportRoot(environment: environment)
             .appendingPathComponent("Archive", isDirectory: true)
             .appendingPathComponent("clipboard-history", isDirectory: true)
     }
@@ -20,7 +20,7 @@ public enum ClipboardDefaults {
         if let path = environment[indexEnvironmentKey], !path.isEmpty {
             return URL(fileURLWithPath: path)
         }
-        return applicationSupportRoot()
+        return applicationSupportRoot(environment: environment)
             .appendingPathComponent("Indexes", isDirectory: true)
             .appendingPathComponent("clipboard-search.sqlite")
     }

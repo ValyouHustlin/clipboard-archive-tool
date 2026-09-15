@@ -109,7 +109,21 @@ Default per-user install locations:
 ~/Library/LaunchAgents/app.clipboardarchive.plist
 ~/Library/Application Support/ClipboardArchive/Archive/clipboard-history
 ~/Library/Application Support/ClipboardArchive/Indexes/clipboard-search.sqlite
+~/Library/Application Support/ClipboardArchive/stores.json
 ```
+
+### How the CLI finds the stores
+
+The app and `clipboard-archive` resolve the archive folder and the search
+index separately, each in the same order: an explicit `--archive-root` or
+`--index-path` argument, then `CLIPBOARD_ARCHIVE_ARCHIVE_ROOT` or
+`CLIPBOARD_ARCHIVE_INDEX_PATH`, then `stores.json`, then the default paths
+above. `stores.json` is how a terminal with no environment reads the same
+stores as the running app: the app writes it at launch, but only for paths it
+was given explicitly, so starting the app by hand with no environment can
+never redirect later commands, and a path that no longer exists is skipped.
+Run `clipboard-archive stores` to see which source won for each path, and
+whether another index file is sitting unused at the default location.
 
 To update, copy a newer release folder and run `./install.sh` again. Existing
 archive data remains in place.

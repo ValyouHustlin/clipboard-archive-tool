@@ -63,7 +63,7 @@ final class ClipboardBulkSheetController: NSObject {
         onExecuted: @escaping (ClipboardBulkResult) -> Void
     ) {
         self.archiveRoot = archiveRoot
-        self.engine = ClipboardBulkEngine(archiveRoot: archiveRoot)
+        self.engine = ClipboardBulkEngine(archiveRoot: archiveRoot, indexURL: resolvedIndexURL)
         self.onExecuted = onExecuted
         self.sheetWindow = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 520, height: 280),
@@ -171,7 +171,7 @@ final class ClipboardBulkSheetController: NSObject {
     }
 
     private func populateAppPopup() {
-        let index = ClipboardDerivedIndex(archiveRoot: archiveRoot)
+        let index = ClipboardDerivedIndex(archiveRoot: archiveRoot, indexURL: resolvedIndexURL)
         workQueue.async { @Sendable [weak self] in
             let apps = (try? index.distinctSourceApps()) ?? []
             DispatchQueue.main.async {

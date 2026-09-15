@@ -242,10 +242,10 @@ final class ClipboardPanelController: NSWindowController,
     ) {
         self.archiveRoot = archiveRoot
         self.reader = ClipboardArchiveReader(archiveRoot: archiveRoot)
-        self.redactor = ClipboardArchiveRedactor(archiveRoot: archiveRoot)
+        self.redactor = ClipboardArchiveRedactor(archiveRoot: archiveRoot, indexURL: resolvedIndexURL)
         self.annotations = ClipboardAnnotationsStore(archiveRoot: archiveRoot)
-        self.occurrenceResolver = ClipboardOccurrenceResolver(archiveRoot: archiveRoot)
-        self.derivedIndex = ClipboardDerivedIndex(archiveRoot: archiveRoot)
+        self.occurrenceResolver = ClipboardOccurrenceResolver(archiveRoot: archiveRoot, indexURL: resolvedIndexURL)
+        self.derivedIndex = ClipboardDerivedIndex(archiveRoot: archiveRoot, indexURL: resolvedIndexURL)
         self.copyEventToPasteboard = copyEventToPasteboard
         self.copyPlainTextToPasteboard = copyPlainTextToPasteboard
         self.isCaptureEnabled = isCaptureEnabled
@@ -2584,7 +2584,7 @@ final class ClipboardPanelController: NSWindowController,
         // Slice 5 reroute: multi-select deletion flows through the ONE bulk
         // engine path, so the confirmation shows the SAME truthful numbers
         // (count + reclaimed bytes) the execution will report.
-        let engine = ClipboardBulkEngine(archiveRoot: archiveRoot)
+        let engine = ClipboardBulkEngine(archiveRoot: archiveRoot, indexURL: resolvedIndexURL)
         var criteria = ClipboardBulkCriteria(eventIDs: Set(selected.map(\.id)))
         guard var preview = try? engine.preview(criteria) else {
             statusLabel.stringValue = "Could not preview the deletion"

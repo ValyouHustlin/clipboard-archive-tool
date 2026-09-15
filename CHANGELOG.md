@@ -13,6 +13,18 @@
 
 ## Unreleased
 
+- Resolve the archive and the search index through one shared resolver, so
+  the app and the command line always name the same stores. Each path is
+  decided on its own: an explicit argument, then the environment variable,
+  then the pointer file the app publishes at launch, then the default
+  location. A terminal with none of the app's environment therefore reads
+  the app's stores instead of a stale file at the default path. New
+  `clipboard-archive stores` reports each resolved path with its source, the
+  pointer's status, and any unused index file left at the default location;
+  `health` reports the same sources alongside its existing fields.
+- Fix an injected application-support root being ignored when deriving the
+  default archive and index paths.
+
 - Support a symlinked archive root: the root is resolved once before every
   containment test and directory walk, so history, search, health, and backup
   read an archive folder reached through a link exactly like the real

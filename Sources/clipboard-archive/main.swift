@@ -7,6 +7,8 @@ struct CLIOptions {
     var positional: [String]
     var archiveRoot: URL
     var indexPath: URL
+    /// Where those two paths came from, for the surfaces that report it.
+    var storeResolution: ClipboardStoreResolution
     var intervalSeconds: TimeInterval
     var durationSeconds: TimeInterval?
     var inlineLimitBytes: Int
@@ -35,8 +37,8 @@ struct CLIOptions {
         }
 
         var positional: [String] = []
-        var archiveRoot = ClipboardDefaults.archiveRoot()
-        var indexPath = ClipboardDefaults.indexURL()
+        var archiveRootOverride: URL?
+        var indexPathOverride: URL?
         var intervalSeconds: TimeInterval = 1.0
         var durationSeconds: TimeInterval?
         var inlineLimitBytes = 64 * 1024
@@ -63,11 +65,11 @@ struct CLIOptions {
             case "--archive-root":
                 index += 1
                 guard index < args.count else { throw CLIError.missingValue("--archive-root") }
-                archiveRoot = URL(fileURLWithPath: args[index])
+                archiveRootOverride = URL(fileURLWithPath: args[index])
             case "--index-path":
                 index += 1
                 guard index < args.count else { throw CLIError.missingValue("--index-path") }
-                indexPath = URL(fileURLWithPath: args[index])
+                indexPathOverride = URL(fileURLWithPath: args[index])
             case "--interval":
                 index += 1
                 guard index < args.count, let value = TimeInterval(args[index]), value > 0 else {
@@ -154,11 +156,22 @@ struct CLIOptions {
             index += 1
         }
 
+        // One resolver for this CLI and the app: explicit argument, then
+        // environment variable, then the pointer the running app published,
+        // then the per-user default — decided for each path on its own.
+        let resolution = ClipboardStoreLocator.resolve(
+            overrides: ClipboardStoreOverrides(
+                archiveRoot: archiveRootOverride,
+                indexPath: indexPathOverride
+            )
+        )
+
         return CLIOptions(
             command: command,
             positional: positional,
-            archiveRoot: archiveRoot,
-            indexPath: indexPath,
+            archiveRoot: resolution.archiveRoot,
+            indexPath: resolution.indexPath,
+            storeResolution: resolution,
             intervalSeconds: intervalSeconds,
             durationSeconds: durationSeconds,
             inlineLimitBytes: inlineLimitBytes,
@@ -197,9 +210,12 @@ enum CLIError: Error, CustomStringConvertible {
     case missingValue(String)
     case invalidValue(String)
     case unknownArgument(String)
+    case unreadableHealthReport
 
     var description: String {
         switch self {
+        case .unreadableHealthReport:
+            return "could not render the health report as JSON"
         case let .missingValue(argument):
             return "missing value for \(argument)"
         case let .invalidValue(argument):
@@ -448,14 +464,76 @@ case "index-search":
     let output = try ClipboardDerivedIndex(archiveRoot: options.archiveRoot, indexURL: options.indexPath).search(query, limit: options.limit)
     print(output.isEmpty ? "no matches" : output)
 
+case "stores":
+    let resolution = options.storeResolution
+    let alternate = ClipboardStoreLocator.alternateIndexReport(for: resolution)
+    if options.json {
+        var object: [String: Any] = [
+            "schema": 1,
+            "archive": ["path": resolution.archiveRoot.path, "origin": resolution.archiveOrigin.rawValue],
+            "index": ["path": resolution.indexPath.path, "origin": resolution.indexOrigin.rawValue],
+            "settings": ["path": resolution.settingsURL.path],
+            "lock": ["path": resolution.lockURL.path],
+            "pointer": ["path": resolution.pointerURL.path, "status": resolution.pointerStatus.rawValue]
+        ]
+        if let alternate {
+            // An unreadable database reports null rather than dropping the
+            // key, so the JSON shape matches the text output's "unreadable".
+            let report: [String: Any] = [
+                "path": alternate.path,
+                "bytes": alternate.bytes,
+                "rows": alternate.rowCount.map { $0 as Any } ?? NSNull(),
+                "index_user_version": alternate.userVersion.map { $0 as Any } ?? NSNull()
+            ]
+            object["alternate_index"] = report
+        }
+        let data = try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        )
+        print(String(data: data, encoding: .utf8) ?? "{}")
+    } else {
+        print("Clipboard Archive stores")
+        print("archive: \(resolution.archiveRoot.path) (\(resolution.archiveOrigin.rawValue))")
+        print("index: \(resolution.indexPath.path) (\(resolution.indexOrigin.rawValue))")
+        print("settings: \(resolution.settingsURL.path)")
+        print("lock: \(resolution.lockURL.path)")
+        print("pointer: \(resolution.pointerURL.path) (\(resolution.pointerStatus.rawValue))")
+        if let alternate {
+            print("alternate_index: \(alternate.path)")
+            print("alternate_index_bytes: \(alternate.bytes)")
+            print("alternate_index_rows: \(alternate.rowCount.map(String.init) ?? "unreadable")")
+            print("alternate_index_user_version: \(alternate.userVersion.map(String.init) ?? "unreadable")")
+        } else {
+            print("alternate_index: none")
+        }
+    }
+
 case "health":
     let reporter = ClipboardArchiveHealthReporter(archiveRoot: options.archiveRoot, indexURL: options.indexPath)
     let health = try reporter.health()
+    let resolution = options.storeResolution
+    let alternateIndexBytes = ClipboardStoreLocator.alternateIndexReport(for: resolution)?.bytes ?? 0
     if options.json {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        print(String(data: try encoder.encode(health), encoding: .utf8) ?? "{}")
+        // The resolution facts are additive: the reporter's own fields are
+        // encoded unchanged, then the four store-resolution keys are added.
+        guard var object = try JSONSerialization.jsonObject(
+            with: try encoder.encode(health)
+        ) as? [String: Any] else {
+            throw CLIError.unreadableHealthReport
+        }
+        object["archive_root_source"] = resolution.archiveOrigin.rawValue
+        object["index_source"] = resolution.indexOrigin.rawValue
+        object["pointer_status"] = resolution.pointerStatus.rawValue
+        object["alternate_index_bytes"] = alternateIndexBytes
+        let data = try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        )
+        print(String(data: data, encoding: .utf8) ?? "{}")
     } else {
         print("Clipboard Archive health")
         print("archive: \(health.archiveRoot)")
@@ -482,6 +560,10 @@ case "health":
         print("annotations_bytes: \(health.annotationsBytes)")
         print("rich_content_events: \(health.richContentEvents)")
         print("orphaned_rich_bodies: \(health.orphanedRichBodyFiles)")
+        print("archive_root_source: \(resolution.archiveOrigin.rawValue)")
+        print("index_source: \(resolution.indexOrigin.rawValue)")
+        print("pointer_status: \(resolution.pointerStatus.rawValue)")
+        print("alternate_index_bytes: \(alternateIndexBytes)")
         if let oldest = health.oldestCapturedAt {
             print("oldest_captured_at: \(ISO8601DateFormatter().string(from: oldest))")
         }
@@ -513,6 +595,8 @@ default:
       repair-index Rebuild the derived SQLite FTS search index.
       index-search QUERY Search the derived SQLite FTS index.
       health       Report archive/index health.
+      stores       Report which archive, index, settings, lock and pointer
+                   file this command resolved, and where each came from.
       write-manifest Write today's daily manifest.
       backup create FILE   Write an encrypted backup (.clipbak) of the archive.
                            Options: --include-settings, --passphrase-stdin.
@@ -526,10 +610,16 @@ default:
     Monitor options:
       --duration SECONDS            Stop after this many seconds.
       --interval SECONDS            Polling interval. Default: 1.
-      --archive-root PATH           Default: ~/Library/Application Support/ClipboardArchive/Archive/clipboard-history
+      --archive-root PATH           Archive location. Resolved in order: this argument,
+                                    then CLIPBOARD_ARCHIVE_ARCHIVE_ROOT, then the pointer
+                                    the running app published, then
+                                    ~/Library/Application Support/ClipboardArchive/Archive/clipboard-history.
       --index-path PATH             Derived search index location used by monitor, redact,
-                                    prune, repair-index, index-search, and health.
-                                    Default: ~/Library/Application Support/ClipboardArchive/Indexes/clipboard-search.sqlite
+                                    prune, repair-index, index-search, and health. Resolved in
+                                    order: this argument, then CLIPBOARD_ARCHIVE_INDEX_PATH,
+                                    then the pointer the running app published, then
+                                    ~/Library/Application Support/ClipboardArchive/Indexes/clipboard-search.sqlite.
+                                    Run `stores` to see which one won.
       --inline-limit-bytes BYTES    Default: 65536. Larger content uses body files.
       --limit N                     Search result limit. Default: 25.
       --since YYYY-MM-DD            Search lower date bound.

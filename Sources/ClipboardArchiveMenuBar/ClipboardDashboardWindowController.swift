@@ -49,7 +49,7 @@ final class ClipboardDashboardWindowController: NSWindowController {
     init(archiveRoot: URL, onArchiveMutated: @escaping () -> Void = {}) {
         self.archiveRoot = archiveRoot
         self.reader = ClipboardArchiveReader(archiveRoot: archiveRoot)
-        self.derivedIndex = ClipboardDerivedIndex(archiveRoot: archiveRoot)
+        self.derivedIndex = ClipboardDerivedIndex(archiveRoot: archiveRoot, indexURL: resolvedIndexURL)
         self.onArchiveMutated = onArchiveMutated
 
         let window = NSWindow(
@@ -386,7 +386,7 @@ final class ClipboardDashboardWindowController: NSWindowController {
         let archiveRoot = archiveRoot
         let reader = reader
         workQueue.async { @Sendable [weak self] in
-            let health = try? ClipboardArchiveHealthReporter(archiveRoot: archiveRoot).health()
+            let health = try? ClipboardArchiveHealthReporter(archiveRoot: archiveRoot, indexURL: resolvedIndexURL).health()
             let since = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
             let blocked = (try? reader.recentBlockedEvents(since: since, limit: 8)) ?? []
             DispatchQueue.main.async {
@@ -505,7 +505,7 @@ final class ClipboardDashboardWindowController: NSWindowController {
         let archiveRoot = archiveRoot
         workQueue.async { @Sendable [weak self] in
             let indexOK = index.quickCheck()
-            let health = try? ClipboardArchiveHealthReporter(archiveRoot: archiveRoot).health()
+            let health = try? ClipboardArchiveHealthReporter(archiveRoot: archiveRoot, indexURL: resolvedIndexURL).health()
             let receipt: String
             if let health {
                 let indexPart = FileManager.default.fileExists(atPath: index.indexURL.path)
@@ -554,7 +554,7 @@ final class ClipboardDashboardWindowController: NSWindowController {
         let selectedIndex = cleanupAgePopup.indexOfSelectedItem
         let criteria = ClipboardBulkCriteria(until: cleanupCutoff())
         cleanupResultLabel.stringValue = "Previewing…"
-        let engine = ClipboardBulkEngine(archiveRoot: archiveRoot)
+        let engine = ClipboardBulkEngine(archiveRoot: archiveRoot, indexURL: resolvedIndexURL)
         workQueue.async { @Sendable [weak self] in
             let preview = try? engine.preview(criteria)
             DispatchQueue.main.async {
@@ -603,7 +603,7 @@ final class ClipboardDashboardWindowController: NSWindowController {
         cleanupDeleteButton.isEnabled = false
         cleanupResultLabel.stringValue = "Deleting…"
         let criteria = ClipboardBulkCriteria(until: cleanupCutoff())
-        let engine = ClipboardBulkEngine(archiveRoot: archiveRoot)
+        let engine = ClipboardBulkEngine(archiveRoot: archiveRoot, indexURL: resolvedIndexURL)
         workQueue.async { @Sendable [weak self] in
             let result = try? engine.execute(criteria)
             DispatchQueue.main.async {

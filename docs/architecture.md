@@ -89,6 +89,19 @@ CLIPBOARD_ARCHIVE_INDEX_PATH
 CLIPBOARD_ARCHIVE_APPLICATION_SUPPORT_ROOT
 ```
 
+One resolver decides both paths for both binaries, each path independently:
+an explicit `--archive-root`/`--index-path` argument, then the environment
+variable, then the pointer file
+`~/Library/Application Support/ClipboardArchive/stores.json`, then the
+default above. The app publishes that pointer at launch — atomically, 0600,
+and only for paths it resolved from an argument or the environment — so a
+terminal session with none of that environment reads the same stores the app
+is using, while a launch that fell back to the defaults leaves the pointer
+untouched. A reader skips a pointer entry whose origin is anything else or
+whose path has gone, and falls back to the default. `clipboard-archive
+stores` prints the resolved paths, the source of each, the pointer's status,
+and any unused index file left at the default location.
+
 Aaron's current LaunchAgent pins those two values to:
 
 ```text
