@@ -6,6 +6,16 @@ COUNT="${1:-50000}"
 ARCHIVE_ROOT="${2:-/tmp/clipboard-archive-scale-benchmark}"
 INDEX_PATH="$ARCHIVE_ROOT/index/clipboard-search.sqlite"
 
+# The benchmark generates synthetic events and deletes its root first, so it
+# only ever runs against a scratch directory.
+case "$ARCHIVE_ROOT" in
+  /tmp/*|/private/tmp/*) ;;
+  *)
+    echo "refusing to benchmark outside /tmp: $ARCHIVE_ROOT" >&2
+    exit 2
+    ;;
+esac
+
 rm -rf "$ARCHIVE_ROOT"
 mkdir -p "$ARCHIVE_ROOT"
 cd "$ROOT"
@@ -61,7 +71,10 @@ PY
 end_generate="$(date +%s)"
 
 start_index="$(date +%s)"
-"$ROOT/.build/debug/clipboard-archive" repair-index --archive-root "$ARCHIVE_ROOT" >/tmp/clipboard-archive-scale-index.out
+# The index path is ALWAYS explicit: without it the benchmark rebuilds the
+# user's default search index from synthetic rows.
+mkdir -p "$(dirname "$INDEX_PATH")"
+"$ROOT/.build/debug/clipboard-archive" repair-index --archive-root "$ARCHIVE_ROOT" --index-path "$INDEX_PATH" >/tmp/clipboard-archive-scale-index.out
 end_index="$(date +%s)"
 
 start_search="$(date +%s)"
@@ -76,4 +89,5 @@ echo "events: $COUNT"
 echo "generate_seconds: $((end_generate - start_generate))"
 echo "index_seconds: $((end_index - start_index))"
 echo "search_seconds: $((end_search - start_search))"
+echo "index path: $INDEX_PATH"
 cat /tmp/clipboard-archive-scale-integrity.out

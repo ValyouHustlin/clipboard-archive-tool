@@ -155,7 +155,10 @@ public struct ClipboardDeletionLedger: Sendable {
     }
 
     private func ledgerRootKey() -> String {
-        archiveRoot.standardizedFileURL
+        // One canonical spelling per archive: a symlinked root and the real
+        // path must share a cache entry, or an invalidation on one spelling
+        // leaves the other serving a stale deleted-id set.
+        ClipboardArchivePath.resolvedRoot(archiveRoot)
             .appendingPathComponent("deletion-ledger")
             .path
     }

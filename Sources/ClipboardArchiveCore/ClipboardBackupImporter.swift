@@ -386,9 +386,13 @@ public struct ClipboardBackupImporter: Sendable {
         var localEventIDs = Set<String>()
         var localLiveEventIDs = Set<String>()
         var localLinesByDayFile: [String: Set<Data>] = [:]
-        let rootPath = archiveRoot.standardizedFileURL.path
+        let rootPath = ClipboardArchivePath.resolvedRoot(archiveRoot).path
         for fileURL in localEventFiles {
-            let relative = String(fileURL.standardizedFileURL.path.dropFirst(rootPath.count + 1))
+            let filePath = fileURL.standardizedFileURL.path
+            guard filePath.hasPrefix(rootPath + "/") else {
+                continue
+            }
+            let relative = String(filePath.dropFirst(rootPath.count + 1))
             var lineSet = Set<Data>()
             for line in try String(contentsOf: fileURL).split(separator: "\n", omittingEmptySubsequences: true) {
                 guard let data = String(line).data(using: .utf8) else {

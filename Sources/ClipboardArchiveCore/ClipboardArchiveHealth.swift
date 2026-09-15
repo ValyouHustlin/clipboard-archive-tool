@@ -133,7 +133,7 @@ public struct ClipboardArchiveHealthReporter: Sendable {
     /// tombstones already handled them, so counting them here would flag
     /// history noise instead of the old-build rich-body orphaning gap.
     private func orphanedRichBodyCount(referencedBodyPaths: Set<String>) -> Int {
-        let root = archiveRoot.standardizedFileURL
+        let root = ClipboardArchivePath.resolvedRoot(archiveRoot)
         return regularFiles(under: root.appendingPathComponent("raw"))
             .filter { ["png", "tiff", "rtf", "json"].contains($0.pathExtension) }
             .filter { url in
@@ -303,7 +303,8 @@ public struct ClipboardArchiveHealthReporter: Sendable {
     }
 
     private func countBodyFiles() throws -> Int {
-        let root = archiveRoot.appendingPathComponent("raw")
+        let root = ClipboardArchivePath.resolvedRoot(archiveRoot)
+            .appendingPathComponent("raw")
         guard FileManager.default.fileExists(atPath: root.path) else {
             return 0
         }
@@ -324,7 +325,8 @@ public struct ClipboardArchiveHealthReporter: Sendable {
     /// Total bytes of large-item body files under `raw/` (Slice 5
     /// dashboard). Counting matches `countBodyFiles` (same extensions).
     private func bodyFileBytes() -> Int64 {
-        let root = archiveRoot.appendingPathComponent("raw")
+        let root = ClipboardArchivePath.resolvedRoot(archiveRoot)
+            .appendingPathComponent("raw")
         return regularFiles(under: root)
             .filter { Self.bodyFileExtensions.contains($0.pathExtension) }
             .reduce(Int64(0)) { total, url in
@@ -352,11 +354,14 @@ public struct ClipboardArchiveHealthReporter: Sendable {
     }
 
     private func regularFiles(under root: URL) -> [URL] {
-        guard FileManager.default.fileExists(atPath: root.path) else {
+        // Enumeration never descends a symlinked top-level directory, so
+        // the root is resolved before walking it.
+        let resolved = ClipboardArchivePath.resolvedRoot(root)
+        guard FileManager.default.fileExists(atPath: resolved.path) else {
             return []
         }
         let urls = FileManager.default.enumerator(
-            at: root,
+            at: resolved,
             includingPropertiesForKeys: [.isRegularFileKey]
         )?.compactMap { $0 as? URL } ?? []
         return urls.filter {

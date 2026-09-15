@@ -13,6 +13,18 @@
 
 ## Unreleased
 
+- Support a symlinked archive root: the root is resolved once before every
+  containment test and directory walk, so history, search, health, and backup
+  read an archive folder reached through a link exactly like the real
+  directory. The `/private/tmp` and `/tmp` spellings of one root now agree.
+- Report capture write failures in the menu instead of a dialog: the status
+  line reads `Archive error: <reason>` with a `Last error` line carrying the
+  reason class, time, and count since launch, capture keeps running, and the
+  next successful capture clears it. Dialogs remain for user-initiated
+  actions. Repeats of one reason within an hour only update the count.
+- Give the scale benchmark its own search index so a benchmark run cannot
+  rebuild the default index from synthetic rows.
+
 - What's New onboarding: a once-per-version window listing the headline
   features (quick picker, all-history search, pins & snippets, private mode
   and app privacy rules, encrypted backup, storage & health) with deep

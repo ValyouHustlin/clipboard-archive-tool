@@ -53,6 +53,23 @@ final class ClipboardMenuBarApp: NSObject,
     /// warning and is pushed into Settings on creation.
     private var shortcutFailureMessage: String?
     private var lastStatus = "Ready"
+#if DEBUG
+    private var automationCaptureFailureTicks = 0
+#endif
+    /// Capture-path failure state (never a modal): the class, when it was
+    /// first reported, when it last happened, and how many have occurred
+    /// since launch. A repeat of the SAME class inside an hour only bumps
+    /// the count and the time, so an unattended failure loop cannot spam
+    /// the status line or the run loop.
+    private struct CaptureFailureState {
+        var failure: ClipboardCaptureFailure
+        var reportedAt: Date
+        var lastAt: Date
+        var count: Int
+    }
+
+    private var captureFailureState: CaptureFailureState?
+    private static let captureFailureRepeatWindow: TimeInterval = 3600
     private var lastNonSelfApp = ClipboardSourceApp(name: "Unknown", bundleIdentifier: nil)
     private var panelController: ClipboardPanelController?
     private var settingsWindowController: ClipboardSettingsWindowController?
@@ -255,6 +272,9 @@ final class ClipboardMenuBarApp: NSObject,
             switch try ingestor.ingest(capture) {
             case let .stored(_, indexUpdate):
                 capturedCount += 1
+                // A successful capture clears the error state: the archive
+                // is writable again, so the menu stops reporting a failure.
+                captureFailureState = nil
                 lastStatus = indexUpdate == .failed
                     ? "Captured; index update pending"
                     : "Captured \(shortDate(Date()))"
@@ -272,9 +292,47 @@ final class ClipboardMenuBarApp: NSObject,
             }
             rebuildMenu()
         } catch {
-            lastStatus = "Archive error"
-            showError("Archive write failed: \(error)")
+            // NO modal here: an alert on the capture path stops the poll
+            // timer until a person clicks, and every copy made meanwhile is
+            // lost to change-count dedup. The failure becomes a menu status
+            // line instead; the ingest path already records the diagnostic
+            // row for this failure.
+            //
+            // The dedup hash is released as well: nothing was stored, so a
+            // later copy of the SAME content must be allowed to retry once
+            // the archive is writable again. The change count stays put, so
+            // the current pasteboard generation is not re-read every tick.
+            lastContentHash = nil
+            reportCaptureFailure(error)
         }
+    }
+
+    /// Records a capture failure in the menu without interrupting capture.
+    /// The first failure of a class (or the first after an hour) updates the
+    /// status line and rebuilds the menu; repeats inside that window only
+    /// update the count and the time.
+    private func reportCaptureFailure(_ error: Error) {
+        let failure = ClipboardCaptureFailure.classify(error)
+        let now = Date()
+        if var state = captureFailureState,
+           state.failure == failure,
+           now.timeIntervalSince(state.reportedAt) < Self.captureFailureRepeatWindow {
+            state.lastAt = now
+            state.count += 1
+            captureFailureState = state
+            return
+        }
+        let carriedCount = captureFailureState?.failure == failure
+            ? (captureFailureState?.count ?? 0) + 1
+            : 1
+        captureFailureState = CaptureFailureState(
+            failure: failure,
+            reportedAt: now,
+            lastAt: now,
+            count: carriedCount
+        )
+        lastStatus = "Archive error: \(failure.label) \(shortDate(now))"
+        rebuildMenu()
     }
 
     @objc private func togglePause() {
@@ -1141,6 +1199,13 @@ final class ClipboardMenuBarApp: NSObject,
                 // No seeding: the receipt proves NOTHING lands in the
                 // archive while private, including blocked-event lines.
                 runPrivateModeAutomation(snapshotPath: snapshotPath)
+                return true
+            } else if screen == "capturefailure" {
+                // Capture-failure receipt: an unwritable archive must
+                // never raise a modal on the capture path. Polling keeps
+                // running, the status line carries the failure class, and
+                // each failed ingest records exactly one diagnostic row.
+                runCaptureFailureAutomation()
                 return true
             } else if screen == "richcapture" {
                 // Slice 6: synthetic multi-representation items on the
@@ -2036,6 +2101,83 @@ final class ClipboardMenuBarApp: NSObject,
         }
     }
 
+    /// Drives the capture path against an archive whose `raw/` directory
+    /// cannot be written, for ~1 s of real poll ticks, and writes a receipt.
+    /// Runs only against the isolated /tmp roots the harness already
+    /// enforces, on the private automation pasteboard.
+    private func runCaptureFailureAutomation() {
+        settings.archiveEnabled = true
+        settings.captureRichContent = false
+        try? settingsStore.save(settings)
+
+        let rawDirectory = archiveRoot.appendingPathComponent("raw", isDirectory: true)
+        try? FileManager.default.createDirectory(at: rawDirectory, withIntermediateDirectories: true)
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o500))],
+            ofItemAtPath: rawDirectory.path
+        )
+
+        captureFailureTick(remaining: 5, rawDirectory: rawDirectory)
+    }
+
+    private func captureFailureTick(remaining: Int, rawDirectory: URL) {
+        guard remaining > 0 else {
+            finishCaptureFailureAutomation(rawDirectory: rawDirectory)
+            return
+        }
+        // A fresh synthetic marker per tick so dedup never short-circuits
+        // the ingest attempt; one attempt must produce one error row.
+        pasteboard.clearContents()
+        pasteboard.setString(
+            "synthetic capture-failure fixture \(automationCaptureFailureTicks)",
+            forType: .string
+        )
+        pollPasteboard()
+        automationCaptureFailureTicks += 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            self?.captureFailureTick(remaining: remaining - 1, rawDirectory: rawDirectory)
+        }
+    }
+
+    private func finishCaptureFailureAutomation(rawDirectory: URL) {
+        // Restore permissions so the isolated fixture can be cleaned up.
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o700))],
+            ofItemAtPath: rawDirectory.path
+        )
+        let alertWindows = NSApp.windows.filter {
+            $0.isVisible && $0.className.localizedCaseInsensitiveContains("alert")
+        }.count
+        let usageLines = (try? String(
+            contentsOf: archiveRoot
+                .appendingPathComponent("usage", isDirectory: true)
+                .appendingPathComponent("events.ndjson")
+        )) ?? ""
+        let usageErrorRows = usageLines
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .filter { $0.contains("\"event\":\"error\"") }
+            .count
+        let result: [String: Any] = [
+            "alert_windows_open": alertWindows,
+            "modal_window_present": NSApp.modalWindow != nil,
+            "poll_ticks": automationCaptureFailureTicks,
+            "ingest_attempts": automationCaptureFailureTicks,
+            "last_status_prefix": String(lastStatus.prefix(24)),
+            "usage_error_rows": usageErrorRows,
+            "stored_events": archiveEventCount()
+        ]
+        if let resultPath = ProcessInfo.processInfo
+            .environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_RESULT_PATH"],
+           !resultPath.isEmpty,
+           let data = try? JSONSerialization.data(
+               withJSONObject: result,
+               options: [.prettyPrinted, .sortedKeys]
+           ) {
+            try? data.write(to: URL(fileURLWithPath: resultPath), options: .atomic)
+        }
+        NSApp.terminate(nil)
+    }
+
     /// Synthetic rich-capture matrix: writes one kind's representations to
     /// the isolated automation pasteboard, runs one production poll tick,
     /// then copy-back + a second tick — the receipt proves what was stored,
@@ -2335,6 +2477,17 @@ final class ClipboardMenuBarApp: NSObject,
             blockedLine.isEnabled = false
             blockedLine.toolTip = ClipboardBlockedEventExplainer.explanation(for: lastBlockedReason)
             menu.addItem(blockedLine)
+        }
+        if let captureFailureState {
+            let errorLine = NSMenuItem(
+                title: "Last error: \(captureFailureState.failure.label) at "
+                    + "\(shortTime(captureFailureState.lastAt))"
+                    + (captureFailureState.count > 1 ? " (\(captureFailureState.count))" : ""),
+                action: nil,
+                keyEquivalent: ""
+            )
+            errorLine.isEnabled = false
+            menu.addItem(errorLine)
         }
         if shortcutFailureMessage != nil {
             let warning = NSMenuItem(

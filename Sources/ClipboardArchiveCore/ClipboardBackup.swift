@@ -399,9 +399,12 @@ public struct ClipboardBackupEnumerator: Sendable {
         into files: inout [ClipboardBackupContents.File],
         notIncluded: inout [String]
     ) throws {
-        let rootPath = archiveRoot.standardizedFileURL.path
+        // Same resolve-once rule as the reader: enumeration reports real
+        // paths, so a symlinked archive root must be resolved before the
+        // containment test or every file is skipped.
+        let rootPath = ClipboardArchivePath.resolvedRoot(archiveRoot).path
         let urls = FileManager.default.enumerator(
-            at: directory,
+            at: ClipboardArchivePath.resolvedRoot(directory),
             includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
             options: [.skipsHiddenFiles]
         )?.compactMap { $0 as? URL } ?? []

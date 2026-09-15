@@ -199,6 +199,10 @@ manifests/YYYY-MM-DD_manifest.json
 deletion-ledger/
 ```
 
+The archive root may be a symlink; it is resolved once, so an archive folder
+reached through a link reports the same events, health numbers, and search
+results as the real directory.
+
 Each stored event includes capture time, source app metadata, content type,
 hash, byte/line counts, privacy label, allowed local uses, preview text, and
 either inline content or a relative path to a large body file.
@@ -220,6 +224,17 @@ All History runs in the background with a short debounce. Substring searches
 scan indexed text, so larger archives can take longer than whole-word search.
 Results are newest first and capped (normally 200); deletion filtering can
 reduce a page below that cap.
+
+## When a capture cannot be stored
+
+A capture that cannot be written (disk full, permission denied, read-only
+volume, missing archive folder) never opens a dialog. Capture keeps polling,
+the menu status line reads `Archive error: <reason>`, and a `Last error` line
+shows the reason class, the time, and how many have happened since that
+reason was last cleared.
+Repeats of the same reason within an hour only update that line. The next
+successful capture clears it. Dialogs remain for actions a person started,
+such as a manual index rebuild or a delete.
 
 ## Local usage diagnostics
 

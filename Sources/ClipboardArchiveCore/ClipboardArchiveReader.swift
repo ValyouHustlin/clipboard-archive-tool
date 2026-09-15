@@ -156,7 +156,12 @@ public struct ClipboardArchiveReader: Sendable {
     }
 
     public func eventFiles() throws -> [URL] {
-        let rawRoot = archiveRoot.appendingPathComponent("raw")
+        // The root is resolved ONCE: enumeration reports real paths, so an
+        // unresolved root (a symlinked archive folder, or the /private/tmp
+        // spelling of /tmp) would fail the containment test below and drop
+        // every day file.
+        let resolvedRoot = ClipboardArchivePath.resolvedRoot(archiveRoot)
+        let rawRoot = resolvedRoot.appendingPathComponent("raw")
         guard FileManager.default.fileExists(atPath: rawRoot.path) else {
             return []
         }
@@ -175,7 +180,7 @@ public struct ClipboardArchiveReader: Sendable {
                       url.lastPathComponent.hasSuffix("_clipboard-events.ndjson") else {
                     return false
                 }
-                let rootPath = archiveRoot.standardizedFileURL.path
+                let rootPath = resolvedRoot.path
                 guard url.standardizedFileURL.path.hasPrefix(rootPath + "/") else {
                     return false
                 }

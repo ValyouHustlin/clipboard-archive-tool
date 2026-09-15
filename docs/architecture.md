@@ -126,6 +126,10 @@ large-body file, appends a deletion-ledger record, and deletes the matching row
 from the derived index. It does not erase backups or filesystem snapshots that
 already captured the data.
 
+The archive root is reduced to one canonical spelling (symlinks resolved)
+before any containment test or directory walk, so a symlinked archive root
+enumerates its day files instead of reading as empty.
+
 Every event-provided body path is resolved component by component beneath the
 archive root. Absolute paths, traversal components, and symlink escapes are
 rejected before read or deletion. App-created directories use mode `0700` and
