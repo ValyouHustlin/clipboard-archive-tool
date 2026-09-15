@@ -11,6 +11,10 @@ import UniformTypeIdentifiers
 let storeResolution = ClipboardStoreLocator.resolve()
 private let archiveRoot = storeResolution.archiveRoot
 let resolvedIndexURL = storeResolution.indexPath
+/// The operational record for this process: launch, stop, heartbeat,
+/// capture failures, prunes and fallbacks. Resolved from the same
+/// resolution as the stores, so an isolated run logs inside its own tree.
+let operationalLog = ClipboardOperationalLog(directory: storeResolution.logDirectory)
 
 @MainActor
 final class ClipboardMenuBarApp: NSObject,
@@ -32,11 +36,16 @@ final class ClipboardMenuBarApp: NSObject,
     /// real clipboard; production always uses `NSPasteboard.general`.
     private var pasteboard = NSPasteboard.general
     private let archiveWriter = ClipboardArchiveWriter(archiveRoot: archiveRoot)
-    private let derivedIndex = ClipboardDerivedIndex(archiveRoot: archiveRoot, indexURL: resolvedIndexURL)
+    private let derivedIndex = ClipboardDerivedIndex(
+        archiveRoot: archiveRoot,
+        indexURL: resolvedIndexURL,
+        operationalLog: operationalLog
+    )
     private lazy var ingestor = ClipboardIngestor(
         filter: ClipboardPrivacyFilter(settings: settings),
         archiveWriter: archiveWriter,
         derivedIndex: derivedIndex,
+        operationalLog: operationalLog,
         richImageMaxBytes: settings.richImageMaxBytes
     )
     private let reader = ClipboardArchiveReader(archiveRoot: archiveRoot)
@@ -58,6 +67,16 @@ final class ClipboardMenuBarApp: NSObject,
     /// warning and is pushed into Settings on creation.
     private var shortcutFailureMessage: String?
     private var lastStatus = "Ready"
+    /// Heartbeat state. The counters are what make a silent stop visible:
+    /// a row that says "0 polls" is as informative as a row that never
+    /// arrives, and both are things a person can look for.
+    private var heartbeatTimer: Timer?
+    private var heartbeatPolls = 0
+    private var heartbeatCaptures = 0
+    private var lastSuccessfulCaptureAt: Date?
+    private static let heartbeatIntervalSeconds: TimeInterval = 30 * 60
+    /// The first beat comes early so even a short-lived run leaves one.
+    private static let heartbeatFirstDelaySeconds: TimeInterval = 60
 #if DEBUG
     private var automationCaptureFailureTicks = 0
 #endif
@@ -125,8 +144,16 @@ final class ClipboardMenuBarApp: NSObject,
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         ClipboardUsageLog(archiveRoot: archiveRoot).record(.appStart)
+        operationalLog.record(.appStart)
         isPaused = userDefaults.bool(forKey: "capturePaused")
-        settings = settingsStore.load()
+        let loadedSettings = settingsStore.loadReporting()
+        settings = loadedSettings.settings
+        if loadedSettings.fallback != nil {
+            // Defaults are not the user's choices — retention in
+            // particular silently becomes "keep the latest 50".
+            operationalLog.record(.settingsFallback, count: 1)
+        }
+        startHeartbeat()
         NSApp.setActivationPolicy(.accessory)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         configureStatusIcon()
@@ -180,6 +207,9 @@ final class ClipboardMenuBarApp: NSObject,
     }
 
     private func pollPasteboard() {
+        // Counted on ENTRY, before any gate: the heartbeat's job is to show
+        // that the timer is still firing, whether or not capture is on.
+        heartbeatPolls += 1
         // ONE gate: the pure, unit-tested ClipboardCaptureGate decides
         // whether this poll may touch the pasteboard. The poll loop must
         // never reimplement gating inline — the fast suite covers the
@@ -277,8 +307,13 @@ final class ClipboardMenuBarApp: NSObject,
             switch try ingestor.ingest(capture) {
             case let .stored(_, indexUpdate):
                 capturedCount += 1
+                heartbeatCaptures += 1
+                lastSuccessfulCaptureAt = Date()
                 // A successful capture clears the error state: the archive
                 // is writable again, so the menu stops reporting a failure.
+                if captureFailureState != nil {
+                    operationalLog.record(.captureRecovered)
+                }
                 captureFailureState = nil
                 lastStatus = indexUpdate == .failed
                     ? "Captured; index update pending"
@@ -538,6 +573,7 @@ final class ClipboardMenuBarApp: NSObject,
                     }
                     self.markQuickPickerCacheDirty()
                     self.liveEventCountEstimate = nil
+                    operationalLog.record(.expirySwept, count: result.deletedEvents)
                     self.lastStatus = "Removed \(result.deletedEvents) expired clip\(result.deletedEvents == 1 ? "" : "s")"
                     self.panelController?.reloadFromExternalMutation()
                     self.rebuildMenu()
@@ -1212,6 +1248,12 @@ final class ClipboardMenuBarApp: NSObject,
                 // running, the status line carries the failure class, and
                 // each failed ingest records exactly one diagnostic row.
                 runCaptureFailureAutomation()
+                return true
+            } else if screen == "heartbeat" {
+                // Heartbeat receipt: real poll ticks and real captures on
+                // the isolated pasteboard, with the beat left to the timer
+                // so the receipt proves the TIMER fired, not a direct call.
+                runHeartbeatAutomation()
                 return true
             } else if screen == "richcapture" {
                 // Slice 6: synthetic multi-representation items on the
@@ -2126,6 +2168,56 @@ final class ClipboardMenuBarApp: NSObject,
         captureFailureTick(remaining: 5, rawDirectory: rawDirectory)
     }
 
+    /// Drives ~1.5 s of real poll ticks against a WRITABLE isolated
+    /// archive, then reports what the heartbeat timer wrote.
+    private func runHeartbeatAutomation() {
+        settings.archiveEnabled = true
+        settings.captureRichContent = false
+        try? settingsStore.save(settings)
+        heartbeatTick(remaining: 5)
+    }
+
+    private func heartbeatTick(remaining: Int) {
+        guard remaining > 0 else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                self?.finishHeartbeatAutomation()
+            }
+            return
+        }
+        pasteboard.clearContents()
+        pasteboard.setString("synthetic heartbeat fixture \(remaining)", forType: .string)
+        pollPasteboard()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            self?.heartbeatTick(remaining: remaining - 1)
+        }
+    }
+
+    private func finishHeartbeatAutomation() {
+        let rows = operationalLog.read(limit: 200)
+        let beats = rows.filter { $0.code == ClipboardOperationalLog.Code.heartbeat.rawValue }
+        let result: [String: Any] = [
+            "heartbeat_rows": beats.count,
+            "app_start_rows": rows.filter {
+                $0.code == ClipboardOperationalLog.Code.appStart.rawValue
+            }.count,
+            "last_heartbeat_polls": Int(beats.last?.numbers["polls"] ?? 0),
+            "last_heartbeat_captures": Int(beats.last?.numbers["captures"] ?? 0),
+            "last_heartbeat_rss_bytes": Int(beats.last?.numbers["rssBytes"] ?? 0),
+            "last_heartbeat_line": beats.last?.line ?? "",
+            "stored_events": archiveEventCount()
+        ]
+        if let resultPath = ProcessInfo.processInfo
+            .environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_RESULT_PATH"],
+           !resultPath.isEmpty,
+           let data = try? JSONSerialization.data(
+               withJSONObject: result,
+               options: [.prettyPrinted, .sortedKeys]
+           ) {
+            try? data.write(to: URL(fileURLWithPath: resultPath), options: .atomic)
+        }
+        NSApp.terminate(nil)
+    }
+
     private func captureFailureTick(remaining: Int, rawDirectory: URL) {
         guard remaining > 0 else {
             finishCaptureFailureAutomation(rawDirectory: rawDirectory)
@@ -2430,6 +2522,7 @@ final class ClipboardMenuBarApp: NSObject,
             liveEventCountEstimate = result.keptCountedEvents
             if result.prunedEvents > 0 {
                 lastStatus = "Kept latest \(limit), pruned \(result.prunedEvents)"
+                operationalLog.record(.retentionPruned, count: result.prunedEvents)
                 markQuickPickerCacheDirty()
             }
         } catch {
@@ -2966,6 +3059,72 @@ final class ClipboardMenuBarApp: NSObject,
         }
     }
 
+    /// Schedules the dead-man beat in `.common` run-loop modes, so a beat
+    /// is not swallowed while a menu is tracking or a window is resizing —
+    /// exactly the states a default-mode timer sleeps through.
+    private func startHeartbeat() {
+        var firstDelay = Self.heartbeatFirstDelaySeconds
+        var interval = Self.heartbeatIntervalSeconds
+#if DEBUG
+        // Development harnesses only: a receipt run lasts seconds, and a
+        // beat that only arrives after a minute cannot be observed in one.
+        if let raw = ProcessInfo.processInfo.environment["CLIPBOARD_ARCHIVE_HEARTBEAT_SECONDS"],
+           let seconds = TimeInterval(raw), seconds > 0 {
+            firstDelay = seconds
+            interval = seconds
+        }
+#endif
+        heartbeatTimer?.invalidate()
+        let timer = Timer(
+            fire: Date().addingTimeInterval(firstDelay),
+            interval: interval,
+            repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.recordHeartbeat()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        heartbeatTimer = timer
+    }
+
+    /// Polls and captures SINCE THE LAST BEAT, resident bytes now, and how
+    /// long ago this run last stored a clip (0 both when it never has and
+    /// when it just did — the polls and captures counts are what separate
+    /// those two readings).
+    ///
+    /// The whole value of the beat is that its ABSENCE means something, so
+    /// a beat lost to a busy lock (the command line writes into the same
+    /// directory) must not simply vanish. One retry, and the counters are
+    /// carried into the next beat unless the row actually landed.
+    private func recordHeartbeat() {
+        let sinceCapture = lastSuccessfulCaptureAt
+            .map { Date().timeIntervalSince($0) * 1000 } ?? 0
+        func write() -> Bool {
+            operationalLog.record(
+                .heartbeat,
+                durationMs: sinceCapture,
+                polls: heartbeatPolls,
+                captures: heartbeatCaptures,
+                rssBytes: ClipboardProcessMetrics.residentSetBytes()
+            )
+        }
+        guard write() || write() else {
+            return
+        }
+        heartbeatPolls = 0
+        heartbeatCaptures = 0
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // Stop the beat FIRST: a heartbeat landing after the stop row would
+        // make the log say the app was alive after it had quit, which is
+        // exactly the reading the heartbeat exists to make trustworthy.
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = nil
+        operationalLog.record(.appStop)
+    }
+
     private func restartTimer() {
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: settings.pollIntervalSeconds, repeats: true) { [weak self] _ in
@@ -2982,6 +3141,12 @@ final class ClipboardMenuBarApp: NSObject,
 
 let instanceLock = AppInstanceLock()
 guard instanceLock.acquire() else {
+    // A refused second instance is normally invisible: the process simply
+    // exits. Recorded with the holder's pid (0 when the lock file cannot be
+    // read) so "it would not start" has an answer.
+    let holderPID = (try? String(contentsOf: storeResolution.lockURL, encoding: .utf8))
+        .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? 0
+    operationalLog.record(.secondInstanceRefused, count: holderPID)
     exit(0)
 }
 
@@ -2992,16 +3157,18 @@ guard instanceLock.acquire() else {
 // never redirect those commands. Best effort by design: a pointer that
 // cannot be written is a lost convenience, never a failed launch.
 do {
-    _ = try ClipboardStoreLocator.publishPointer(
+    let published = try ClipboardStoreLocator.publishPointer(
         for: storeResolution,
         writtenBy: "ClipboardArchive \(ClipboardVersionInfo.currentAppVersion())"
             + " (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"))"
     )
+    if published {
+        operationalLog.record(.pointerPublished)
+    }
 } catch {
     // The symptom of a silent failure here is a later command reading a
-    // different store, so it leaves a content-free trace rather than none.
-    ClipboardUsageLog(archiveRoot: storeResolution.archiveRoot)
-        .record(.error, outcome: .failed)
+    // different store, so it leaves an operational row rather than none.
+    operationalLog.record(.pointerPublishFailed)
 }
 
 let app = NSApplication.shared

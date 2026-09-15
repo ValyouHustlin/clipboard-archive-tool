@@ -373,6 +373,20 @@ struct FailableDecodable<Wrapped: Decodable>: Decodable {
     }
 }
 
+/// Why a settings read fell back to defaults. It matters operationally
+/// because defaults are NOT the user's choices: a corrupt file silently
+/// replaces an "unlimited" retention setting with "keep the latest 50".
+public enum ClipboardSettingsFallbackReason: String, Sendable, Equatable {
+    /// No regular settings file at the resolved path.
+    case missing
+    /// The file exists but its permissions could not be tightened.
+    case insecure
+    /// The file exists and could not be read.
+    case unreadable
+    /// The bytes are not settings this build can decode.
+    case corrupt
+}
+
 public struct ClipboardSettingsStore: Sendable {
     public var settingsURL: URL
 
@@ -381,19 +395,26 @@ public struct ClipboardSettingsStore: Sendable {
     }
 
     public func load() -> ClipboardSettings {
+        loadReporting().settings
+    }
+
+    /// The same read, plus WHY defaults were substituted when they were.
+    /// `load()` stays the shape every existing caller uses; a surface that
+    /// can report the fallback calls this one.
+    public func loadReporting() -> (settings: ClipboardSettings, fallback: ClipboardSettingsFallbackReason?) {
         guard let attributes = try? FileManager.default.attributesOfItem(
             atPath: settingsURL.path
         ),
               attributes[.type] as? FileAttributeType == .typeRegular else {
-            return ClipboardSettings()
+            return (ClipboardSettings(), .missing)
         }
         do {
             try ClipboardPrivateFileSystem.secureFile(settingsURL)
         } catch {
-            return ClipboardSettings()
+            return (ClipboardSettings(), .insecure)
         }
         guard let data = try? Data(contentsOf: settingsURL) else {
-            return ClipboardSettings()
+            return (ClipboardSettings(), .unreadable)
         }
         // save() encodes dates as ISO 8601, so load MUST decode them the
         // same way. The plain-decoder fallback keeps hypothetical files with
@@ -401,12 +422,12 @@ public struct ClipboardSettingsStore: Sendable {
         let isoDecoder = JSONDecoder()
         isoDecoder.dateDecodingStrategy = .iso8601
         if let settings = try? isoDecoder.decode(ClipboardSettings.self, from: data) {
-            return settings
+            return (settings, nil)
         }
         guard let settings = try? JSONDecoder().decode(ClipboardSettings.self, from: data) else {
-            return ClipboardSettings()
+            return (ClipboardSettings(), .corrupt)
         }
-        return settings
+        return (settings, nil)
     }
 
     public func save(_ settings: ClipboardSettings) throws {

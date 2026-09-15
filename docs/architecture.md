@@ -79,7 +79,14 @@ Portable installs use:
 ~/Library/Application Support/ClipboardArchive/Indexes/clipboard-search.sqlite
 ~/Library/Application Support/ClipboardArchive/settings.json
 ~/Library/Application Support/ClipboardArchive/ClipboardArchive.lock
+~/Library/Application Support/ClipboardArchive/stores.json
+~/Library/Logs/ClipboardArchive/operational.ndjson
 ```
+
+The operational log is the one store that does NOT live under Application
+Support: it sits beside the launch agent's stdout and stderr logs, where
+Console already shows them. It still follows an injected support root
+(`<root>/Logs/`), so an isolated run leaves the real log untouched.
 
 The archive and index can be overridden with:
 

@@ -75,15 +75,20 @@ public struct ClipboardDerivedIndex: Sendable {
     public var archiveRoot: URL
     public var indexURL: URL
     public var sqliteExecutableURL: URL
+    /// Operational sink for rebuilds, passed explicitly by the surface that
+    /// resolved it. Nil means silent.
+    public var operationalLog: ClipboardOperationalLog?
 
     public init(
         archiveRoot: URL,
         indexURL: URL = ClipboardDefaults.indexURL(),
-        sqliteExecutableURL: URL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        sqliteExecutableURL: URL = URL(fileURLWithPath: "/usr/bin/sqlite3"),
+        operationalLog: ClipboardOperationalLog? = nil
     ) {
         self.archiveRoot = archiveRoot
         self.indexURL = indexURL
         self.sqliteExecutableURL = sqliteExecutableURL
+        self.operationalLog = operationalLog
     }
 
     /// Per-kind FTS body derivation (Slice 6), shared BY CONSTRUCTION
@@ -116,15 +121,22 @@ public struct ClipboardDerivedIndex: Sendable {
     public func rebuild() throws -> Int {
         let start = Date()
         let usage = ClipboardUsageLog(archiveRoot: archiveRoot)
+        // A rebuild that starts and never finishes is the interesting case,
+        // so the start is recorded before the work rather than after it.
+        operationalLog?.record(.indexRebuildStarted)
         do {
             let indexDirectory = indexURL.deletingLastPathComponent()
             try ClipboardPrivateFileSystem.createDirectory(indexDirectory, archiveRoot: indexDirectory)
             let count = try withExclusiveLock { try rebuildUnlocked(indexDirectory: indexDirectory) }
             usage.record(.indexRebuild, scope: .index, count: count,
                 durationMs: Date().timeIntervalSince(start) * 1000)
+            operationalLog?.record(.indexRebuildFinished, count: count,
+                durationMs: Date().timeIntervalSince(start) * 1000)
             return count
         } catch {
             usage.record(.indexRebuild, outcome: .failed, scope: .index,
+                durationMs: Date().timeIntervalSince(start) * 1000)
+            operationalLog?.record(.indexRebuildFailed,
                 durationMs: Date().timeIntervalSince(start) * 1000)
             throw error
         }

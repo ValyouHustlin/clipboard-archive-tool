@@ -56,6 +56,9 @@ public struct ClipboardStoreResolution: Sendable, Equatable {
     public var settingsURL: URL
     public var lockURL: URL
     public var pointerURL: URL
+    /// Where operational rows go. Resolved here so the app, the CLI and an
+    /// isolated test all reach the same decision from the same inputs.
+    public var logDirectory: URL
 }
 
 /// The ONE place the app and the CLI decide which archive and which index
@@ -117,7 +120,8 @@ public enum ClipboardStoreLocator {
             applicationSupportRoot: applicationSupportRoot,
             settingsURL: ClipboardDefaults.settingsURL(environment: environment),
             lockURL: ClipboardDefaults.lockURL(environment: environment),
-            pointerURL: pointerURL
+            pointerURL: pointerURL,
+            logDirectory: ClipboardDefaults.logDirectory(environment: environment)
         )
     }
 

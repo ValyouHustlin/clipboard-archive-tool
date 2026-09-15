@@ -13,6 +13,21 @@
 
 ## Unreleased
 
+- Add a content-free operational log with a heartbeat at
+  `~/Library/Logs/ClipboardArchive/operational.ndjson` (2 MiB x 5, owner-only,
+  following an injected application-support root). It records launches and
+  stops, a 30-minute heartbeat carrying polls, captures, resident memory and
+  time since the last capture, capture failures by errno class, refused second
+  instances, settings fallbacks, index rebuilds and failed index updates,
+  retention prunes, expiry sweeps, store-pointer publishing, and one row per
+  CLI invocation with its verb and exit code. Every field is a number or a
+  closed-enum value, so clipboard content cannot enter a row. Read it with the
+  new `clipboard-archive logs` command (`--tail`, `--errors`, `--since`,
+  `--json`). The heartbeat exists to make the one failure no event can show —
+  an app that silently stopped running — visible.
+- Report why a settings read fell back to defaults, so a corrupt settings file
+  replacing the chosen retention mode is recorded instead of silent.
+
 - Resolve the archive and the search index through one shared resolver, so
   the app and the command line always name the same stores. Each path is
   decided on its own: an explicit argument, then the environment variable,

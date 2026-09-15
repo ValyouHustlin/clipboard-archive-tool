@@ -32,6 +32,24 @@ public enum ClipboardCaptureFailure: String, Sendable, Equatable, CaseIterable {
         }
     }
 
+    /// The POSIX code that stands for this class in an operational row —
+    /// the reason class as a number, with no message attached. `other`
+    /// carries 0 because it names no specific errno.
+    public var posixCode: Int32 {
+        switch self {
+        case .diskFull:
+            return ENOSPC
+        case .permissionDenied:
+            return EACCES
+        case .readOnlyVolume:
+            return EROFS
+        case .archiveMissing:
+            return ENOENT
+        case .other:
+            return 0
+        }
+    }
+
     public static func classify(_ error: Error) -> ClipboardCaptureFailure {
         for nsError in errorChain(error) {
             // `Int32(_:)` traps on an out-of-range code, and this runs on

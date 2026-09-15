@@ -28,6 +28,11 @@ struct CLIOptions {
     var passphraseStdin: Bool
     var merge: Bool
     var applySettings: Bool
+    /// `logs` flags.
+    var tail: Int
+    var errorsOnly: Bool
+    /// This command's own operational sink, resolved with the stores.
+    var operationalLog: ClipboardOperationalLog
 
     static func parse(_ arguments: [String]) throws -> CLIOptions {
         var args = Array(arguments.dropFirst())
@@ -57,6 +62,8 @@ struct CLIOptions {
         var passphraseStdin = false
         var merge = false
         var applySettings = false
+        var tail = 50
+        var errorsOnly = false
 
         var index = 0
         while index < args.count {
@@ -147,6 +154,14 @@ struct CLIOptions {
                 merge = true
             case "--apply-settings":
                 applySettings = true
+            case "--tail":
+                index += 1
+                guard index < args.count, let value = Int(args[index]), value > 0 else {
+                    throw CLIError.invalidValue("--tail")
+                }
+                tail = value
+            case "--errors":
+                errorsOnly = true
             default:
                 if arg.hasPrefix("--") {
                     throw CLIError.unknownArgument(arg)
@@ -189,7 +204,10 @@ struct CLIOptions {
             includeSettings: includeSettings,
             passphraseStdin: passphraseStdin,
             merge: merge,
-            applySettings: applySettings
+            applySettings: applySettings,
+            tail: tail,
+            errorsOnly: errorsOnly,
+            operationalLog: ClipboardOperationalLog(directory: resolution.logDirectory)
         )
     }
 
@@ -306,6 +324,23 @@ struct PasteboardMonitor {
     }
 }
 
+/// One operational row per invocation, with the verb and the exit code, so
+/// a scheduled or scripted command that started failing is visible without
+/// anyone having captured its output. Best effort by design: a command
+/// interrupted mid-run (a `monitor` stopped with Ctrl-C) leaves no row.
+func recordCLICommand(_ log: ClipboardOperationalLog, verb: ClipboardOperationalLog.Verb, exitCode: Int) {
+    log.record(
+        .cliCommand,
+        level: exitCode == 0 ? .info : .error,
+        count: exitCode,
+        verb: verb
+    )
+}
+
+let cliVerb = ClipboardOperationalLog.Verb(
+    command: CommandLine.arguments.dropFirst().first ?? "help"
+)
+
 do {
     let options = try CLIOptions.parse(CommandLine.arguments)
 
@@ -332,7 +367,12 @@ case "monitor":
         pasteboard: .general,
         ingestor: ClipboardIngestor(
             archiveWriter: writer,
-            derivedIndex: ClipboardDerivedIndex(archiveRoot: options.archiveRoot, indexURL: options.indexPath)
+            derivedIndex: ClipboardDerivedIndex(
+                archiveRoot: options.archiveRoot,
+                indexURL: options.indexPath,
+                operationalLog: options.operationalLog
+            ),
+            operationalLog: options.operationalLog
         ),
         intervalSeconds: options.intervalSeconds,
         durationSeconds: options.durationSeconds,
@@ -452,7 +492,11 @@ case "sweep-expired":
     }
 
 case "repair-index":
-    let index = ClipboardDerivedIndex(archiveRoot: options.archiveRoot, indexURL: options.indexPath)
+    let index = ClipboardDerivedIndex(
+        archiveRoot: options.archiveRoot,
+        indexURL: options.indexPath,
+        operationalLog: options.operationalLog
+    )
     let count = try index.rebuild()
     print("index rebuilt: \(count) item(s)")
     print("index path: \(index.indexURL.path)")
@@ -575,6 +619,22 @@ case "health":
 case "backup":
     try runBackupCommand(options: options)
 
+case "logs":
+    let entries = options.operationalLog.read(
+        limit: options.tail,
+        errorsOnly: options.errorsOnly,
+        since: options.since
+    )
+    if options.json {
+        print("[" + entries.map { "  " + $0.line }.joined(separator: ",\n") + "]")
+    } else if entries.isEmpty {
+        print("no operational rows")
+    } else {
+        for entry in entries {
+            print(entry.textDescription)
+        }
+    }
+
 case "write-manifest":
     let url = try ClipboardArchiveHealthReporter(archiveRoot: options.archiveRoot).writeDailyManifest()
     print("manifest written: \(url.path)")
@@ -595,6 +655,9 @@ default:
       repair-index Rebuild the derived SQLite FTS search index.
       index-search QUERY Search the derived SQLite FTS index.
       health       Report archive/index health.
+      logs         Print the operational log (launch, heartbeat, capture
+                   failures, rebuilds, prunes). Options: --tail N (default
+                   50), --errors, --since, --json.
       stores       Report which archive, index, settings, lock and pointer
                    file this command resolved, and where each came from.
       write-manifest Write today's daily manifest.
@@ -631,6 +694,8 @@ default:
       --app NAME                    Bulk criterion: source app display name.
       --type TYPE                   Bulk criterion: content type (text/url/code/...).
       --sensitivity KIND            Bulk criterion: any-flagged | manual-restricted.
+      --tail N                      logs: how many rows to print. Default: 50.
+      --errors                      logs: only rows recorded at error level.
       --verbose                     Print ignored non-text changes.
       --json                        JSON output for supported commands.
 
@@ -638,7 +703,21 @@ default:
     the monitor command is active.
     """)
     }
+    // The parsed command is the honest verb; the positional guess above
+    // only has to cover an invocation that never parsed.
+    recordCLICommand(
+        options.operationalLog,
+        verb: ClipboardOperationalLog.Verb(command: options.command),
+        exitCode: 0
+    )
 } catch {
     FileHandle.standardError.write(Data("clipboard-archive error: \(error)\n".utf8))
+    // The options may not have parsed, so this path resolves the log
+    // directory the same way `parse` would have.
+    recordCLICommand(
+        ClipboardOperationalLog(directory: ClipboardStoreLocator.resolve().logDirectory),
+        verb: cliVerb,
+        exitCode: 1
+    )
     exit(1)
 }

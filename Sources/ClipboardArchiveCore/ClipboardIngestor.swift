@@ -19,6 +19,10 @@ public struct ClipboardIngestor: Sendable {
     public var filter: ClipboardPrivacyFilter
     public var archiveWriter: ClipboardArchiveWriter
     public var derivedIndex: ClipboardDerivedIndex?
+    /// Operational sink, passed explicitly by the surface that owns the
+    /// resolution. Nil means silent: a library caller (and every test) logs
+    /// nothing until a surface hands it a destination.
+    public var operationalLog: ClipboardOperationalLog?
     /// Image size cap (Slice 6, contract 7): oversized image payloads
     /// become a visible blocked event BEFORE any body write or hash.
     public var richImageMaxBytes: Int
@@ -27,11 +31,13 @@ public struct ClipboardIngestor: Sendable {
         filter: ClipboardPrivacyFilter = ClipboardPrivacyFilter(),
         archiveWriter: ClipboardArchiveWriter,
         derivedIndex: ClipboardDerivedIndex? = nil,
+        operationalLog: ClipboardOperationalLog? = nil,
         richImageMaxBytes: Int = ClipboardSettings.defaultRichImageMaxBytes
     ) {
         self.filter = filter
         self.archiveWriter = archiveWriter
         self.derivedIndex = derivedIndex
+        self.operationalLog = operationalLog
         self.richImageMaxBytes = richImageMaxBytes
     }
 
@@ -52,6 +58,14 @@ public struct ClipboardIngestor: Sendable {
             return result
         } catch {
             usage.record(.error, outcome: .failed, scope: .archive, durationMs: Date().timeIntervalSince(start) * 1000)
+            // The reason CLASS only: the classifier reduces the error to a
+            // closed set, and the row carries its errno. No message, no
+            // path, no content — the error object never leaves this line.
+            operationalLog?.record(
+                .captureFailed,
+                errno: ClipboardCaptureFailure.classify(error).posixCode,
+                count: 1
+            )
             throw error
         }
     }
@@ -150,6 +164,9 @@ public struct ClipboardIngestor: Sendable {
             try derivedIndex.upsert(event: event, body: body, sensitivityOverride: sensitivityOverride)
             return excluded ? .excluded : .updated
         } catch {
+            // The event IS stored; only its searchability failed. The row
+            // says so without naming the event, the query or the path.
+            operationalLog?.record(.indexUpsertFailed, count: 1)
             return .failed
         }
     }

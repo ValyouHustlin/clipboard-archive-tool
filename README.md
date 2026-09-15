@@ -269,6 +269,44 @@ the action. These local records contain no clipboard text, previews, queries,
 IDs, hashes, source apps, paths, or raw error messages. They are never uploaded
 and are excluded from backup exports. See [PRIVACY.md](PRIVACY.md).
 
+## Operational log
+
+Alongside the usage log, the app and the command line write a content-free
+operational record to `~/Library/Logs/ClipboardArchive/operational.ndjson` —
+beside the launch agent's own logs, so Console shows them together. When
+`CLIPBOARD_ARCHIVE_APPLICATION_SUPPORT_ROOT` is set, the log follows it to
+`<that root>/Logs/` instead, so an isolated run never writes into the real
+log.
+
+Codes are `app_start`, `app_stop`, `heartbeat`, `second_instance_refused`,
+`settings_fallback`, `capture_failed`, `capture_recovered`,
+`index_upsert_failed`, `index_rebuild_started`, `index_rebuild_finished`,
+`index_rebuild_failed`, `retention_pruned`, `expiry_swept`,
+`pointer_published`, `pointer_publish_failed`, and `cli_command`.
+
+`heartbeat` is the reason the log exists. Every 30 minutes (the first beat a
+minute after launch) the app records how many polls it ran and how many clips
+it stored since the previous beat, its resident memory, and how long ago it
+last captured. A launch that silently stopped working leaves no heartbeat —
+the one failure no event-present record can show.
+
+Every row carries the same fields, with zero or an empty string where a field
+does not apply: `schema`, `timestamp` (UTC ISO 8601 with milliseconds), `pid`,
+`version` (numeric components), `build`, `level` (`info`, `warn`, `error`),
+`component` (`app`, `capture`, `archive`, `index`, `settings`, `retention`,
+`launch`, `cli`), `code`, `errno`, `count`, `durationMs`, `bytes`, `polls`,
+`captures`, `rssBytes`, and `verb` (a CLI verb name, or `unknown`). On a
+`cli_command` row, `count` is the command's exit code. Every one
+of those fields is a number or a value from a closed set: the API accepts no
+free-form string, no error object and no path, so clipboard text, file names
+and error messages cannot enter a row.
+
+Each file is capped at 2 MiB, with five files total (`operational.ndjson` plus
+`operational.1.ndjson` through `operational.4.ndjson`). The directory is
+`0700`, files are `0600`, and writing is best effort — a log that cannot be
+written never interrupts a capture or a launch. Read it with
+`clipboard-archive logs` (`--tail N`, `--errors`, `--since`, `--json`).
+
 ## Privacy
 
 Clipboard Archive is intentionally transparent and controllable:

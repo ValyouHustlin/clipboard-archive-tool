@@ -113,3 +113,31 @@ five retained files total. Rotation names are `events.1.ndjson` through
 a record. Records are never sent over the network and are excluded from
 backup exports. Deleting a clip does not delete aggregate diagnostic rows,
 which cannot identify the clip.
+
+## Content-free operational log
+
+`~/Library/Logs/ClipboardArchive/operational.ndjson` records what the app and
+the command line were DOING: launches and stops, a 30-minute heartbeat,
+capture failures by reason class, refused second instances, settings
+fallbacks, index rebuilds and failed index updates, retention prunes, expiry
+sweeps, store-pointer publishing, and one row per CLI invocation. With
+`CLIPBOARD_ARCHIVE_APPLICATION_SUPPORT_ROOT` set, it lives under `<that
+root>/Logs/` instead.
+
+Every row carries `schema`, `timestamp` (UTC ISO 8601 milliseconds), `pid`,
+`version`, `build`, `level`, `component`, `code`, `errno`, `count`,
+`durationMs`, `bytes`, `polls`, `captures`, `rssBytes`, `verb` (on a
+`cli_command` row, `count` is the exit code). Each textual
+field is a closed enum defined in the source, and the recording API accepts no
+free-form string, no `Error` and no path — so clipboard content, previews,
+queries, identifiers, hashes, source-app names, file names and raw error
+messages cannot enter this log, by construction rather than by filtering. A
+capture failure is recorded as an errno class (for example 13 for permission
+denied), never as a message.
+
+Timestamps, counts and memory figures still say when the app ran and how much
+it did, so these records remain private local data. Files are owner-only
+(`0600`, directory `0700`), capped at 2 MiB each, five retained
+(`operational.1.ndjson` through `operational.4.ndjson`). Writes are best
+effort. Records are never sent over the network and are excluded from backup
+exports. `clipboard-archive logs` prints them locally.

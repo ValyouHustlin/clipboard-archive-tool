@@ -33,6 +33,20 @@ public enum ClipboardDefaults {
         applicationSupportRoot(environment: environment).appendingPathComponent("ClipboardArchive.lock")
     }
 
+    /// Where the operational log lives. It follows the application-support
+    /// root when one is set, so an isolated run logs inside its own scratch
+    /// tree; otherwise it is the per-user Logs folder the launch agent
+    /// already writes its stdout and stderr into, where Console shows it.
+    public static func logDirectory(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
+        if let path = environment[applicationSupportEnvironmentKey], !path.isEmpty {
+            return URL(fileURLWithPath: path, isDirectory: true)
+                .appendingPathComponent("Logs", isDirectory: true)
+        }
+        return FileManager.default
+            .homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/\(appSupportFolderName)", isDirectory: true)
+    }
+
     public static func applicationSupportRoot(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL {

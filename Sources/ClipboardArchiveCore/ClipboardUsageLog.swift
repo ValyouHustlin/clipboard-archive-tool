@@ -42,82 +42,34 @@ public struct ClipboardUsageLog: Sendable {
         self.retainedFiles = max(1, min(10, retainedFiles))
     }
 
+    public var file: ClipboardRotatingLogFile {
+        ClipboardRotatingLogFile(
+            directory: directory,
+            baseName: "events",
+            maximumFileBytes: maximumFileBytes,
+            retainedFiles: retainedFiles
+        )
+    }
+
     /// Best effort: a busy log or disk error cannot interrupt a copy/capture.
-    /// One nonblocking cross-process lock covers size-check, rotation and append.
+    /// One nonblocking cross-process lock covers size-check, rotation and
+    /// append — all of it in the shared rotating appender.
     @discardableResult
     public func record(
         _ event: Event, outcome: Outcome = .success, scope: Scope = .application,
         count: Int = 1, durationMs: Double = 0, bytes: Int = 0
     ) -> Bool {
-        do {
-            try ClipboardPrivateFileSystem.createDirectory(directory, archiveRoot: directory.deletingLastPathComponent())
-            let directoryFD = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
-            guard directoryFD >= 0 else { return false }
-            defer { close(directoryFD) }
-            guard fchmod(directoryFD, 0o700) == 0 else { return false }
-            let lockFD = openat(directoryFD, ".lock", O_CREAT | O_RDWR | O_NOFOLLOW | O_NONBLOCK, 0o600)
-            guard lockFD >= 0 else { return false }
-            defer { close(lockFD) }
-            var lockInfo = stat()
-            guard fstat(lockFD, &lockInfo) == 0, (lockInfo.st_mode & S_IFMT) == S_IFREG,
-                  fchmod(lockFD, 0o600) == 0,
-                  flock(lockFD, LOCK_EX | LOCK_NB) == 0 else { return false }
-            defer { flock(lockFD, LOCK_UN) }
-
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .custom { date, encoder in
-                let formatter = ISO8601DateFormatter()
-                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                var container = encoder.singleValueContainer()
-                try container.encode(formatter.string(from: date))
-            }
-            encoder.outputFormatting = [.sortedKeys]
-            var data = try encoder.encode(Row(
-                timestamp: Date(),
-                version: (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
-                    .split(separator: ".").prefix(4).compactMap { Int($0) },
-                build: Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0,
-                event: event, outcome: outcome, scope: scope,
-                count: max(0, count), durationMs: durationMs.isFinite ? max(0, durationMs) : 0,
-                bytes: max(0, bytes)
-            ))
-            data.append(0x0A)
-            guard data.count <= maximumFileBytes else { return false }
-            let current = "events.ndjson"
-            var info = stat()
-            let exists = fstatat(directoryFD, current, &info, AT_SYMLINK_NOFOLLOW) == 0
-            guard !exists || (info.st_mode & S_IFMT) == S_IFREG else { return false }
-            if Int(info.st_size) + data.count > maximumFileBytes {
-                for number in stride(from: retainedFiles - 1, through: 0, by: -1) {
-                    let source = number == 0 ? current : "events.\(number).ndjson"
-                    let status = number == retainedFiles - 1
-                        ? unlinkat(directoryFD, source, 0)
-                        : renameat(directoryFD, source, directoryFD, "events.\(number + 1).ndjson")
-                    guard status == 0 || errno == ENOENT else { return false }
-                }
-            }
-            let fd = openat(directoryFD, current, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_NONBLOCK, 0o600)
-            guard fd >= 0 else { return false }
-            defer { close(fd) }
-            guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
-                  fchmod(fd, 0o600) == 0 else { return false }
-            let originalSize = info.st_size
-            return data.withUnsafeBytes { buffer in
-                var offset = 0
-                while offset < buffer.count {
-                    let written = write(fd, buffer.baseAddress!.advanced(by: offset), buffer.count - offset)
-                    if written < 0 && errno == EINTR { continue }
-                    guard written > 0 else {
-                        // Avoid leaving a partial JSON row after a short write.
-                        _ = ftruncate(fd, originalSize)
-                        return false
-                    }
-                    offset += written
-                }
-                return true
-            }
-        } catch {
+        let identity = ClipboardRotatingLogFile.bundleVersion()
+        guard let data = try? ClipboardRotatingLogFile.rowEncoder().encode(Row(
+            timestamp: Date(),
+            version: identity.version,
+            build: identity.build,
+            event: event, outcome: outcome, scope: scope,
+            count: max(0, count), durationMs: durationMs.isFinite ? max(0, durationMs) : 0,
+            bytes: max(0, bytes)
+        )) else {
             return false
         }
+        return file.append(data)
     }
 }
