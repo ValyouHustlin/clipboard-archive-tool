@@ -217,8 +217,9 @@ do {
         ))
         let bodyPath = largeEvent.rawContentPath
 
-        try ClipboardArchiveRedactor(archiveRoot: root).redact(eventID: inlineEvent.id)
-        try ClipboardArchiveRedactor(archiveRoot: root).redact(eventID: largeEvent.id)
+        let indexURL = temporaryDirectory().appendingPathComponent("clipboard-search.sqlite")
+        try ClipboardArchiveRedactor(archiveRoot: root, indexURL: indexURL).redact(eventID: inlineEvent.id)
+        try ClipboardArchiveRedactor(archiveRoot: root, indexURL: indexURL).redact(eventID: largeEvent.id)
 
         let searcher = ClipboardArchiveSearcher(archiveRoot: root)
         let inlineResults = try searcher.search(ClipboardSearchOptions(query: "inline delete searchable phrase"))
@@ -471,8 +472,10 @@ do {
             ))
         }
 
-        let result = try ClipboardArchivePruner(archiveRoot: root)
-            .pruneContent(keepingMostRecent: 2)
+        let result = try ClipboardArchivePruner(
+            archiveRoot: root,
+            indexURL: temporaryDirectory().appendingPathComponent("clipboard-search.sqlite")
+        ).pruneContent(keepingMostRecent: 2)
         let searcher = ClipboardArchiveSearcher(archiveRoot: root)
         let oldResults = try searcher.search(ClipboardSearchOptions(query: "rolling retention item 0"))
         let newResults = try searcher.search(ClipboardSearchOptions(query: "rolling retention item 4"))

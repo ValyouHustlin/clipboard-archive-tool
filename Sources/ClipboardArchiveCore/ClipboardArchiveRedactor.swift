@@ -32,7 +32,7 @@ public struct ClipboardArchiveRedactor: Sendable {
     public var archiveRoot: URL
     public var indexURL: URL
 
-    public init(archiveRoot: URL, indexURL: URL = ClipboardDefaults.indexURL()) {
+    public init(archiveRoot: URL, indexURL: URL) {
         self.archiveRoot = archiveRoot
         self.indexURL = indexURL
     }

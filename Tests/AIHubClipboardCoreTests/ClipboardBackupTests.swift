@@ -225,7 +225,8 @@ struct ClipboardBackupTests {
 
         let importer = ClipboardBackupImporter(
             archiveRoot: restored,
-            indexURL: try BackupTestSupport.temporaryDirectory("empty-idx").appendingPathComponent("index.sqlite")
+            indexURL: try BackupTestSupport.temporaryDirectory("empty-idx").appendingPathComponent("index.sqlite"),
+            settingsURL: restored.appendingPathComponent("settings.json")
         )
         let outcome = try importer.run(
             backupFileURL: backupFile,
@@ -263,7 +264,8 @@ struct ClipboardBackupTests {
 
         let importer = ClipboardBackupImporter(
             archiveRoot: restored,
-            indexURL: try BackupTestSupport.temporaryDirectory("mixed-dst-idx").appendingPathComponent("index.sqlite")
+            indexURL: try BackupTestSupport.temporaryDirectory("mixed-dst-idx").appendingPathComponent("index.sqlite"),
+            settingsURL: restored.appendingPathComponent("settings.json")
         )
         let outcome = try importer.run(
             backupFileURL: backupFile,
@@ -300,7 +302,8 @@ struct ClipboardBackupTests {
 
         let importer = ClipboardBackupImporter(
             archiveRoot: restored,
-            indexURL: try BackupTestSupport.temporaryDirectory("chunks-idx").appendingPathComponent("index.sqlite")
+            indexURL: try BackupTestSupport.temporaryDirectory("chunks-idx").appendingPathComponent("index.sqlite"),
+            settingsURL: restored.appendingPathComponent("settings.json")
         )
         _ = try importer.run(
             backupFileURL: backupFile,
@@ -404,7 +407,7 @@ struct ClipboardBackupTests {
         check: (ClipboardBackupError) -> Bool
     ) throws {
         let before = try BackupTestSupport.treeSignature(restored)
-        let importer = ClipboardBackupImporter(archiveRoot: restored, indexURL: indexURL)
+        let importer = ClipboardBackupImporter(archiveRoot: restored, indexURL: indexURL, settingsURL: restored.appendingPathComponent("settings.json"))
         do {
             _ = try importer.run(
                 backupFileURL: file,

@@ -148,8 +148,8 @@ public struct ClipboardBackupImporter: Sendable {
 
     public init(
         archiveRoot: URL,
-        indexURL: URL = ClipboardDefaults.indexURL(),
-        settingsURL: URL = ClipboardDefaults.settingsURL()
+        indexURL: URL,
+        settingsURL: URL
     ) {
         self.archiveRoot = archiveRoot
         self.indexURL = indexURL

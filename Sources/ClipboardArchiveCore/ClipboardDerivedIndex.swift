@@ -86,7 +86,7 @@ public struct ClipboardDerivedIndex: Sendable {
 
     public init(
         archiveRoot: URL,
-        indexURL: URL = ClipboardDefaults.indexURL(),
+        indexURL: URL,
         sqliteExecutableURL: URL = URL(fileURLWithPath: "/usr/bin/sqlite3"),
         operationalLog: ClipboardOperationalLog? = nil
     ) {
@@ -340,6 +340,20 @@ public struct ClipboardDerivedIndex: Sendable {
             return nil
         }
         return rows.first?["user_version"] as? Int
+    }
+
+    /// Every event id the index holds.
+    ///
+    /// Unbounded on purpose: this is the membership half of `verify`, and a
+    /// capped read would report a difference that is only the cap. Ids are
+    /// short, so even a large archive is a few hundred kilobytes of strings.
+    public func indexedEventIDs() throws -> Set<String> {
+        let rows = try ClipboardSQLiteSearch.rows(
+            indexURL: indexURL,
+            sql: "SELECT id AS id FROM clipboard_meta;",
+            terms: []
+        )
+        return Set(rows.compactMap { $0["id"] as? String })
     }
 
     /// SQLite `PRAGMA quick_check` on the live index file (dashboard

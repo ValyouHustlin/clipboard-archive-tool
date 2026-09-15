@@ -18,6 +18,7 @@ import UniformTypeIdentifiers
 final class ClipboardBackupUIController: NSObject {
     private let archiveRoot: URL
     private let indexURL: URL
+    private let settingsURL: URL
     private let onArchiveMutated: () -> Void
     private var isBusy = false
 
@@ -32,11 +33,13 @@ final class ClipboardBackupUIController: NSObject {
 
     init(
         archiveRoot: URL,
-        indexURL: URL = ClipboardDefaults.indexURL(),
+        indexURL: URL,
+        settingsURL: URL,
         onArchiveMutated: @escaping () -> Void
     ) {
         self.archiveRoot = archiveRoot
         self.indexURL = indexURL
+        self.settingsURL = settingsURL
         self.onArchiveMutated = onArchiveMutated
         super.init()
     }
@@ -149,7 +152,11 @@ final class ClipboardBackupUIController: NSObject {
 
         isBusy = true
         showProgress(title: "Verifying Backup…")
-        let importer = ClipboardBackupImporter(archiveRoot: archiveRoot, indexURL: indexURL)
+        let importer = ClipboardBackupImporter(
+            archiveRoot: archiveRoot,
+            indexURL: indexURL,
+            settingsURL: settingsURL
+        )
         let merge = !Self.archiveLooksEmpty(archiveRoot: archiveRoot)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var passphrase = enteredPassphrase

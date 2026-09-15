@@ -13,6 +13,35 @@
 
 ## Unreleased
 
+- Make the command line answer to a script. Every command now exits with a
+  number that means one thing — 2 for a usage mistake, 3 for stores that are
+  not there, 4 for problems found, 5 for work that finished with something
+  worth saying — where almost everything used to be 0 or 1, and a misspelled
+  command used to print the help and report success. Under `--json` a failure
+  prints an error object on standard error carrying the same code.
+- Add `status`, `verify`, `doctor`, `export`, `stats` and `version`. `status`
+  answers whether capture is alive right now and takes the answer from the
+  lock file rather than launchd, which reports the exit of the launcher and
+  not the life of the app. `verify` compares what the archive holds against
+  what the search index holds, in both directions. `doctor` runs the lot and
+  says what it means in one page.
+- Make `search` use the index and the matcher the history window uses, so the
+  same query no longer reports different hits in the app and the terminal.
+  `--scan` keeps the raw-archive reader for when there is no index to trust.
+- Add `export`, which writes clips with their content to a file you name. It
+  refuses standard output, refuses to overwrite without being told, writes
+  owner-only, prints counts rather than content, and leaves out anything
+  marked restricted, by label or by hand, along with anything deleted.
+- Describe every command from one table, which drives `help`, `help VERB` and
+  a generated `docs/CLI.md`; a test regenerates the reference and fails if the
+  committed copy has drifted.
+- Stop letting a forgotten argument reach for the real store. Nine core types
+  filled in the default archive index — and in one case the default settings
+  file — when a caller did not pass one, so a command or a test operating on a
+  scratch archive could quietly write the user's own. Those defaults are gone,
+  which turned four such call sites into compile errors: two in the checks
+  binary, one writing manifests, and the backup importer reading settings.
+
 - Open the history window without freezing it. The working-window load read
   and decoded every day file on the main thread, which at a five-thousand-clip
   window was about a second of a window that does not draw, scroll or respond.

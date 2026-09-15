@@ -367,8 +367,10 @@ public struct ClipboardBackupEnumerator: Sendable {
             }
         }
 
-        if includeSettings {
-            let url = settingsURL ?? ClipboardDefaults.settingsURL()
+        // A settings file goes in only when the caller names one. There is
+        // no fallback to the per-user default: backing up a scratch archive
+        // must not pull in the real settings file.
+        if includeSettings, let url = settingsURL {
             let attributes = try? fileManager.attributesOfItem(atPath: url.path)
             if attributes?[.type] as? FileAttributeType == .typeRegular {
                 files.append(.init(

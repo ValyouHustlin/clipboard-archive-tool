@@ -98,7 +98,7 @@ To pin a specific version:
 After install/update:
 
 ```bash
-~/.local/bin/clipboard-archive health
+~/.local/bin/clipboard-archive doctor
 ```
 
 Default per-user install locations:
@@ -111,6 +111,36 @@ Default per-user install locations:
 ~/Library/Application Support/ClipboardArchive/Indexes/clipboard-search.sqlite
 ~/Library/Application Support/ClipboardArchive/stores.json
 ```
+
+### The command line
+
+`clipboard-archive help` lists every command, `clipboard-archive help VERB`
+explains one, and [docs/CLI.md](docs/CLI.md) is the full reference — generated
+from the same table the help is, so the three cannot disagree.
+
+The four worth knowing:
+
+```bash
+clipboard-archive status    # is capture alive right now, in one fast read
+clipboard-archive doctor    # stores, status and verify in plain English
+clipboard-archive search "example" --since 2026-01-01 --json
+clipboard-archive export --out ~/Desktop/clips.ndjson --since 2026-09-01
+```
+
+Every command takes `--json`, and exits with a number that means one thing:
+
+| Code | Meaning |
+| --- | --- |
+| 0 | success |
+| 1 | runtime failure |
+| 2 | usage error |
+| 3 | store missing or unreadable |
+| 4 | problems found (`verify`, `doctor`) |
+| 5 | completed with warnings |
+
+`export` writes real clipboard content to a file, so it needs an explicit
+`--out` path, refuses standard output, writes owner-only, and leaves out
+anything marked restricted or deleted.
 
 ### How the CLI finds the stores
 
@@ -186,6 +216,9 @@ swift run clipboard-archive-checks
 swift run clipboard-archive self-test
 swift run clipboard-archive monitor --duration 30
 swift run clipboard-archive search "example" --limit 10
+swift run clipboard-archive status
+swift run clipboard-archive verify
+swift run clipboard-archive stats --since 2026-09-01
 swift run clipboard-archive redact EVENT_ID
 swift run clipboard-archive prune --until 2026-01-01 --dry-run
 swift run clipboard-archive prune --until 2026-01-01

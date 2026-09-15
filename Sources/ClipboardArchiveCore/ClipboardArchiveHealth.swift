@@ -63,7 +63,7 @@ public struct ClipboardArchiveHealthReporter: Sendable {
 
     public init(
         archiveRoot: URL,
-        indexURL: URL = ClipboardDefaults.indexURL()
+        indexURL: URL
     ) {
         self.archiveRoot = archiveRoot
         self.indexURL = indexURL

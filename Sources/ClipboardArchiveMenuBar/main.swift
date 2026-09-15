@@ -659,6 +659,7 @@ final class ClipboardMenuBarApp: NSObject,
         let controller = ClipboardBackupUIController(
             archiveRoot: archiveRoot,
             indexURL: resolvedIndexURL,
+            settingsURL: settingsStore.settingsURL,
             onArchiveMutated: { [weak self] in
                 guard let self else {
                     return

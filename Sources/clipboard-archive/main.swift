@@ -12,7 +12,9 @@ struct CLIOptions {
     var intervalSeconds: TimeInterval
     var durationSeconds: TimeInterval?
     var inlineLimitBytes: Int
-    var limit: Int
+    /// nil when the caller did not ask for one: `search` picks its own
+    /// default, `export` writes everything that matches.
+    var limit: Int?
     var since: Date?
     var until: Date?
     var verbose: Bool
@@ -31,6 +33,14 @@ struct CLIOptions {
     /// `logs` flags.
     var tail: Int
     var errorsOnly: Bool
+    /// `search --scan`: read the raw day files instead of the index.
+    var scan: Bool
+    /// `export` flags.
+    var outPath: String?
+    var format: String?
+    var force: Bool
+    /// `help --markdown`.
+    var markdown: Bool
     /// This command's own operational sink, resolved with the stores.
     var operationalLog: ClipboardOperationalLog
 
@@ -47,7 +57,7 @@ struct CLIOptions {
         var intervalSeconds: TimeInterval = 1.0
         var durationSeconds: TimeInterval?
         var inlineLimitBytes = 64 * 1024
-        var limit = 25
+        var limit: Int?
         var since: Date?
         var until: Date?
         var verbose = false
@@ -64,6 +74,11 @@ struct CLIOptions {
         var applySettings = false
         var tail = 50
         var errorsOnly = false
+        var scan = false
+        var outPath: String?
+        var format: String?
+        var force = false
+        var markdown = false
 
         var index = 0
         while index < args.count {
@@ -162,6 +177,24 @@ struct CLIOptions {
                 tail = value
             case "--errors":
                 errorsOnly = true
+            case "--scan":
+                scan = true
+            case "--force":
+                force = true
+            case "--markdown":
+                markdown = true
+            case "--out":
+                index += 1
+                guard index < args.count, !args[index].isEmpty else {
+                    throw CLIError.missingValue("--out")
+                }
+                outPath = args[index]
+            case "--format":
+                index += 1
+                guard index < args.count, !args[index].isEmpty else {
+                    throw CLIError.missingValue("--format")
+                }
+                format = args[index]
             default:
                 if arg.hasPrefix("--") {
                     throw CLIError.unknownArgument(arg)
@@ -207,6 +240,11 @@ struct CLIOptions {
             applySettings: applySettings,
             tail: tail,
             errorsOnly: errorsOnly,
+            scan: scan,
+            outPath: outPath,
+            format: format,
+            force: force,
+            markdown: markdown,
             operationalLog: ClipboardOperationalLog(directory: resolution.logDirectory)
         )
     }
@@ -251,9 +289,13 @@ struct PasteboardMonitor {
     var durationSeconds: TimeInterval?
     var verbose: Bool
 
-    func run() throws {
+    /// Returns how many stored clips the index did not take, so the caller
+    /// can exit 5 rather than claim a clean run.
+    @discardableResult
+    func run() throws -> Int {
         var lastChangeCount = pasteboard.changeCount
         var lastContentHash: String?
+        var indexProblems = 0
         let startedAt = Date()
 
         print("monitor started")
@@ -267,7 +309,7 @@ struct PasteboardMonitor {
         while true {
             if let durationSeconds, Date().timeIntervalSince(startedAt) >= durationSeconds {
                 print("monitor stopped: duration reached")
-                return
+                return indexProblems
             }
 
             let changeCount = pasteboard.changeCount
@@ -277,7 +319,7 @@ struct PasteboardMonitor {
                     let contentHash = String(capture.content.hashValue)
                     if contentHash != lastContentHash {
                         lastContentHash = contentHash
-                        try ingest(capture)
+                        indexProblems += try ingest(capture) ? 1 : 0
                     }
                 } else if verbose {
                     print("ignored non-text clipboard change")
@@ -308,7 +350,8 @@ struct PasteboardMonitor {
         )
     }
 
-    private func ingest(_ capture: ClipboardCapture) throws {
+    /// True when the clip was stored but the index did not take it.
+    private func ingest(_ capture: ClipboardCapture) throws -> Bool {
         let result = try ingestor.ingest(capture)
         switch result {
         case let .stored(event, indexUpdate):
@@ -317,14 +360,21 @@ struct PasteboardMonitor {
                 FileHandle.standardError.write(
                     Data("warning: archive stored; incremental index update failed\n".utf8)
                 )
+                return true
             }
             if indexUpdate == .deferred {
+                // Not counted against the run: a rebuild in progress will
+                // pick this row up, and a scheduled monitor should not look
+                // unhealthy for something that heals itself.
                 FileHandle.standardError.write(
                     Data("warning: archive stored; index is rebuilding and will include it\n".utf8)
                 )
+                return false
             }
+            return false
         case let .blocked(reason):
             print("blocked \(reason)")
+            return false
         }
     }
 }
@@ -345,6 +395,10 @@ func recordCLICommand(_ log: ClipboardOperationalLog, verb: ClipboardOperational
 let cliVerb = ClipboardOperationalLog.Verb(
     command: CommandLine.arguments.dropFirst().first ?? "help"
 )
+
+/// What this invocation will exit with. New verbs assign it; the older
+/// ones leave it at success and throw when they fail.
+var cliExit = ClipboardCLIExit.success
 
 do {
     let options = try CLIOptions.parse(CommandLine.arguments)
@@ -383,34 +437,22 @@ case "monitor":
         durationSeconds: options.durationSeconds,
         verbose: options.verbose
     )
-    try monitor.run()
+    let indexProblems = try monitor.run()
+    if indexProblems > 0 {
+        FileHandle.standardError.write(
+            Data("warning: \(indexProblems) stored clip(s) did not reach the index\n".utf8)
+        )
+        cliExit = .warnings
+    }
 
 case "search":
-    guard let query = options.positional.first else {
-        throw CLIError.missingValue("search query")
-    }
-    let searcher = ClipboardArchiveSearcher(archiveRoot: options.archiveRoot)
-    let results = try searcher.search(ClipboardSearchOptions(
-        query: query,
-        since: options.since,
-        until: options.until,
-        limit: options.limit
-    ))
-    if results.isEmpty {
-        print("no matches")
-    } else {
-        for result in results {
-            let event = result.event
-            print("\(ISO8601DateFormatter().string(from: event.capturedAt)) \(event.id) \(event.sourceApp.name) \(result.matchedInBody ? "body" : "meta")")
-            print(result.snippet)
-            print("")
-        }
-    }
+    cliExit = try SearchCommand.run(options)
 
 case "redact":
     guard let id = options.positional.first else {
         throw CLIError.missingValue("clipboard event id")
     }
+    try CLIOutcome.requireArchive(options)
     let result = try ClipboardArchiveRedactor(archiveRoot: options.archiveRoot, indexURL: options.indexPath).redact(eventID: id)
     print("redacted \(result.eventID)")
     print("event file: \(result.redactedEventFile)")
@@ -425,12 +467,11 @@ case "prune":
     guard let before = options.until ?? options.since ?? options.positional.first.flatMap(CLIOptions.parseDate) else {
         throw CLIError.missingValue("prune cutoff date; use --until YYYY-MM-DD")
     }
+    try CLIOutcome.requireArchive(options)
     let result = try ClipboardArchivePruner(archiveRoot: options.archiveRoot, indexURL: options.indexPath)
         .pruneContent(before: before, dryRun: options.dryRun, includePinned: options.includePinned)
     if options.json {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        print(String(data: try encoder.encode(result), encoding: .utf8) ?? "{}")
+        try CLIOutcome.printJSON(result, schema: 1)
     } else {
         print(options.dryRun ? "prune dry run" : "prune complete")
         print("cutoff: \(ISO8601DateFormatter().string(from: before))")
@@ -459,14 +500,13 @@ case "bulk":
             "bulk criteria; pass at least one of --since/--until/--bundle-id/--app/--type/--sensitivity"
         )
     }
+    try CLIOutcome.requireArchive(options)
     let engine = ClipboardBulkEngine(archiveRoot: options.archiveRoot, indexURL: options.indexPath)
     let result = options.dryRun
         ? try engine.preview(criteria)
         : try engine.execute(criteria)
     if options.json {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        print(String(data: try encoder.encode(result), encoding: .utf8) ?? "{}")
+        try CLIOutcome.printJSON(result, schema: 1)
     } else {
         print(options.dryRun ? "bulk dry run (no changes made)" : "bulk delete complete (not undoable)")
         print("reason: \(result.reason)")
@@ -479,17 +519,21 @@ case "bulk":
     }
 
 case "sweep-expired":
+    try CLIOutcome.requireArchive(options)
     let sweeper = ClipboardExpirySweeper(archiveRoot: options.archiveRoot, indexURL: options.indexPath)
-    if let nextDue = sweeper.nextDue() {
-        print("next_due: \(ISO8601DateFormatter().string(from: nextDue))")
-    } else {
-        print("next_due: none")
+    let nextDue = sweeper.nextDue()
+    if !options.json {
+        print("next_due: \(nextDue.map { ISO8601DateFormatter().string(from: $0) } ?? "none")")
     }
     let result = try sweeper.sweepIfDue()
     if options.json {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        print(String(data: try encoder.encode(result), encoding: .utf8) ?? "{}")
+        // Under --json the whole output is one document: a "next_due:" line
+        // ahead of it made the output unparseable.
+        try CLIOutcome.printJSON(
+            result,
+            schema: 1,
+            extra: ["next_due": nextDue.map { ISO8601DateFormatter().string(from: $0) as Any } ?? NSNull()]
+        )
     } else {
         print("swept_hashes: \(result.sweptContentHashes)")
         print("deleted_events: \(result.deletedEvents)")
@@ -497,6 +541,7 @@ case "sweep-expired":
     }
 
 case "repair-index":
+    try CLIOutcome.requireArchive(options)
     let index = ClipboardDerivedIndex(
         archiveRoot: options.archiveRoot,
         indexURL: options.indexPath,
@@ -507,18 +552,9 @@ case "repair-index":
     print("index path: \(index.indexURL.path)")
 
 case "index-search":
-    guard let query = options.positional.first else {
-        throw CLIError.missingValue("search query")
-    }
-    // The operational sink goes in here too: a search is one of the two
-    // places a missing or damaged index is discovered, and the row that says
-    // so is worth having.
-    let output = try ClipboardDerivedIndex(
-        archiveRoot: options.archiveRoot,
-        indexURL: options.indexPath,
-        operationalLog: options.operationalLog
-    ).search(query, limit: options.limit)
-    print(output.isEmpty ? "no matches" : output)
+    // Kept working, and now the same code as `search`: two spellings of one
+    // command cannot disagree about what matches.
+    cliExit = try SearchCommand.run(options)
 
 case "stores":
     let resolution = options.storeResolution
@@ -566,6 +602,7 @@ case "stores":
     }
 
 case "health":
+    try CLIOutcome.requireArchive(options)
     let reporter = ClipboardArchiveHealthReporter(archiveRoot: options.archiveRoot, indexURL: options.indexPath)
     let health = try reporter.health()
     let resolution = options.storeResolution
@@ -581,6 +618,7 @@ case "health":
         ) as? [String: Any] else {
             throw CLIError.unreadableHealthReport
         }
+        object["schema"] = 1
         object["archive_root_source"] = resolution.archiveOrigin.rawValue
         object["index_source"] = resolution.indexOrigin.rawValue
         object["pointer_status"] = resolution.pointerStatus.rawValue
@@ -638,7 +676,9 @@ case "logs":
         since: options.since
     )
     if options.json {
-        print("[" + entries.map { "  " + $0.line }.joined(separator: ",\n") + "]")
+        print("{\n  \"schema\": 1,\n  \"rows\": [")
+        print(entries.map { "    " + $0.line }.joined(separator: ",\n"))
+        print("  ]\n}")
     } else if entries.isEmpty {
         print("no operational rows")
     } else {
@@ -648,88 +688,80 @@ case "logs":
     }
 
 case "write-manifest":
-    let url = try ClipboardArchiveHealthReporter(archiveRoot: options.archiveRoot).writeDailyManifest()
+    try CLIOutcome.requireArchive(options)
+    let url = try ClipboardArchiveHealthReporter(
+        archiveRoot: options.archiveRoot,
+        indexURL: options.indexPath
+    ).writeDailyManifest()
     print("manifest written: \(url.path)")
 
+case "version":
+    cliExit = VersionCommand.run(options)
+
+case "status":
+    cliExit = try StatusCommand.run(options)
+
+case "verify":
+    cliExit = try VerifyCommand.run(options)
+
+case "doctor":
+    cliExit = try DoctorCommand.run(options)
+
+case "export":
+    cliExit = try ExportCommand.run(options)
+
+case "stats":
+    cliExit = try StatsCommand.run(options)
+
+case "help", "--help", "-h":
+    if options.markdown {
+        print(ClipboardCLIVerbs.markdownReference(), terminator: "")
+    } else if let name = options.positional.first {
+        guard let verb = ClipboardCLIVerbs.verb(named: name) else {
+            throw CLIOutcomeError(exit: .usage, message: "unknown command \(name)")
+        }
+        print(ClipboardCLIVerbs.detail(for: verb))
+    } else {
+        print(ClipboardCLIVerbs.overview())
+    }
+
 default:
-    print("""
-    Clipboard Archive
-
-    Commands:
-      self-test    Write a sample archive event to a temporary directory.
-      monitor      Manually poll NSPasteboard and archive accepted text changes.
-      search QUERY Search the local archive.
-      redact ID    Redact archived content for one clipboard event.
-      prune        Redact stored content before a cutoff date.
-      bulk         Bulk-delete by date/app/type/sensitivity criteria.
-                   Preview with --dry-run first; execution is not undoable.
-      sweep-expired Delete clips whose sensitivity expiry has passed.
-      repair-index Rebuild the derived SQLite FTS search index.
-      index-search QUERY Search the derived SQLite FTS index.
-      health       Report archive/index health.
-      logs         Print the operational log (launch, heartbeat, capture
-                   failures, rebuilds, prunes). Options: --tail N (default
-                   50), --errors, --since, --json.
-      stores       Report which archive, index, settings, lock and pointer
-                   file this command resolved, and where each came from.
-      write-manifest Write today's daily manifest.
-      backup create FILE   Write an encrypted backup (.clipbak) of the archive.
-                           Options: --include-settings, --passphrase-stdin.
-      backup inspect FILE  Decrypt and show a backup's manifest (needs the
-                           passphrase). Options: --json, --passphrase-stdin.
-      backup restore FILE  Restore a backup. Without --merge the archive must
-                           be empty; --merge imports missing items (local
-                           deletions always win). Options: --merge, --dry-run,
-                           --apply-settings, --json, --passphrase-stdin.
-
-    Monitor options:
-      --duration SECONDS            Stop after this many seconds.
-      --interval SECONDS            Polling interval. Default: 1.
-      --archive-root PATH           Archive location. Resolved in order: this argument,
-                                    then CLIPBOARD_ARCHIVE_ARCHIVE_ROOT, then the pointer
-                                    the running app published, then
-                                    ~/Library/Application Support/ClipboardArchive/Archive/clipboard-history.
-      --index-path PATH             Derived search index location used by monitor, redact,
-                                    prune, repair-index, index-search, and health. Resolved in
-                                    order: this argument, then CLIPBOARD_ARCHIVE_INDEX_PATH,
-                                    then the pointer the running app published, then
-                                    ~/Library/Application Support/ClipboardArchive/Indexes/clipboard-search.sqlite.
-                                    Run `stores` to see which one won.
-      --inline-limit-bytes BYTES    Default: 65536. Larger content uses body files.
-      --limit N                     Search result limit. Default: 25.
-      --since YYYY-MM-DD            Search lower date bound.
-      --until YYYY-MM-DD            Search upper date bound, or prune cutoff.
-      --dry-run                     Report prune impact without changing files.
-      --include-pinned              Prune/bulk-delete pinned content too. Pinned
-                                    clips are exempt by default.
-      --bundle-id ID                Bulk criterion: source app bundle id.
-      --app NAME                    Bulk criterion: source app display name.
-      --type TYPE                   Bulk criterion: content type (text/url/code/...).
-      --sensitivity KIND            Bulk criterion: any-flagged | manual-restricted.
-      --tail N                      logs: how many rows to print. Default: 50.
-      --errors                      logs: only rows recorded at error level.
-      --verbose                     Print ignored non-text changes.
-      --json                        JSON output for supported commands.
-
-    This CLI does not install launch/login behavior. Capture only runs while
-    the monitor command is active.
-    """)
+    // An unknown verb used to print the help and exit 0, which told a
+    // script that a command it had misspelled had succeeded.
+    throw CLIOutcomeError(exit: .usage, message: "unknown command \(options.command)")
     }
     // The parsed command is the honest verb; the positional guess above
     // only has to cover an invocation that never parsed.
     recordCLICommand(
         options.operationalLog,
         verb: ClipboardOperationalLog.Verb(command: options.command),
-        exitCode: 0
+        exitCode: cliExit.rawValue
     )
+    if cliExit != .success {
+        exit(Int32(cliExit.rawValue))
+    }
 } catch {
-    FileHandle.standardError.write(Data("clipboard-archive error: \(error)\n".utf8))
+    // One place decides what an error means to whatever ran this.
+    let outcome: ClipboardCLIExit
+    let message: String
+    switch error {
+    case let failure as CLIOutcomeError:
+        outcome = failure.exit
+        message = failure.message
+    case let failure as CLIError:
+        outcome = .usage
+        message = failure.description
+    default:
+        outcome = .runtime
+        message = "\(error)"
+    }
+    CLIOutcome.report(outcome, message, json: CommandLine.arguments.contains("--json"))
     // The options may not have parsed, so this path resolves the log
     // directory the same way `parse` would have.
     recordCLICommand(
         ClipboardOperationalLog(directory: ClipboardStoreLocator.resolve().logDirectory),
         verb: cliVerb,
-        exitCode: 1
+        exitCode: outcome.rawValue
     )
-    exit(1)
+    exit(Int32(outcome.rawValue))
 }

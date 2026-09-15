@@ -105,7 +105,8 @@ func runBackupCommand(options: CLIOptions) throws {
         let result = try exporter.export(
             to: fileURL,
             passphrase: passphrase,
-            includeSettings: options.includeSettings
+            includeSettings: options.includeSettings,
+            settingsURL: options.storeResolution.settingsURL
         )
         print("backup created: \(result.outputURL.path)")
         print("backup_id: \(result.manifest.backupID)")
@@ -189,7 +190,8 @@ func runBackupCommand(options: CLIOptions) throws {
         defer { ClipboardBackupPassphrase.zero(&passphrase) }
         let importer = ClipboardBackupImporter(
             archiveRoot: options.archiveRoot,
-            indexURL: options.indexPath
+            indexURL: options.indexPath,
+            settingsURL: options.storeResolution.settingsURL
         )
         let importOptions = ClipboardBackupImportOptions(
             merge: options.merge,
