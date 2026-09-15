@@ -13,6 +13,23 @@
 
 ## Unreleased
 
+- Keep an interrupted archive append from costing more than the row being
+  written: a day file that does not end in a newline is closed with one before
+  the next row, so a tail torn by a kill stays a single unreadable line instead
+  of swallowing the following row; a short write or a full disk truncates back
+  to the pre-row size and reports the reason class instead of leaving half a
+  row behind.
+- Detect a search index that was deleted or damaged while the app is running,
+  instead of trusting it and quietly rebuilding an empty database that made
+  All History shrink until the next restart. The file is checked before use,
+  a search rebuilds it and returns complete results, and a capture hands the
+  rebuild to the background rather than stalling on it.
+- Fall back to the last known-good settings instead of defaults when the
+  settings file cannot be read: the unreadable file is set aside as
+  `settings.json.corrupt-<timestamp>` and `settings.json.bak`, written after
+  every successful save, is loaded. Defaults would have turned capture off and
+  replaced a chosen retention mode with "keep the latest 50".
+
 - Add a content-free operational log with a heartbeat at
   `~/Library/Logs/ClipboardArchive/operational.ndjson` (2 MiB x 5, owner-only,
   following an injected application-support root). It records launches and

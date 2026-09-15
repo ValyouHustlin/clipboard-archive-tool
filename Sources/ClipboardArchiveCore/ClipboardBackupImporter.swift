@@ -140,6 +140,11 @@ public struct ClipboardBackupImporter: Sendable {
     static let journalFileName = "journal.json"
     static let preImagesDirectoryName = "pre-images"
     static let settingsPreImageName = "pre-image-settings.json"
+    /// The settings store keeps a last-known-good copy beside the settings
+    /// file, and a rollback that restored one without the other would leave
+    /// a copy NEWER than the settings it backs — the next unreadable-file
+    /// recovery would then load the rolled-back import's settings.
+    static let settingsCopyPreImageName = "pre-image-settings-copy.json"
 
     public init(
         archiveRoot: URL,
@@ -838,6 +843,13 @@ public struct ClipboardBackupImporter: Sendable {
                     to: stagingURL.appendingPathComponent(Self.settingsPreImageName)
                 )
             }
+            let settingsCopyURL = ClipboardSettingsStore(settingsURL: settingsURL).lastGoodURL
+            if fileManager.fileExists(atPath: settingsCopyURL.path) {
+                try fileManager.copyItem(
+                    at: settingsCopyURL,
+                    to: stagingURL.appendingPathComponent(Self.settingsCopyPreImageName)
+                )
+            }
             journal.status = "mutating"
             try writeJournal(journal, stagingURL: stagingURL)
             try commitFault?(.preImages)
@@ -998,6 +1010,10 @@ public struct ClipboardBackupImporter: Sendable {
         }
         if let settingsPath = journal.settingsPath {
             let settingsURL = URL(fileURLWithPath: settingsPath)
+            // The last-known-good copy moves with the settings file, or the
+            // import's settings survive the rollback inside it.
+            let settingsCopyURL = ClipboardSettingsStore(settingsURL: settingsURL).lastGoodURL
+            let copyPreImage = stagingURL.appendingPathComponent(settingsCopyPreImageName)
             if journal.settingsCreated {
                 try? fileManager.removeItem(at: settingsURL)
             } else if journal.settingsMutated {
@@ -1007,6 +1023,13 @@ public struct ClipboardBackupImporter: Sendable {
                     try data.write(to: settingsURL, options: [.atomic])
                     try ClipboardPrivateFileSystem.secureFile(settingsURL)
                 }
+            }
+            if fileManager.fileExists(atPath: copyPreImage.path) {
+                let data = try Data(contentsOf: copyPreImage)
+                try data.write(to: settingsCopyURL, options: [.atomic])
+                try ClipboardPrivateFileSystem.secureFile(settingsCopyURL)
+            } else {
+                try? fileManager.removeItem(at: settingsCopyURL)
             }
         }
     }

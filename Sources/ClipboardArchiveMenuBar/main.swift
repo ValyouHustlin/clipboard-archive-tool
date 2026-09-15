@@ -148,10 +148,17 @@ final class ClipboardMenuBarApp: NSObject,
         isPaused = userDefaults.bool(forKey: "capturePaused")
         let loadedSettings = settingsStore.loadReporting()
         settings = loadedSettings.settings
-        if loadedSettings.fallback != nil {
+        switch loadedSettings.fallback {
+        case .lastGoodUsed:
+            // The chosen settings survived an unreadable file: worth a row,
+            // because the main file was set aside and should be looked at.
+            operationalLog.record(.settingsLastGoodUsed, count: 1)
+        case .some:
             // Defaults are not the user's choices — retention in
             // particular silently becomes "keep the latest 50".
             operationalLog.record(.settingsFallback, count: 1)
+        case nil:
+            break
         }
         startHeartbeat()
         NSApp.setActivationPolicy(.accessory)
@@ -315,7 +322,9 @@ final class ClipboardMenuBarApp: NSObject,
                     operationalLog.record(.captureRecovered)
                 }
                 captureFailureState = nil
-                lastStatus = indexUpdate == .failed
+                // A deferred update reads the same way to a person as a
+                // failed one: the clip is stored but not yet searchable.
+                lastStatus = indexUpdate == .failed || indexUpdate == .deferred
                     ? "Captured; index update pending"
                     : "Captured \(shortDate(Date()))"
                 liveEventCountEstimate = liveEventCountEstimate.map { $0 + 1 }

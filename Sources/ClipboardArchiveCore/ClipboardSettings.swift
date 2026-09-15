@@ -385,6 +385,10 @@ public enum ClipboardSettingsFallbackReason: String, Sendable, Equatable {
     case unreadable
     /// The bytes are not settings this build can decode.
     case corrupt
+    /// The main file could not be read or decoded and the last known-good
+    /// copy was loaded instead. NOT a defaults substitution: the user's own
+    /// choices — capture on, retention mode — survived.
+    case lastGoodUsed
 }
 
 public struct ClipboardSettingsStore: Sendable {
@@ -406,15 +410,20 @@ public struct ClipboardSettingsStore: Sendable {
             atPath: settingsURL.path
         ),
               attributes[.type] as? FileAttributeType == .typeRegular else {
-            return (ClipboardSettings(), .missing)
+            // No main file: a first run (no copy either, so defaults), or a
+            // file that was quarantined or lost mid-replace — in which case
+            // the copy is still the user's own settings.
+            return recoverFromLastGood(reasonIfNoCopy: .missing, quarantining: false)
         }
         do {
             try ClipboardPrivateFileSystem.secureFile(settingsURL)
         } catch {
-            return (ClipboardSettings(), .insecure)
+            // The file is there but could not be tightened; reading it is
+            // not safe, and defaults are the wrong answer here too.
+            return recoverFromLastGood(reasonIfNoCopy: .insecure, quarantining: false)
         }
         guard let data = try? Data(contentsOf: settingsURL) else {
-            return (ClipboardSettings(), .unreadable)
+            return recoverFromLastGood(reasonIfNoCopy: .unreadable)
         }
         // save() encodes dates as ISO 8601, so load MUST decode them the
         // same way. The plain-decoder fallback keeps hypothetical files with
@@ -425,10 +434,65 @@ public struct ClipboardSettingsStore: Sendable {
             return (settings, nil)
         }
         guard let settings = try? JSONDecoder().decode(ClipboardSettings.self, from: data) else {
-            return (ClipboardSettings(), .corrupt)
+            return recoverFromLastGood(reasonIfNoCopy: .corrupt)
         }
         return (settings, nil)
     }
+
+    /// The last-known-good copy, written beside the settings on every
+    /// successful save.
+    public var lastGoodURL: URL {
+        URL(fileURLWithPath: settingsURL.path + ".bak")
+    }
+
+    /// Defaults are the WRONG answer to an unreadable settings file: they
+    /// turn capture off, mark onboarding incomplete, and replace a chosen
+    /// retention mode with "keep the latest 50" — a silent, data-affecting
+    /// downgrade of someone's own archive. So the bad bytes are set aside
+    /// for inspection and the last good copy is loaded instead; defaults are
+    /// used only when there has never been a good copy.
+    private func recoverFromLastGood(
+        reasonIfNoCopy: ClipboardSettingsFallbackReason,
+        quarantining: Bool = true
+    ) -> (settings: ClipboardSettings, fallback: ClipboardSettingsFallbackReason?) {
+        // The copy is decoded BEFORE anything is moved. Setting a file aside
+        // when there is nothing to fall back to would turn a transient read
+        // failure into permanent data loss: the next save would write
+        // defaults over the only settings that ever existed.
+        let isoDecoder = JSONDecoder()
+        isoDecoder.dateDecodingStrategy = .iso8601
+        guard let data = try? Data(contentsOf: lastGoodURL),
+              let settings = (try? isoDecoder.decode(ClipboardSettings.self, from: data))
+                ?? (try? JSONDecoder().decode(ClipboardSettings.self, from: data)) else {
+            return (ClipboardSettings(), reasonIfNoCopy)
+        }
+        if quarantining {
+            quarantineUnreadableFile()
+        }
+        return (settings, .lastGoodUsed)
+    }
+
+    /// Moves the unreadable file aside as `settings.json.corrupt-<utc>` so a
+    /// person can look at what happened. An existing quarantine is NEVER
+    /// overwritten — the first failure is the interesting one — and a
+    /// quarantine that cannot be written is not worth failing a load over.
+    private func quarantineUnreadableFile() {
+        let stamp = Self.quarantineFormatter.string(from: Date())
+        let destination = URL(fileURLWithPath: settingsURL.path + ".corrupt-" + stamp)
+        guard !FileManager.default.fileExists(atPath: destination.path) else {
+            return
+        }
+        try? FileManager.default.moveItem(at: settingsURL, to: destination)
+    }
+
+    private static let quarantineFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
+        return formatter
+    }()
 
     public func save(_ settings: ClipboardSettings) throws {
         let directory = settingsURL.deletingLastPathComponent()
@@ -439,6 +503,13 @@ public struct ClipboardSettingsStore: Sendable {
         let data = try encoder.encode(settings)
         try data.write(to: settingsURL, options: [.atomic])
         try ClipboardPrivateFileSystem.secureFile(settingsURL)
+        // The last-known-good copy, written only AFTER the real file landed,
+        // so the copy can never be newer than the settings it backs. Best
+        // effort: a copy that cannot be written must not fail a save the
+        // user just made.
+        if (try? data.write(to: lastGoodURL, options: [.atomic])) != nil {
+            try? ClipboardPrivateFileSystem.secureFile(lastGoodURL)
+        }
     }
 
     public static func defaultSettingsURL() -> URL {

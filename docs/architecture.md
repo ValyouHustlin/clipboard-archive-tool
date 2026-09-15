@@ -141,6 +141,25 @@ seven-day UI visibility timestamp retained for archive-format compatibility.
 Blocked events retain timestamp, source-app metadata, and a machine-readable
 reason. They do not include clipboard text.
 
+Appends are all-or-nothing. The day file is opened `O_RDWR|O_APPEND` with
+symlinks refused and a regular-file check; a non-empty file whose last byte is
+not a newline is closed with one before the row is written, so a torn tail
+costs exactly one line rather than two. The row is written through a
+`write(2)` loop and a short write or error truncates back to the pre-row size,
+then throws an error carrying the `errno` the capture path classifies.
+`fsync` is deliberately not used: the archive is append-only, and the boundary
+repair covers what a lost tail would otherwise break. Large bodies keep their
+existing atomic write.
+
+The derived index is verified before use rather than remembered. Each check
+stats the file and compares its identity (device, inode, size, mtime) with
+what this process last verified; a missing file, a failed `PRAGMA
+quick_check`, or a schema mismatch triggers a rebuild, recorded in the
+operational log. The full integrity check runs only when something outside
+this process changed the file, because it scans the whole database. A read
+rebuilds synchronously; a capture defers to a background rebuild and skips
+its index write, since the event is already in the archive.
+
 Deletion rewrites matching event content to a tombstone, removes any referenced
 large-body file, appends a deletion-ledger record, and deletes the matching row
 from the derived index. It does not erase backups or filesystem snapshots that

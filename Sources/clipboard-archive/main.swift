@@ -318,6 +318,11 @@ struct PasteboardMonitor {
                     Data("warning: archive stored; incremental index update failed\n".utf8)
                 )
             }
+            if indexUpdate == .deferred {
+                FileHandle.standardError.write(
+                    Data("warning: archive stored; index is rebuilding and will include it\n".utf8)
+                )
+            }
         case let .blocked(reason):
             print("blocked \(reason)")
         }
@@ -505,7 +510,14 @@ case "index-search":
     guard let query = options.positional.first else {
         throw CLIError.missingValue("search query")
     }
-    let output = try ClipboardDerivedIndex(archiveRoot: options.archiveRoot, indexURL: options.indexPath).search(query, limit: options.limit)
+    // The operational sink goes in here too: a search is one of the two
+    // places a missing or damaged index is discovered, and the row that says
+    // so is worth having.
+    let output = try ClipboardDerivedIndex(
+        archiveRoot: options.archiveRoot,
+        indexURL: options.indexPath,
+        operationalLog: options.operationalLog
+    ).search(query, limit: options.limit)
     print(output.isEmpty ? "no matches" : output)
 
 case "stores":

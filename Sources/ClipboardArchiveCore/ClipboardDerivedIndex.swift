@@ -132,6 +132,10 @@ public struct ClipboardDerivedIndex: Sendable {
                 durationMs: Date().timeIntervalSince(start) * 1000)
             operationalLog?.record(.indexRebuildFinished, count: count,
                 durationMs: Date().timeIntervalSince(start) * 1000)
+            // The rebuild replaced the file, so the verified identity is the
+            // new one — recorded here for every caller, not just the
+            // self-heal path.
+            Self.verifiedSchemas.record(indexURL.path, stamp: Self.fileStamp(atPath: indexURL.path))
             return count
         } catch {
             usage.record(.indexRebuild, outcome: .failed, scope: .index,
@@ -253,20 +257,31 @@ public struct ClipboardDerivedIndex: Sendable {
     /// (tombstones, `.restricted` labels, manual "restricted" overrides)
     /// DELETE-instead-of-insert so a re-copy can never resurrect an index
     /// row (Slice 5 `.restricted` semantics).
+    /// Returns false when the write was DEFERRED: the index was missing or
+    /// unusable and a rebuild is running on the background queue, which will
+    /// pick this event up from the archive. The caller has already stored
+    /// the event, so deferring costs searchability for the length of the
+    /// rebuild and nothing else.
+    @discardableResult
     public func upsert(
         event: StoredClipboardEvent,
         body: String,
         sensitivityOverride: String? = nil
-    ) throws {
+    ) throws -> Bool {
         let indexDirectory = indexURL.deletingLastPathComponent()
         try ClipboardPrivateFileSystem.createDirectory(indexDirectory, archiveRoot: indexDirectory)
         // Outside the exclusive lock: ensure/rebuild takes the lock itself
         // (the lock is not reentrant). A racing ensure from another process
         // is an idempotent double rebuild.
-        try ensureCurrentSchema()
+        guard try ensureSchema(mode: .capturePath) != .rebuildScheduled else {
+            return false
+        }
         try withExclusiveLock {
             if ClipboardSuppression.isIndexExcluded(event, sensitivityOverride: sensitivityOverride) {
                 _ = try deleteUnlocked(eventID: event.id)
+                // This branch writes to the database too; leaving the stamp
+                // stale would buy a full integrity check on the next capture.
+                Self.verifiedSchemas.record(indexURL.path, stamp: Self.fileStamp(atPath: indexURL.path))
                 return
             }
 
@@ -281,7 +296,12 @@ public struct ClipboardDerivedIndex: Sendable {
             COMMIT;
             """)
             try ClipboardPrivateFileSystem.secureFile(indexURL)
+            // This process just changed the file, so re-stamp the cache:
+            // otherwise its own write would look like an outside edit and
+            // buy a full `quick_check` on the very next capture.
+            Self.verifiedSchemas.record(indexURL.path, stamp: Self.fileStamp(atPath: indexURL.path))
         }
+        return true
     }
 
     // MARK: - Schema versioning (contract 3)
@@ -334,44 +354,320 @@ public struct ClipboardDerivedIndex: Sendable {
     /// flow only replaces the file after `quick_check` passes).
     @discardableResult
     public func ensureCurrentSchema() throws -> Bool {
-        // Per-capture cost guard: without this cache every accepted capture
-        // spawns an extra sqlite3 subprocess on the main thread just to
-        // re-read user_version. Once this process has verified (or built)
-        // the schema, trust it. An external process swapping in an
-        // older-schema file mid-run degrades to a failed upsert (already
-        // non-fatal) and heals through the manual/CLI rebuild path.
-        if Self.verifiedSchemaPaths.contains(indexURL.path) {
-            return false
+        try ensureSchema(mode: .readPath) == .rebuilt
+    }
+
+    /// Which side is asking, because the answer to "the index is unusable"
+    /// differs by caller. A read can wait for a rebuild — it already runs
+    /// off the main thread. A capture cannot: rebuilding a 17k-row archive
+    /// takes seconds, and the capture path runs on the main thread, so it
+    /// hands the work to the background queue and skips this one write.
+    public enum SchemaCheckMode: Sendable {
+        case readPath
+        case capturePath
+    }
+
+    public enum SchemaCheckOutcome: Equatable, Sendable {
+        /// The file on disk is the index this process already verified, or
+        /// it passed a fresh integrity check.
+        case verified
+        /// It was missing or unusable and has been rebuilt; reads and writes
+        /// may proceed.
+        case rebuilt
+        /// It was missing or unusable and a rebuild is running on the
+        /// background queue; a capture-path write skips instead of blocking.
+        case rebuildScheduled
+    }
+
+    /// Verifies — and heals — the index this instance points at.
+    ///
+    /// The per-process cache is keyed on the file's IDENTITY (device, inode,
+    /// size, mtime), not merely on its path. That is the whole fix: a cache
+    /// that remembers only "this path was fine once" keeps handing work to
+    /// an index somebody deleted, and the sqlite3 CLI silently CREATES an
+    /// empty database on open, so history quietly shrinks to whatever was
+    /// captured after the deletion.
+    ///
+    /// Cost discipline: the cheap `stat` runs on every call, while
+    /// `PRAGMA quick_check` (a full scan of a 65 MB file) runs ONLY when the
+    /// identity changed since this process last verified it — that is, when
+    /// something outside this process wrote to the file. Our own writes
+    /// re-stamp the cache, so a steady stream of captures pays one stat each
+    /// and nothing more.
+    @discardableResult
+    public func ensureSchema(mode: SchemaCheckMode) throws -> SchemaCheckOutcome {
+        let path = indexURL.path
+        guard let stamp = Self.fileStamp(atPath: path) else {
+            Self.verifiedSchemas.forget(path)
+            operationalLog?.record(.indexMissingDetected, count: 1)
+            return try heal(mode: mode)
         }
-        guard !schemaIsCurrent() else {
-            Self.verifiedSchemaPaths.insert(indexURL.path)
-            return false
+        if Self.verifiedSchemas.stamp(forPath: path) == stamp {
+            return .verified
         }
-        _ = try rebuild()
-        Self.verifiedSchemaPaths.insert(indexURL.path)
+        switch integrityProbe() {
+        case let .readable(userVersion) where userVersion == Self.currentIndexSchemaVersion:
+            Self.verifiedSchemas.record(path, stamp: Self.fileStamp(atPath: path))
+            return .verified
+        case .undetermined:
+            // Another writer holds the database. That is a live index, not a
+            // damaged one, and rebuilding a healthy database because a lock
+            // was busy would be the expensive wrong answer. Nothing is
+            // cached, so the next call checks again.
+            return .verified
+        case .readable, .damaged:
+            Self.verifiedSchemas.forget(path)
+            operationalLog?.record(.indexCorruptDetected, count: 1)
+            return try heal(mode: mode)
+        }
+    }
+
+    enum IntegrityProbe: Equatable {
+        /// The database answered: it passed `quick_check` and reported this
+        /// schema version.
+        case readable(userVersion: Int)
+        /// It answered, and the answer was bad.
+        case damaged
+        /// It could not be asked — a busy lock, a sqlite3 that would not
+        /// run. Not evidence of damage.
+        case undetermined
+    }
+
+    /// One sqlite3 invocation for both questions the self-heal asks, with a
+    /// busy timeout so an ordinary concurrent write is waited out rather
+    /// than read as corruption.
+    func integrityProbe() -> IntegrityProbe {
+        let process = Process()
+        process.executableURL = sqliteExecutableURL
+        process.arguments = ["-batch", indexURL.path]
+        let input = Pipe()
+        let output = Pipe()
+        let errorOutput = Pipe()
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = errorOutput
+        guard (try? process.run()) != nil else {
+            return .undetermined
+        }
+        let sql = "PRAGMA busy_timeout=5000;\nPRAGMA quick_check;\nPRAGMA user_version;\n"
+        guard (try? input.fileHandleForWriting.write(contentsOf: Data(sql.utf8))) != nil,
+              (try? input.fileHandleForWriting.close()) != nil else {
+            process.terminate()
+            return .undetermined
+        }
+        let out = output.fileHandleForReading.readDataToEndOfFile()
+        let err = String(data: errorOutput.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        process.waitUntilExit()
+        if err.localizedCaseInsensitiveContains("locked") || err.localizedCaseInsensitiveContains("busy") {
+            return .undetermined
+        }
+        guard process.terminationStatus == 0 else {
+            return .damaged
+        }
+        let lines = (String(data: out, encoding: .utf8) ?? "")
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        // Three lines, in order: the busy timeout the first pragma echoes,
+        // the quick_check verdict, and the schema version. A damaged
+        // database reports its errors where "ok" would be.
+        guard lines.contains("ok"), let version = lines.last.flatMap({ Int($0) }) else {
+            return .damaged
+        }
+        return .readable(userVersion: version)
+    }
+
+    private func heal(mode: SchemaCheckMode) throws -> SchemaCheckOutcome {
+        switch mode {
+        case .readPath:
+            _ = try rebuild()
+            Self.verifiedSchemas.record(indexURL.path, stamp: Self.fileStamp(atPath: indexURL.path))
+            return .rebuilt
+        case .capturePath:
+            // A process that has never verified this index yet is starting
+            // cold — a fresh install, or the first capture after launch —
+            // and building it here is the behaviour every caller already
+            // expects. The stall this avoids is the MID-RUN one: an index
+            // that was verified and then vanished, where a rebuild of a
+            // large archive would freeze the capture path for seconds.
+            guard Self.verifiedSchemas.hasEverVerified(indexURL.path) else {
+                _ = try rebuild()
+                Self.verifiedSchemas.record(indexURL.path, stamp: Self.fileStamp(atPath: indexURL.path))
+                return .rebuilt
+            }
+            scheduleBackgroundRebuild()
+            return .rebuildScheduled
+        }
+    }
+
+    /// One rebuild per index path at a time, on a queue owned by this type,
+    /// so a burst of captures against a deleted index cannot stack rebuilds.
+    private func scheduleBackgroundRebuild() {
+        let path = indexURL.path
+        // Every deferral is counted BEFORE the rebuild claims a generation,
+        // so a capture that arrives after the rebuild has scanned its day file
+        // cannot be left out of the index forever: the counter moved, and
+        // one more pass follows.
+        Self.verifiedSchemas.noteDeferral(path)
+        guard let generation = Self.verifiedSchemas.beginRebuild(path) else {
+            return
+        }
+        let index = self
+        Self.rebuildQueue.async {
+            let succeeded = (try? index.rebuild()) != nil
+            if succeeded {
+                Self.verifiedSchemas.record(path, stamp: Self.fileStamp(atPath: path))
+            }
+            let deferrals = Self.verifiedSchemas.deferrals(path)
+            Self.verifiedSchemas.endRebuild(path)
+            if succeeded, deferrals > generation {
+                index.scheduleBackgroundRebuild()
+            }
+        }
+    }
+
+    /// Test and shutdown hook: waits until no background rebuild is in
+    /// flight, returning false if it is still running at the deadline.
+    @discardableResult
+    public static func waitForPendingRebuilds(
+        forIndexAt indexURL: URL? = nil,
+        timeout: TimeInterval = 30
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while verifiedSchemas.hasPendingRebuilds(forPath: indexURL?.path) {
+            if Date() >= deadline {
+                return false
+            }
+            usleep(50_000)
+        }
         return true
     }
 
-    private static let verifiedSchemaPaths = VerifiedPathSet()
+    /// File identity as the cache stores it. Size and mtime catch an
+    /// in-place edit; device and inode catch a swap, a replace, or a
+    /// delete-and-recreate that happens to land on the same size.
+    struct FileStamp: Equatable, Sendable {
+        var device: Int64
+        var inode: UInt64
+        var size: Int64
+        var modifiedSeconds: Int64
+        var modifiedNanoseconds: Int64
+    }
 
-    private final class VerifiedPathSet: @unchecked Sendable {
+    static func fileStamp(atPath path: String) -> FileStamp? {
+        var info = stat()
+        guard lstat(path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
+            return nil
+        }
+        return FileStamp(
+            device: Int64(info.st_dev),
+            inode: UInt64(info.st_ino),
+            size: Int64(info.st_size),
+            modifiedSeconds: Int64(info.st_mtimespec.tv_sec),
+            modifiedNanoseconds: Int64(info.st_mtimespec.tv_nsec)
+        )
+    }
+
+    private static let rebuildQueue = DispatchQueue(label: "app.clipboardarchive.index-rebuild")
+
+    private static let verifiedSchemas = VerifiedSchemaCache()
+
+    private final class VerifiedSchemaCache: @unchecked Sendable {
         private let lock = NSLock()
-        private var paths: Set<String> = []
+        private var stamps: [String: FileStamp] = [:]
+        private var rebuilding: Set<String> = []
+        /// Paths this process has verified at least once, ever. Unlike
+        /// `stamps` it is never cleared: it answers "was this index working
+        /// a moment ago", which is what separates a cold start from a
+        /// mid-run disappearance.
+        private var everVerified: Set<String> = []
+        /// How many capture-path writes have been handed to a rebuild for
+        /// each path. Only ever compared against itself.
+        private var deferrals: [String: Int] = [:]
 
-        func contains(_ path: String) -> Bool {
+        func stamp(forPath path: String) -> FileStamp? {
             lock.lock()
             defer {
                 lock.unlock()
             }
-            return paths.contains(path)
+            return stamps[path]
         }
 
-        func insert(_ path: String) {
+        func record(_ path: String, stamp: FileStamp?) {
             lock.lock()
             defer {
                 lock.unlock()
             }
-            paths.insert(path)
+            stamps[path] = stamp
+            if stamp != nil {
+                everVerified.insert(path)
+            }
+        }
+
+        func hasEverVerified(_ path: String) -> Bool {
+            lock.lock()
+            defer {
+                lock.unlock()
+            }
+            return everVerified.contains(path)
+        }
+
+        func forget(_ path: String) {
+            lock.lock()
+            defer {
+                lock.unlock()
+            }
+            stamps[path] = nil
+        }
+
+        /// Takes ownership of the rebuild for `path`, returning the deferral
+        /// count at that moment, or nil when a rebuild is already running.
+        func beginRebuild(_ path: String) -> Int? {
+            lock.lock()
+            defer {
+                lock.unlock()
+            }
+            guard rebuilding.insert(path).inserted else {
+                return nil
+            }
+            return deferrals[path] ?? 0
+        }
+
+        @discardableResult
+        func noteDeferral(_ path: String) -> Int {
+            lock.lock()
+            defer {
+                lock.unlock()
+            }
+            let next = (deferrals[path] ?? 0) + 1
+            deferrals[path] = next
+            return next
+        }
+
+        func deferrals(_ path: String) -> Int {
+            lock.lock()
+            defer {
+                lock.unlock()
+            }
+            return deferrals[path] ?? 0
+        }
+
+        func endRebuild(_ path: String) {
+            lock.lock()
+            defer {
+                lock.unlock()
+            }
+            rebuilding.remove(path)
+        }
+
+        func hasPendingRebuilds(forPath path: String?) -> Bool {
+            lock.lock()
+            defer {
+                lock.unlock()
+            }
+            guard let path else {
+                return !rebuilding.isEmpty
+            }
+            return rebuilding.contains(path)
         }
     }
 
@@ -583,6 +879,10 @@ public struct ClipboardDerivedIndex: Sendable {
             }
             sql += "COMMIT;\n"
             try runSQLite(input: sql)
+            // A prune or a delete is this process writing to its own index;
+            // re-stamping keeps the next capture on one cheap stat instead
+            // of a full-database integrity check.
+            Self.verifiedSchemas.record(indexURL.path, stamp: Self.fileStamp(atPath: indexURL.path))
             return true
         }
     }

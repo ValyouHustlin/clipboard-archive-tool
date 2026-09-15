@@ -8,6 +8,10 @@ public enum ClipboardIndexUpdateStatus: Equatable, Sendable {
     /// sensitivity override): the upsert path deleted-instead-of-inserted,
     /// so the event is stored and visible but never searchable.
     case excluded
+    /// The index was missing or unusable, so a rebuild is running in the
+    /// background and will pick this event up from the archive. The event
+    /// IS stored; only its searchability is late.
+    case deferred
 }
 
 public enum ClipboardIngestResult: Equatable, Sendable {
@@ -35,7 +39,14 @@ public struct ClipboardIngestor: Sendable {
         richImageMaxBytes: Int = ClipboardSettings.defaultRichImageMaxBytes
     ) {
         self.filter = filter
-        self.archiveWriter = archiveWriter
+        // The writer records its own append repairs, so it needs the same
+        // destination this ingestor was given; a writer that already has one
+        // keeps it.
+        var writer = archiveWriter
+        if writer.operationalLog == nil {
+            writer.operationalLog = operationalLog
+        }
+        self.archiveWriter = writer
         self.derivedIndex = derivedIndex
         self.operationalLog = operationalLog
         self.richImageMaxBytes = richImageMaxBytes
@@ -66,6 +77,11 @@ public struct ClipboardIngestor: Sendable {
                 errno: ClipboardCaptureFailure.classify(error).posixCode,
                 count: 1
             )
+            // An append that could not land says WHICH errno stopped it,
+            // which separates "the volume is full" from "the archive moved".
+            if let appendError = error as? ClipboardArchiveAppendError {
+                operationalLog?.record(.archiveAppendFailed, errno: appendError.errnoValue, count: 1)
+            }
             throw error
         }
     }
@@ -161,7 +177,14 @@ public struct ClipboardIngestor: Sendable {
             sensitivityOverride: sensitivityOverride
         )
         do {
-            try derivedIndex.upsert(event: event, body: body, sensitivityOverride: sensitivityOverride)
+            let applied = try derivedIndex.upsert(
+                event: event,
+                body: body,
+                sensitivityOverride: sensitivityOverride
+            )
+            guard applied else {
+                return .deferred
+            }
             return excluded ? .excluded : .updated
         } catch {
             // The event IS stored; only its searchability failed. The row

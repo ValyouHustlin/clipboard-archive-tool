@@ -224,6 +224,21 @@ either inline content or a relative path to a large body file.
 The SQLite FTS index is derived data. Accepted captures update it
 incrementally; it can still be rebuilt from the archive as a recovery path.
 
+Day files are appended so that no interruption costs more than the row being
+written. Before a row goes out, a file that does not end in a newline gets
+one, so a tail torn by a kill or a power cut stays one unreadable line
+instead of swallowing the row appended after it. The row itself is written in
+full or not at all: a short write or a full disk truncates back to the size
+the file had before it, and the failure is reported with the reason class.
+There is no per-capture flush — the archive is an append-only log, and the
+boundary repair is what makes an interrupted tail self-healing.
+
+If the search index is deleted or damaged while the app is running, it is
+detected rather than trusted: the file is checked before each use, and a
+missing or failing one is rebuilt from the archive. A capture never waits for
+that rebuild — the clip is already in the archive and the rebuild picks it
+up — while a search waits and returns complete results.
+
 ## Search behavior
 
 This Window searches complete clip text within the loaded history window.
@@ -249,6 +264,13 @@ reason was last cleared.
 Repeats of the same reason within an hour only update that line. The next
 successful capture clears it. Dialogs remain for actions a person started,
 such as a manual index rebuild or a delete.
+
+Settings are read with a last-known-good copy behind them. Every successful
+save also writes `settings.json.bak`. If the settings file is ever
+unreadable, it is set aside as `settings.json.corrupt-<timestamp>` and the
+copy is loaded instead of defaults — defaults would turn capture off and
+replace a chosen retention mode with "keep the latest 50". Defaults are used
+only when there has never been a good copy.
 
 ## Local usage diagnostics
 
@@ -279,10 +301,12 @@ beside the launch agent's own logs, so Console shows them together. When
 log.
 
 Codes are `app_start`, `app_stop`, `heartbeat`, `second_instance_refused`,
-`settings_fallback`, `capture_failed`, `capture_recovered`,
-`index_upsert_failed`, `index_rebuild_started`, `index_rebuild_finished`,
-`index_rebuild_failed`, `retention_pruned`, `expiry_swept`,
-`pointer_published`, `pointer_publish_failed`, and `cli_command`.
+`settings_fallback`, `settings_last_good_used`, `capture_failed`,
+`capture_recovered`, `archive_append_failed`, `archive_tail_repaired`,
+`index_missing_detected`, `index_corrupt_detected`, `index_upsert_failed`,
+`index_rebuild_started`, `index_rebuild_finished`, `index_rebuild_failed`,
+`retention_pruned`, `expiry_swept`, `pointer_published`,
+`pointer_publish_failed`, and `cli_command`.
 
 `heartbeat` is the reason the log exists. Every 30 minutes (the first beat a
 minute after launch) the app records how many polls it ran and how many clips
