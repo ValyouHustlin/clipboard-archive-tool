@@ -81,7 +81,7 @@ struct ClipboardBackupMergeTests {
         let target = try BackupTestSupport.temporaryDirectory("merge-existing-dst")
         try FileManager.default.removeItem(at: target)
         try BackupTestSupport.copyTree(fixture.sourceRoot, to: target)
-        let before = try BackupTestSupport.treeSignature(target)
+        let before = try BackupTestSupport.treeSignature(target, excludingUsageLog: true)
 
         let importer = try makeImporter(target, label: "existing")
         let outcome = try importer.run(
@@ -101,7 +101,7 @@ struct ClipboardBackupMergeTests {
         #expect(outcome.plan.blockedLinesSkippedIdentical == 1)
         #expect(outcome.plan.bodiesToAdd == 0)
         #expect(outcome.plan.bodiesSkippedIdentical == 1)
-        #expect(try BackupTestSupport.treeSignature(target) == before)
+        #expect(try BackupTestSupport.treeSignature(target, excludingUsageLog: true) == before)
     }
 
     @Test func locallyDeletedContentIsNeverResurrected() throws {

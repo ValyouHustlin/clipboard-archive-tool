@@ -60,7 +60,7 @@ subscription product. It has two jobs:
 - Storage modes: remember 10 items, remember 50 items, or keep a full archive.
 - Daily manifests and health reports.
 - Install/update scripts for copying releases to other Macs.
-- No network sync, telemetry, analytics, crash reporting, or in-app update
+- No network sync, remote analytics, crash reporting, or in-app update
   checks. Updates are manual via the GitHub Releases page.
 
 ## Install A Release
@@ -205,6 +205,40 @@ either inline content or a relative path to a large body file.
 
 The SQLite FTS index is derived data. Accepted captures update it
 incrementally; it can still be rebuilt from the archive as a recovery path.
+
+## Search behavior
+
+This Window searches complete clip text within the loaded history window.
+All History searches the local index across the archive. Both match
+case-insensitive literal substrings: `deve` and `vel` match `development`.
+Whitespace-separated terms must all occur; `OR`, `NEAR`, `*`, quotes, `%`,
+and `_` are ordinary text. Restricted clips remain browsable but do not
+match a text search. File-reference searches include names, not full paths.
+The index schema is unchanged; this update needs no rebuild.
+
+All History runs in the background with a short debounce. Substring searches
+scan indexed text, so larger archives can take longer than whole-word search.
+Results are newest first and capped (normally 200); deletion filtering can
+reduce a page below that cap.
+
+## Local usage diagnostics
+
+The app writes content-free usage records to `<archive root>/usage/events.ndjson`.
+Events are `app_start`, `search` (hit/miss and history scope), `quick_picker`,
+`copy_back`, `capture`, `blocked`, `index_rebuild`, and `error`.
+Rows contain exactly `schema`, `timestamp` (UTC ISO 8601 with milliseconds),
+`version` (numeric components), `build` (integer), `event`, `outcome`, `scope`,
+`count`, `durationMs`, and `bytes`. CLI version/build are empty/zero when no
+bundle metadata exists. Unmeasured durations and sizes are zero. Search rows
+count completed filter evaluations, including refreshes, rather than unique
+people or sessions; quick-picker rows count toggle requests.
+
+Each file is capped at 1 MiB, with five files total (`events.ndjson` plus
+`events.1.ndjson` through `events.4.ndjson`). The directory is `0700`, files
+are `0600`. Busy locks or write failures drop diagnostics without interrupting
+the action. These local records contain no clipboard text, previews, queries,
+IDs, hashes, source apps, paths, or raw error messages. They are never uploaded
+and are excluded from backup exports. See [PRIVACY.md](PRIVACY.md).
 
 ## Privacy
 

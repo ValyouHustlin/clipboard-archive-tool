@@ -118,6 +118,46 @@ struct ClipboardIndexSearchTests {
 
     private let baseDate = ISO8601DateFormatter().date(from: "2026-06-10T12:00:00Z")!
 
+    @Test
+    func testLiteralSubstringsAndFullBodyWindowParity() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bodies = ["padding " + String(repeating: "x", count: 300) + " development CAFÉ 東京 Kelvin",
+                      "literal OR NEAR * \"quoted\" apostrophe's 100% under_score",
+                      "unrelated plain adjacent quotation 100 underXscore"]
+        let events = bodies.enumerated().map { makeEvent(id: "substring-\($0.offset)", capturedAt: baseDate, content: $0.element) }
+        for event in events { try appendEventLine(event, archiveRoot: root) }
+        let index = ClipboardDerivedIndex(archiveRoot: root, indexURL: root.appendingPathComponent("index.sqlite"))
+        _ = try index.rebuild()
+        let reader = ClipboardArchiveReader(archiveRoot: root)
+        let text = ClipboardSearchText.windowText(events: events + [events[0]], reader: reader)
+        for query in ["development", "deve", "vel", "café", "CAFÉ", "京", "vel café", "kelvin"] {
+            #expect(try index.structuredSearch(query).map(\.id) == [events[0].id])
+            #expect(events.filter { ClipboardSearchText.windowMatches($0, terms: ClipboardSearchText.terms(query), text: text) }.map(\.id) == [events[0].id])
+        }
+        for query in ["OR NEAR", "*", "\"quoted\"", "apostrophe's", "%", "_", "100%"] {
+            #expect(try index.structuredSearch(query).map(\.id) == [events[1].id])
+            #expect(events.filter { ClipboardSearchText.windowMatches($0, terms: ClipboardSearchText.terms(query), text: text) }.map(\.id) == [events[1].id])
+            #expect(try index.search(query).contains(events[1].id))
+        }
+        #expect(try index.structuredSearch("development missing").isEmpty)
+        #expect(!events[0].contentPreview.contains("development"))
+        let snippet = try #require(index.structuredSearch("development").first?.snippet)
+        #expect(snippet.contains("development"))
+        #expect(snippet.count <= 242)
+    }
+
+    @Test
+    func testWindowRestrictedItemsBrowseButCannotMatch() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let event = makeEvent(id: "restricted", capturedAt: baseDate, content: "restrictedneedle", privacyLabel: .restricted)
+        let text = ClipboardSearchText.windowText(events: [event], reader: ClipboardArchiveReader(archiveRoot: root))
+        #expect(text.isEmpty)
+        #expect(ClipboardSearchText.windowMatches(event, terms: [], text: text))
+        #expect(!ClipboardSearchText.windowMatches(event, terms: ["needle"], text: text))
+    }
+
     // MARK: - Hostile content round-trip
 
     @Test
@@ -286,7 +326,7 @@ struct ClipboardIndexSearchTests {
             sqliteExecutableURL: stubURL
         )
         #expect(throws: ClipboardDerivedIndexError.malformedOutput) {
-            _ = try index.structuredSearch("anything")
+            _ = try index.runSQLiteJSON("SELECT 1;")
         }
     }
 

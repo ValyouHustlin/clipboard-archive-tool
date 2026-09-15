@@ -85,8 +85,23 @@ echo "== 3. restore into empty root -> byte-identical =="
 mkdir -p "$DST"
 chmod 700 "$DST"
 printf '%s\n' "$PASS" | "$BIN" backup restore "$BACKUP" --archive-root "$DST" --index-path "$WORK/restored.sqlite" --passphrase-stdin
-diff -r "$SRC" "$DST"
-echo "tree diff: byte-identical"
+# Usage diagnostics are intentionally absent from backup exports. Compare
+# every archive path except that exact top-level directory; nested files
+# named usage still participate, and wrong-passphrase checks stay strict.
+python3 - "$SRC" "$DST" <<'EOF'
+import pathlib, sys
+
+def archive_tree(root):
+    root = pathlib.Path(root)
+    return {
+        str(p.relative_to(root)): p.read_bytes() if p.is_file() else None
+        for p in root.rglob("*")
+        if p.relative_to(root).parts[0] != "usage"
+    }
+
+assert archive_tree(sys.argv[1]) == archive_tree(sys.argv[2]), "restored archive differs"
+EOF
+echo "archive tree: byte-identical (local usage diagnostics excluded)"
 bad_modes="$(cd "$DST" && find . -mindepth 1 -type f ! -perm 600 -print; cd "$DST" && find . -mindepth 1 -type d ! -perm 700 -print)"
 if [ -n "$bad_modes" ]; then
   echo "FAIL: restored entries with wrong modes:" >&2

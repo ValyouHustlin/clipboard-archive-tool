@@ -4,7 +4,7 @@ Clipboard Archive is local-first.
 
 - Clipboard contents are stored on the Mac where the app is installed.
 - The app does not send clipboard contents to cloud services.
-- The app has no network sync, telemetry, analytics, crash reporting, or
+- The app has no network sync, remote analytics, crash reporting, or
   in-app update checks.
 - After install, normal capture/search/archive operation works without an
   internet connection.
@@ -89,3 +89,27 @@ Known limits:
   against processes running as the same macOS user.
 - Deletion and pruning affect this app's live archive and derived search index,
   not external backups or filesystem snapshots that already captured files.
+
+## Content-free local usage diagnostics
+
+`<archive root>/usage/events.ndjson` records feature use and operational
+outcomes locally. Events: `app_start`, `search`, `quick_picker`, `copy_back`,
+`capture`, `blocked`, `index_rebuild`, `error`. Allowed outcomes: `success`,
+`hit`, `miss`, `failed`, `excluded`, `unavailable`. Scopes: `application`,
+`all_history`, `this_window`, `quick_picker`, `archive`, `index`.
+
+The exact fields are `schema`, `timestamp` (UTC ISO 8601 milliseconds),
+`version` (numeric components), `build` (integer), `event`, `outcome`, `scope`,
+`count`, `durationMs`, `bytes`. Unknown bundle version/build are empty/zero;
+unmeasured durations/sizes are zero. No content, previews, query strings,
+identifiers, hashes, source-app names, paths, or raw errors enter this log.
+Timestamps and counts still reveal when the app is used, so the records remain
+private local data. Logging also records app/feature use while capture is off;
+it does not read the pasteboard for diagnostics.
+
+Files are owner-only (`0600`, directory `0700`), capped at 1 MiB each, with
+five retained files total. Rotation names are `events.1.ndjson` through
+`events.4.ndjson`. Writes are best effort; a busy lock or disk error may drop
+a record. Records are never sent over the network and are excluded from
+backup exports. Deleting a clip does not delete aggregate diagnostic rows,
+which cannot identify the clip.

@@ -87,3 +87,12 @@ boundary.
 
 Open a GitHub issue for security hardening ideas that do not include sensitive
 clipboard contents, credentials, or private archive excerpts.
+
+## Local diagnostics
+
+Content-free usage records are stored under the archive's `usage/` directory
+with owner-only permissions and a 5 MiB total NDJSON cap. They contain usage
+timestamps, typed events/outcomes/scopes, numeric version/build, counts,
+durations, and sizes. They contain no clip text, queries, IDs, hashes, source
+apps, paths, or raw errors. See [PRIVACY.md](PRIVACY.md) for the exact schema.
+Diagnostics are best effort, stay local, and are excluded from backup exports.

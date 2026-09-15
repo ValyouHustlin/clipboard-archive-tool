@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.0 build 6 - 2026-09-15
+
+- Search literal case-insensitive substrings across full clip text in both
+  history scopes, including text beyond the preview; punctuation stays literal.
+- Share the native SQLite and window matcher without changing index schema.
+- Bound search snippets before accumulating results.
+- Add capped, content-free local usage diagnostics for search, copy, picker,
+  capture, blocked items, rebuilds, application starts, and errors.
+- Record pasteboard write outcomes for plain and rich copy-back.
+
+
 ## Unreleased
 
 - What's New onboarding: a once-per-version window listing the headline

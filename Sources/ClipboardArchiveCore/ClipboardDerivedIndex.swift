@@ -114,10 +114,19 @@ public struct ClipboardDerivedIndex: Sendable {
     }
 
     public func rebuild() throws -> Int {
-        let indexDirectory = indexURL.deletingLastPathComponent()
-        try ClipboardPrivateFileSystem.createDirectory(indexDirectory, archiveRoot: indexDirectory)
-        return try withExclusiveLock {
-            try rebuildUnlocked(indexDirectory: indexDirectory)
+        let start = Date()
+        let usage = ClipboardUsageLog(archiveRoot: archiveRoot)
+        do {
+            let indexDirectory = indexURL.deletingLastPathComponent()
+            try ClipboardPrivateFileSystem.createDirectory(indexDirectory, archiveRoot: indexDirectory)
+            let count = try withExclusiveLock { try rebuildUnlocked(indexDirectory: indexDirectory) }
+            usage.record(.indexRebuild, scope: .index, count: count,
+                durationMs: Date().timeIntervalSince(start) * 1000)
+            return count
+        } catch {
+            usage.record(.indexRebuild, outcome: .failed, scope: .index,
+                durationMs: Date().timeIntervalSince(start) * 1000)
+            throw error
         }
     }
 
@@ -356,43 +365,35 @@ public struct ClipboardDerivedIndex: Sendable {
 
     // MARK: - Structured queries (contract 3)
 
-    /// Full-text search returning structured rows. The user query is
-    /// tokenized on whitespace and every token is individually quote-escaped
-    /// (implicit AND), so user-typed FTS operators (`OR`, `NEAR`, `*`, `-`,
-    /// `^`, quotes) are matched literally and can never change query
-    /// structure. An effectively empty query falls back to `browse`.
+    /// Literal substring search over complete indexed bodies, previews, app
+    /// names and types. No FTS grammar or LIKE wildcards reach the query.
+    /// The existing schema is sufficient, so upgrading needs no rebuild.
     public func structuredSearch(
         _ query: String,
         filters: ClipboardIndexSearchFilters = ClipboardIndexSearchFilters(),
         limit: Int = 100
     ) throws -> [ClipboardIndexSearchResult] {
-        let matchExpression = ftsMatchExpression(query)
-        guard !matchExpression.isEmpty else {
+        let terms = ClipboardSearchText.terms(query)
+        guard !terms.isEmpty else {
             return try browse(filters: filters, limit: limit)
         }
         try ensureCurrentSchema()
-        // The upper bound matches metaRows so hash-post-filtered callers
-        // (collection scope, duplicate grouping) can deep-reach past the
-        // default page without a second query path.
         let boundedLimit = max(1, min(limit, Self.metaRowsMaximumLimit))
-        // `m.content_type <> 'blocked'` is defense in depth: blocked events
-        // never reach the index writers, so any such row is foreign data.
-        // The FTS table stays unaliased — sqlite3's FTS5 aux functions
-        // (snippet) do not accept a table alias here.
+        let textSQL = "COALESCE(f.body, '') || ' ' || COALESCE(f.preview, '') || ' ' || COALESCE(f.source_app, '') || ' ' || COALESCE(f.content_type, '')"
         let sql = """
         SELECT m.id AS id, m.captured_at AS captured_at, m.source_app AS source_app,
                m.bundle_id AS bundle_id, m.content_type AS content_type,
-               m.byte_count AS byte_count,
-               COALESCE(m.content_hash, '') AS content_hash,
-               snippet(clipboard_fts, 5, '', '', ' … ', 24) AS snip
-        FROM clipboard_fts
-        JOIN clipboard_meta m ON m.id = clipboard_fts.id
-        WHERE clipboard_fts MATCH '\(escape(matchExpression))'
-          AND m.content_type <> 'blocked'\(filterSQL(filters, columnPrefix: "m."))
+               m.byte_count AS byte_count, COALESCE(m.content_hash, '') AS content_hash,
+               clipboard_snippet(COALESCE(f.body, f.preview, '')) AS snip
+        FROM clipboard_fts f
+        JOIN clipboard_meta m ON m.id = f.id
+        WHERE m.content_type <> 'blocked'
+          AND clipboard_matches(\(textSQL))\(filterSQL(filters, columnPrefix: "m."))
         ORDER BY m.captured_at DESC
         LIMIT \(boundedLimit);
         """
-        return try suppressionFiltered(results(fromRows: runSQLiteJSON(sql)))
+        let rows = try ClipboardSQLiteSearch.rows(indexURL: indexURL, sql: sql, terms: terms)
+        return try suppressionFiltered(results(fromRows: rows))
     }
 
     /// Empty-query browsing straight off `clipboard_meta` (no FTS join; the
@@ -534,52 +535,10 @@ public struct ClipboardDerivedIndex: Sendable {
         return clauses.map { " AND \($0)" }.joined()
     }
 
-    /// UI-path FTS escaping: whitespace-tokenize, double-quote each token
-    /// with interior quotes doubled, join with spaces (implicit AND).
-    /// Returns "" for an all-whitespace query.
-    private func ftsMatchExpression(_ query: String) -> String {
-        query
-            .split(whereSeparator: { $0.isWhitespace })
-            .map { "\"\(String($0).replacingOccurrences(of: "\"", with: "\"\""))\"" }
-            .joined(separator: " ")
-    }
-
     public func search(_ query: String, limit: Int = 25) throws -> String {
-        let boundedLimit = max(1, min(limit, 10_000))
-        // SECURITY (contract 3): the SQL — which embeds user query text —
-        // streams over stdin so it never appears in process arguments,
-        // where any local process could read it from the process table.
-        // The raw-text output format is preserved for the CLI.
-        let sql = """
-        SELECT captured_at || ' ' || id || ' ' || source_app || char(10) || snippet(clipboard_fts, 5, '[', ']', ' ... ', 24)
-        FROM clipboard_fts
-        WHERE clipboard_fts MATCH '\(escapeFTS(query))'
-        ORDER BY captured_at DESC
-        LIMIT \(boundedLimit);
-        """
-
-        let process = Process()
-        process.executableURL = sqliteExecutableURL
-        process.arguments = ["-noheader", "-separator", "\n---\n", "-batch", indexURL.path]
-        let input = Pipe()
-        let output = Pipe()
-        process.standardInput = input
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        do {
-            try input.fileHandleForWriting.write(contentsOf: Data(sql.utf8))
-            try input.fileHandleForWriting.close()
-        } catch {
-            process.terminate()
-            throw error
-        }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            throw ClipboardDerivedIndexError.sqliteFailed(process.terminationStatus)
-        }
-        return String(data: data, encoding: .utf8) ?? ""
+        try structuredSearch(query, limit: limit).map {
+            "\(iso($0.capturedAt)) \($0.id) \($0.sourceApp)\n\($0.snippet)"
+        }.joined(separator: "\n---\n")
     }
 
     @discardableResult

@@ -102,6 +102,7 @@ final class ClipboardMenuBarApp: NSObject,
 #endif
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        ClipboardUsageLog(archiveRoot: archiveRoot).record(.appStart)
         isPaused = userDefaults.bool(forKey: "capturePaused")
         settings = settingsStore.load()
         NSApp.setActivationPolicy(.accessory)
@@ -663,6 +664,7 @@ final class ClipboardMenuBarApp: NSObject,
     /// The one entry point for the picker: invoked by the global hotkey, the
     /// menu item, and the DEBUG automation harness.
     private func toggleQuickPicker() {
+        ClipboardUsageLog(archiveRoot: archiveRoot).record(.quickPicker, scope: .quickPicker)
         // Lazy expiry check on surface open (Slice 5 enforcement point).
         sweepExpiredIfDue()
         if quickPickerController == nil {
@@ -2531,7 +2533,8 @@ final class ClipboardMenuBarApp: NSObject,
     /// through this method instead of touching the pasteboard directly.
     private func copyToPasteboardWithoutRecapture(_ content: String) {
         pasteboard.clearContents()
-        pasteboard.setString(content, forType: .string)
+        let copied = pasteboard.setString(content, forType: .string)
+        ClipboardUsageLog(archiveRoot: archiveRoot).record(.copyBack, outcome: copied ? .success : .failed)
         lastContentHash = ClipboardCaptureDedup.value(content: content, rich: nil)
         lastChangeCount = pasteboard.changeCount
     }
@@ -2549,6 +2552,7 @@ final class ClipboardMenuBarApp: NSObject,
             return
         }
 
+        var copied: Bool
         switch rich.kind {
         case ClipboardRichContent.imageKind:
             guard let data = try? reader.richBody(for: event) else {
@@ -2557,7 +2561,7 @@ final class ClipboardMenuBarApp: NSObject,
             }
             let storedType: NSPasteboard.PasteboardType = rich.bodyType == "public.tiff" ? .tiff : .png
             pasteboard.clearContents()
-            pasteboard.setData(data, forType: storedType)
+            copied = pasteboard.setData(data, forType: storedType)
             // Derived second representation for apps that only read the
             // other type. This decode happens only on an explicit copy
             // action, never during browsing.
@@ -2585,8 +2589,8 @@ final class ClipboardMenuBarApp: NSObject,
                 return
             }
             pasteboard.clearContents()
-            pasteboard.setData(data, forType: .rtf)
-            pasteboard.setString(content, forType: .string)
+            copied = pasteboard.setData(data, forType: .rtf)
+            copied = pasteboard.setString(content, forType: .string) && copied
             lastContentHash = ClipboardCaptureDedup.value(content: content, rich: .rtf(data: data))
 
         case ClipboardRichContent.fileListKind:
@@ -2596,8 +2600,8 @@ final class ClipboardMenuBarApp: NSObject,
                 return
             }
             pasteboard.clearContents()
-            pasteboard.writeObjects(files.map { NSURL(fileURLWithPath: $0.path) })
-            pasteboard.setString(content, forType: .string)
+            copied = pasteboard.writeObjects(files.map { NSURL(fileURLWithPath: $0.path) })
+            copied = pasteboard.setString(content, forType: .string) && copied
             lastContentHash = ClipboardCaptureDedup.value(content: content, rich: .fileList(files))
 
         case ClipboardRichContent.colorKind:
@@ -2606,8 +2610,8 @@ final class ClipboardMenuBarApp: NSObject,
                 return
             }
             pasteboard.clearContents()
-            pasteboard.writeObjects([color])
-            pasteboard.setString(hex, forType: .string)
+            copied = pasteboard.writeObjects([color])
+            copied = pasteboard.setString(hex, forType: .string) && copied
             lastContentHash = ClipboardCaptureDedup.value(
                 content: hex,
                 rich: .color(hex: hex, colorSpace: rich.colorSpace ?? "sRGB")
@@ -2623,9 +2627,9 @@ final class ClipboardMenuBarApp: NSObject,
                 [.URL, NSPasteboard.PasteboardType("public.url-name"), .string],
                 owner: nil
             )
-            pasteboard.setString(url, forType: .URL)
-            pasteboard.setString(title, forType: NSPasteboard.PasteboardType("public.url-name"))
-            pasteboard.setString(url, forType: .string)
+            copied = pasteboard.setString(url, forType: .URL)
+            copied = pasteboard.setString(title, forType: NSPasteboard.PasteboardType("public.url-name")) && copied
+            copied = pasteboard.setString(url, forType: .string) && copied
             lastContentHash = ClipboardCaptureDedup.value(
                 content: content,
                 rich: .link(url: url, title: title)
@@ -2637,6 +2641,7 @@ final class ClipboardMenuBarApp: NSObject,
             return
         }
         lastChangeCount = pasteboard.changeCount
+        ClipboardUsageLog(archiveRoot: archiveRoot).record(.copyBack, outcome: copied ? .success : .failed)
     }
 
     private static func color(fromHex hex: String) -> NSColor? {
@@ -2707,6 +2712,7 @@ final class ClipboardMenuBarApp: NSObject,
     }
 
     private func showError(_ message: String) {
+        ClipboardUsageLog(archiveRoot: archiveRoot).record(.error, outcome: .failed)
         let alert = NSAlert()
         alert.messageText = "Clipboard Archive"
         alert.informativeText = message

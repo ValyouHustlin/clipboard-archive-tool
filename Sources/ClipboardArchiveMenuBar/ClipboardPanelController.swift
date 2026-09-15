@@ -132,6 +132,7 @@ final class ClipboardPanelController: NSWindowController,
     /// implying clips will appear.
     private let isCaptureEnabled: () -> Bool
     private var events: [StoredClipboardEvent] = []
+    private var searchableText: [String: String] = [:]
     private var filteredEvents: [StoredClipboardEvent] = []
     private var recentItemLimit: Int
     private var historyWindow: ClipboardHistoryWindow
@@ -1391,6 +1392,12 @@ final class ClipboardPanelController: NSWindowController,
     /// filter is active (membership may have changed), otherwise just
     /// redraw badges and the detail pane.
     private func refreshAfterAnnotationChange() {
+        // Manual sensitivity changes must affect an active text query now.
+        searchableText = ClipboardSearchText.windowText(events: events, reader: reader)
+        if scope == .thisWindow && !ClipboardSearchText.terms(searchField.stringValue).isEmpty {
+            applyFilter()
+            return
+        }
         if collectionScope != .all {
             if scope == .allHistory {
                 scheduleArchiveQuery(debounced: false)
@@ -1758,6 +1765,7 @@ final class ClipboardPanelController: NSWindowController,
                     }
                 }
             }
+            let searchStart = Date()
             var outcome: AllHistoryState
             do {
                 try index.ensureCurrentSchema()
@@ -1796,12 +1804,18 @@ final class ClipboardPanelController: NSWindowController,
                         }
                     }
                 }
+                if !query.isEmpty {
+                    ClipboardUsageLog(archiveRoot: index.archiveRoot).record(
+                        .search, outcome: rows.isEmpty ? .miss : .hit, scope: .allHistory,
+                        count: rows.count, durationMs: Date().timeIntervalSince(searchStart) * 1000)
+                }
                 if rows.isEmpty {
                     outcome = .empty
                 } else {
                     outcome = query.isEmpty ? .browse(rows) : .results(rows)
                 }
             } catch {
+                ClipboardUsageLog(archiveRoot: index.archiveRoot).record(.error, outcome: .failed, scope: .index)
                 outcome = .error("\(error)")
             }
             DispatchQueue.main.async {
@@ -2651,6 +2665,7 @@ final class ClipboardPanelController: NSWindowController,
             to: Date()
         ) ?? Date()
         events = (try? reader.recentItems(since: since, limit: recentItemLimit)) ?? []
+        searchableText = ClipboardSearchText.windowText(events: events, reader: reader)
         if scope == .allHistory {
             scheduleArchiveQuery(debounced: false)
         } else {
@@ -2663,24 +2678,23 @@ final class ClipboardPanelController: NSWindowController,
             return
         }
         let previousID = selectedEvents().first?.id
+        let searchStart = Date()
         let query = searchField.stringValue
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
+        let terms = ClipboardSearchText.terms(query)
         let hashConstraint = collectionScopeHashes()
         filteredEvents = events.filter { event in
             let matchesType = contentTypeFilter.map { event.contentType == $0 } ?? true
             let matchesCollection = hashConstraint.map {
                 $0.hashes.contains(event.contentHash)
             } ?? true
-            let matchesQuery = query.isEmpty || [
-                event.contentPreview,
-                event.sourceApp.name,
-                event.contentType.rawValue
-            ]
-            .joined(separator: " ")
-            .lowercased()
-            .contains(query)
+            let matchesQuery = ClipboardSearchText.windowMatches(event, terms: terms, text: searchableText)
             return matchesType && matchesCollection && matchesQuery
+        }
+        if !terms.isEmpty {
+            ClipboardUsageLog(archiveRoot: archiveRoot).record(
+                .search, outcome: filteredEvents.isEmpty ? .miss : .hit, scope: .thisWindow,
+                count: filteredEvents.count, durationMs: Date().timeIntervalSince(searchStart) * 1000
+            )
         }
         if let order = hashConstraint?.order {
             var position: [String: Int] = [:]

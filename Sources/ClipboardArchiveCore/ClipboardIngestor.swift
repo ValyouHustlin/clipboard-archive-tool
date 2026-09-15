@@ -37,6 +37,26 @@ public struct ClipboardIngestor: Sendable {
 
     @discardableResult
     public func ingest(_ capture: ClipboardCapture) throws -> ClipboardIngestResult {
+        let start = Date()
+        let usage = ClipboardUsageLog(archiveRoot: archiveWriter.archiveRoot)
+        do {
+            let result = try ingestCapture(capture)
+            switch result {
+            case let .stored(event, status):
+                usage.record(.capture, outcome: status == .excluded ? .excluded : .success, scope: .archive,
+                    durationMs: Date().timeIntervalSince(start) * 1000, bytes: event.byteCount)
+                if status == .failed { usage.record(.error, outcome: .failed, scope: .index) }
+            case .blocked:
+                usage.record(.blocked, scope: .archive, durationMs: Date().timeIntervalSince(start) * 1000)
+            }
+            return result
+        } catch {
+            usage.record(.error, outcome: .failed, scope: .archive, durationMs: Date().timeIntervalSince(start) * 1000)
+            throw error
+        }
+    }
+
+    private func ingestCapture(_ capture: ClipboardCapture) throws -> ClipboardIngestResult {
         switch filter.evaluate(capture) {
         case let .allow(flags):
             // Image size cap (Slice 6): AFTER filter-allow, BEFORE any
