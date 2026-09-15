@@ -13,6 +13,12 @@
 
 ## Unreleased
 
+- Cut the cost of storing a clip from about 70 ms to about 11 ms, and of
+  opening All History from about 73 ms to about 1 ms. Every index read and
+  write ran the `sqlite3` command as a separate process, and creating that
+  process was 67 ms of the 70 — the database work itself was never the
+  expense. The same statements now run inside the app. A full index rebuild
+  still streams through `sqlite3`, which is the one job it is faster at.
 - Keep capturing while a menu is held open, a window is being resized, or a
   modal panel is up. The poll timer ran in the default run-loop mode only, so
   those states stopped it outright, and because the pasteboard reports only its

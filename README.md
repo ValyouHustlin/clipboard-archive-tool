@@ -222,7 +222,10 @@ hash, byte/line counts, privacy label, allowed local uses, preview text, and
 either inline content or a relative path to a large body file.
 
 The SQLite FTS index is derived data. Accepted captures update it
-incrementally; it can still be rebuilt from the archive as a recovery path.
+incrementally, and both those writes and the searches that read them run
+inside the app rather than through the `sqlite3` command, which is what makes
+a capture cost about eleven milliseconds instead of seventy. A full rebuild still
+uses `sqlite3` to stream the archive in, and remains the recovery path.
 
 Day files are appended so that no interruption costs more than the row being
 written. Before a row goes out, a file that does not end in a newline gets

@@ -19,8 +19,11 @@ mis-frame rows; JSON mode escapes all control characters and round-trips
 any valid-UTF-8 string exactly. All indexed content entered as Swift String
 (valid UTF-8) and there are no BLOB columns, so JSON-mode hazards don't
 apply. Parser quirks: empty result set emits EMPTY STDOUT (treat as `[]`);
-undecodable stdout → typed `malformedOutput` error. Pipe discipline: write
-SQL + close stdin, read stdout to end, THEN waitUntilExit.
+an empty result set is an empty array. SUPERSEDED: reads and writes now run
+in-process through the SQLite C API, which is what removed the 67 ms process
+spawn each one paid for. Values arrive as `Int` or `String` exactly as the
+JSON runner produced them, and the framing hazard this paragraph weighed no
+longer arises, because nothing is serialised on the way out of SQLite.
 
 ## Index schema v2 (one bump, one rebuild)
 

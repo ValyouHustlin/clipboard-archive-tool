@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import Testing
 @testable import ClipboardArchiveCore
 
@@ -296,38 +297,219 @@ struct ClipboardIndexSearchTests {
         }
     }
 
+    // MARK: - In-process executor
+
+    /// The index is written by this process and read by `/usr/bin/sqlite3`,
+    /// and then the other way round. Both are ordinary SQLite clients of the
+    /// same file, and a rebuild still streams its bulk load through the CLI,
+    /// so the two views have to agree in both directions.
     @Test
-    func testUndecodableSQLiteOutputIsMalformedOutputError() throws {
+    func testInProcessWriteAndSubprocessReadSeeEachOther() throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let indexURL = root.appendingPathComponent("index.sqlite")
-        try Data().write(to: indexURL)
+        let capturedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let id = wellFormedID(for: capturedAt, suffix: "interop")
+        let event = makeEvent(id: id, capturedAt: capturedAt, content: "interop marker alpha")
+        try appendEventLine(event, archiveRoot: root)
 
-        // Stub sqlite3: answers the schema-version probe with valid JSON,
-        // then emits garbage for the actual query.
-        let stubURL = root.appendingPathComponent("sqlite3-stub.sh")
-        let stub = """
-        #!/bin/sh
-        SQL=$(cat)
-        case "$SQL" in
-          *pragma_user_version*) printf '[{"user_version":2}]' ;;
-          *) printf 'definitely not json' ;;
-        esac
-        """
-        try Data(stub.utf8).write(to: stubURL)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: NSNumber(value: Int16(0o700))],
-            ofItemAtPath: stubURL.path
-        )
+        let index = ClipboardDerivedIndex(archiveRoot: root, indexURL: indexURL)
+        try index.upsert(event: event, body: "interop marker alpha")
 
-        let index = ClipboardDerivedIndex(
-            archiveRoot: root,
-            indexURL: indexURL,
-            sqliteExecutableURL: stubURL
+        // In-process write -> subprocess read.
+        let read = Process()
+        read.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        read.arguments = [indexURL.path, "SELECT id FROM clipboard_meta;"]
+        let readOutput = Pipe()
+        read.standardOutput = readOutput
+        try read.run()
+        let seenByCLI = String(
+            data: readOutput.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8
+        )?.trimmingCharacters(in: .whitespacesAndNewlines)
+        read.waitUntilExit()
+        #expect(read.terminationStatus == 0)
+        #expect(seenByCLI == id)
+
+        // Subprocess write -> in-process read.
+        let write = Process()
+        write.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        write.arguments = [
+            indexURL.path,
+            "UPDATE clipboard_meta SET source_app = 'RewrittenByCLI' WHERE id = '\(id)';"
+        ]
+        try write.run()
+        write.waitUntilExit()
+        #expect(write.terminationStatus == 0)
+        #expect(try index.distinctSourceApps() == ["RewrittenByCLI"])
+    }
+
+    /// A write that cannot get the lock reports it. The busy timeout is two
+    /// seconds; an exclusive transaction held by another connection for
+    /// longer has to surface as `sqliteFailed`, not as a call that never
+    /// returns. The test fails by hanging if the timeout is ever dropped.
+    @Test
+    func testWriteBlockedBeyondTheBusyTimeoutThrowsRatherThanHanging() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let indexURL = root.appendingPathComponent("index.sqlite")
+        let capturedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let first = makeEvent(
+            id: wellFormedID(for: capturedAt, suffix: "seed"),
+            capturedAt: capturedAt,
+            content: "seed row"
         )
-        #expect(throws: ClipboardDerivedIndexError.malformedOutput) {
-            _ = try index.runSQLiteJSON("SELECT 1;")
+        try appendEventLine(first, archiveRoot: root)
+        let index = ClipboardDerivedIndex(archiveRoot: root, indexURL: indexURL)
+        try index.upsert(event: first, body: "seed row")
+
+        // A second process holds an exclusive transaction open. The SELECT
+        // after the BEGIN is the acknowledgement: reading "locked" back
+        // proves the lock is held before the write under test starts.
+        let holder = Process()
+        holder.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        holder.arguments = ["-batch", indexURL.path]
+        let holderInput = Pipe()
+        let holderOutput = Pipe()
+        holder.standardInput = holderInput
+        holder.standardOutput = holderOutput
+        holder.standardError = FileHandle.nullDevice
+        try holder.run()
+        try holderInput.fileHandleForWriting.write(
+            contentsOf: Data("BEGIN EXCLUSIVE;\nSELECT 'locked';\n".utf8)
+        )
+        var acknowledged = false
+        let deadline = Date().addingTimeInterval(10)
+        while !acknowledged, Date() < deadline {
+            let chunk = holderOutput.fileHandleForReading.availableData
+            acknowledged = String(data: chunk, encoding: .utf8)?.contains("locked") ?? false
         }
+        #expect(acknowledged)
+
+        let blocked = makeEvent(
+            id: wellFormedID(for: capturedAt, suffix: "blocked"),
+            capturedAt: capturedAt,
+            content: "blocked row"
+        )
+        try appendEventLine(blocked, archiveRoot: root)
+        let started = Date()
+        var thrown: ClipboardDerivedIndexError?
+        do {
+            try index.upsert(event: blocked, body: "blocked row")
+        } catch let error as ClipboardDerivedIndexError {
+            thrown = error
+        }
+        let elapsed = Date().timeIntervalSince(started)
+
+        try? holderInput.fileHandleForWriting.close()
+        holder.terminate()
+        holder.waitUntilExit()
+
+        #expect(thrown == ClipboardDerivedIndexError.sqliteFailed(SQLITE_BUSY))
+        // It waited (the timeout is real) but nowhere near forever.
+        #expect(elapsed >= 1.5)
+        #expect(elapsed < 20)
+    }
+
+    /// An index directory that cannot be written reports a SQLite result
+    /// code instead of succeeding quietly or trapping.
+    @Test
+    func testUnwritableIndexDirectoryThrowsWithAResultCode() throws {
+        let root = try temporaryDirectory()
+        let directory = root.appendingPathComponent("locked", isDirectory: true)
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: Int16(0o700))],
+                ofItemAtPath: directory.path
+            )
+            try? FileManager.default.removeItem(at: root)
+        }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let indexURL = directory.appendingPathComponent("index.sqlite")
+        let capturedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let index = ClipboardDerivedIndex(archiveRoot: root, indexURL: indexURL)
+
+        // A real index has to exist first. Without one the upsert never
+        // reaches the write path at all — it heals through `rebuild()`,
+        // which fails on its own temporary files, and the test would pass
+        // while proving nothing about the executor.
+        let seed = makeEvent(
+            id: wellFormedID(for: capturedAt, suffix: "seed"),
+            capturedAt: capturedAt,
+            content: "seed row"
+        )
+        try appendEventLine(seed, archiveRoot: root)
+        try index.upsert(event: seed, body: "seed row")
+        #expect(FileManager.default.fileExists(atPath: indexURL.path))
+
+        let event = makeEvent(
+            id: wellFormedID(for: capturedAt, suffix: "unwritable"),
+            capturedAt: capturedAt,
+            content: "unwritable row"
+        )
+        try appendEventLine(event, archiveRoot: root)
+        // SQLite needs to create a journal beside the database to write, so a
+        // directory it cannot write to stops the write even though the file
+        // itself is still writable.
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o500))],
+            ofItemAtPath: directory.path
+        )
+
+        var thrown: Error?
+        do {
+            try index.upsert(event: event, body: "unwritable row")
+        } catch {
+            thrown = error
+        }
+        guard case let .sqliteFailed(code)? = thrown as? ClipboardDerivedIndexError else {
+            Issue.record("expected sqliteFailed, got \(String(describing: thrown))")
+            return
+        }
+        #expect(code != SQLITE_OK)
+    }
+
+    /// FTS5 is a compiled-in module, not a guarantee. The schema the upsert
+    /// executes creates a virtual table, so a build of SQLite without the
+    /// module would fail every capture; this asserts it in one place with a
+    /// legible failure.
+    @Test
+    func testFTS5VirtualTableIsCreatableInProcess() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let indexURL = root.appendingPathComponent("index.sqlite")
+        let capturedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let event = makeEvent(
+            id: wellFormedID(for: capturedAt, suffix: "fts"),
+            capturedAt: capturedAt,
+            content: "fts module present"
+        )
+        try appendEventLine(event, archiveRoot: root)
+        let index = ClipboardDerivedIndex(archiveRoot: root, indexURL: indexURL)
+        try index.upsert(event: event, body: "fts module present")
+
+        let rows = try index.runSQLiteJSON(
+            "SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'clipboard_fts' AND type = 'table';"
+        )
+        #expect(rows.first?["n"] as? Int == 1)
+        #expect(try index.structuredSearch("module").count == 1)
+    }
+
+    /// A read against an index that is not there fails, and — unlike the
+    /// subprocess it replaced — does not CREATE an empty database on the way
+    /// out. That side effect is what once let a deleted index come back as
+    /// an empty one holding a single row.
+    @Test
+    func testReadOfAMissingIndexThrowsAndCreatesNothing() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let indexURL = root.appendingPathComponent("index.sqlite")
+        let index = ClipboardDerivedIndex(archiveRoot: root, indexURL: indexURL)
+
+        #expect(throws: ClipboardDerivedIndexError.self) {
+            _ = try index.occurrenceIDs(contentHash: "deadbeef")
+        }
+        #expect(!FileManager.default.fileExists(atPath: indexURL.path))
     }
 
     // MARK: - Filter correctness

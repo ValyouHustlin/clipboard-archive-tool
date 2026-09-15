@@ -62,9 +62,18 @@ enum ClipboardSQLiteSearch {
                 throw ClipboardDerivedIndexError.sqliteFailed(snippetRegistered)
             }
             var statement: OpaquePointer?
-            let prepared = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
+            var tail: UnsafePointer<CChar>?
+            let prepared = sqlite3_prepare_v2(database, sql, -1, &statement, &tail)
             guard prepared == SQLITE_OK, let statement else {
                 throw ClipboardDerivedIndexError.sqliteFailed(prepared)
+            }
+            // Only the FIRST statement is prepared, and silently running one
+            // statement of a script is the kind of wrong that reads as a
+            // correct empty result. Anything left over is refused.
+            if let tail,
+               !String(cString: tail).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                sqlite3_finalize(statement)
+                throw ClipboardDerivedIndexError.sqliteFailed(SQLITE_MISUSE)
             }
             defer { sqlite3_finalize(statement) }
             var rows: [[String: Any]] = []

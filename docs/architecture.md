@@ -24,7 +24,8 @@ NSPasteboard
        -> accepted StoredClipboardEvent (schema-versioned, tolerant decode)
   -> append-oriented NDJSON archive
        -> inline text, or a same-day large-body / rich-body file
-  -> incremental derived SQLite FTS upsert (schema v2, user_version)
+  -> incremental derived SQLite FTS upsert, in process (schema v2,
+       user_version)
   -> readers: menu, History window (This Window + All History scopes),
        quick picker, Storage & Health dashboard
 
@@ -201,14 +202,23 @@ recall from a warm in-memory cache invalidated on every archive mutation.
 
 The CLI's archive search scans NDJSON plus contained body files. The separate
 SQLite FTS index is derived data and stores searchable content in plaintext.
-Each accepted capture upserts one row in a short SQLite transaction; SQL is
-streamed to `/usr/bin/sqlite3` over standard input so clipboard text never
-appears in process arguments. An index failure returns a maintenance status but
-does not fail or roll back the archive write.
+Each accepted capture upserts one row in a short SQLite transaction, executed
+in this process through the SQLite C API, so clipboard text never appears in
+process arguments and a capture does not pay for creating a process. An index
+failure returns a maintenance status but does not fail or roll back the archive
+write. Reads go the same way. The journal stays in the default DELETE mode:
+write-ahead logging saved about a millisecond per capture and would leave a
+`-wal` and a `-shm` file beside an index that the backup exporter and the
+alternate-index report enumerate.
 
-Full index rebuild remains the recovery path. It invokes `/usr/bin/sqlite3`,
-validates a private sibling temporary database with `quick_check`, and
-atomically replaces the prior index only after success. An owner-only
+Full index rebuild remains the recovery path, and still invokes
+`/usr/bin/sqlite3`: it streams a whole archive's worth of statements from a
+file, which is what that tool is good at, and pays for the process once rather
+than per row. The self-heal check that asks whether the index is damaged or
+merely locked keeps its own invocation, because it reads that distinction out
+of the tool's error text. The rebuild validates a private sibling temporary
+database with `quick_check`, and atomically replaces the prior index only after
+success. An owner-only
 cross-process lock serializes rebuild, upsert, and deletion operations so an
 external repair cannot replace the database during a capture update.
 
