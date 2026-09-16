@@ -4,6 +4,13 @@ Use `scripts/run-isolated-app.py /tmp/unique-root /absolute/path/to/ClipboardArc
 
 A support-root override selects file-backed preferences at `support/preferences.json` and a named pasteboard derived from that root before any pasteboard read. It also disables system-wide shortcuts, direct paste, login-item changes, window-frame autosave, external navigation, Accessibility prompts, and backup file dialogs. Separate roots have separate preferences and pasteboards. Production without an override retains its normal preferences and general pasteboard.
 
+`CLIPBOARD_ARCHIVE_PASTEBOARD=general` overrides the named-pasteboard half of the
+support-root override and binds the app to the REAL clipboard while its stores stay
+isolated. It exists for harnesses that drive capture through `pbcopy`
+(`scripts/stress-menu-bar-app.sh`), which cannot reach a named board. Anything else
+isolating a run should leave it unset: with it set, a scratch app observes and archives
+whatever is on the operator's real clipboard.
+
 `support/clock.txt` optionally contains finite Unix epoch seconds. Calendar decisions, event timestamps, settings deadlines, archive manifests, and UI date filters use it. Timer scheduling and operation deadlines continue to use real elapsed time. Remove the file to use the system clock. In isolated runs, atomic file writes use a temporary file beside their destination; production retains Foundation's atomic writer.
 
 A DEBUG build supports `CLIPBOARD_ARCHIVE_ISOLATION_RECEIPT=1`. It exercises private preferences and the named pasteboard, writes `support/isolation-receipt.json`, and exits. Existing UI automation also requires `CLIPBOARD_ARCHIVE_UI_SNAPSHOT_PATH` and its screen-specific parameters. All result/snapshot paths must stay inside the scratch root.
