@@ -146,7 +146,7 @@ public struct ClipboardArchiveReader: Sendable {
             relativePath: rawContentPath,
             archiveRoot: archiveRoot
         )
-        return try String(contentsOf: bodyURL)
+        return try String.readingClipboardText(contentsOf: bodyURL)
     }
 
     /// One day file's NDJSON rows as raw byte slices, oldest first.

@@ -649,7 +649,7 @@ public struct ClipboardOccurrenceResolver: Sendable {
         decoder.dateDecodingStrategy = .iso8601
         var matches: [(id: String, capturedAt: Date)] = []
         for fileURL in try reader.eventFiles() {
-            let lines = try String(contentsOf: fileURL)
+            let lines = try String.readingClipboardText(contentsOf: fileURL)
                 .split(separator: "\n", omittingEmptySubsequences: true)
             for line in lines {
                 guard let data = String(line).data(using: .utf8),

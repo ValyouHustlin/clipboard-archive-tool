@@ -206,7 +206,7 @@ public struct ClipboardArchiveHealthReporter: Sendable {
         var metrics = EventMetrics()
 
         for eventFile in try ClipboardArchiveReader(archiveRoot: archiveRoot).eventFiles() {
-            let lines = try String(contentsOf: eventFile)
+            let lines = try String.readingClipboardText(contentsOf: eventFile)
                 .split(separator: "\n", omittingEmptySubsequences: true)
             for line in lines {
                 guard let data = String(line).data(using: .utf8) else {
@@ -290,7 +290,7 @@ public struct ClipboardArchiveHealthReporter: Sendable {
             guard values.isRegularFile == true, values.isSymbolicLink != true else {
                 continue
             }
-            for line in try String(contentsOf: url).split(separator: "\n", omittingEmptySubsequences: true) {
+            for line in try String.readingClipboardText(contentsOf: url).split(separator: "\n", omittingEmptySubsequences: true) {
                 guard let data = String(line).data(using: .utf8),
                       let event = try? decoder.decode(ClipboardDeletionEvent.self, from: data),
                       interval.contains(event.deletedAt) else {

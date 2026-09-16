@@ -475,7 +475,7 @@ public struct ClipboardBackupEnumerator: Sendable {
         for file in files {
             switch file.kind {
             case "events":
-                let lines = try String(contentsOf: file.url)
+                let lines = try String.readingClipboardText(contentsOf: file.url)
                     .split(separator: "\n", omittingEmptySubsequences: true)
                 for line in lines {
                     guard let data = String(line).data(using: .utf8) else {
@@ -501,7 +501,7 @@ public struct ClipboardBackupEnumerator: Sendable {
             case "body":
                 counts.bodyFiles += 1
             case "ledger":
-                let lines = try String(contentsOf: file.url)
+                let lines = try String.readingClipboardText(contentsOf: file.url)
                     .split(separator: "\n", omittingEmptySubsequences: true)
                 for line in lines {
                     guard let data = String(line).data(using: .utf8),

@@ -234,7 +234,7 @@ public struct ClipboardArchivePruner: Sendable {
 
         // 1. SCAN (also the shared truthful-numbers pass for dry runs).
         for eventFile in scopedFiles {
-            for line in try String(contentsOf: eventFile)
+            for line in try String.readingClipboardText(contentsOf: eventFile)
                 .split(separator: "\n", omittingEmptySubsequences: true)
                 .map(String.init) {
                 guard let data = line.data(using: .utf8),
@@ -317,7 +317,7 @@ public struct ClipboardArchivePruner: Sendable {
         // 3. REWRITE affected day files only.
         var changedFiles = 0
         for (eventFile, idsToPrune) in prunedIDsByFile.sorted(by: { $0.key.path < $1.key.path }) {
-            let originalLines = try String(contentsOf: eventFile)
+            let originalLines = try String.readingClipboardText(contentsOf: eventFile)
                 .split(separator: "\n", omittingEmptySubsequences: true)
                 .map(String.init)
             var changed = false
@@ -502,7 +502,7 @@ public struct ClipboardArchivePruner: Sendable {
         var live: [LiveEventReference] = []
 
         for eventFile in try reader.eventFiles() {
-            let lines = try String(contentsOf: eventFile).split(separator: "\n", omittingEmptySubsequences: true)
+            let lines = try String.readingClipboardText(contentsOf: eventFile).split(separator: "\n", omittingEmptySubsequences: true)
             for line in lines {
                 guard let data = String(line).data(using: .utf8),
                       let event = try? decoder.decode(StoredClipboardEvent.self, from: data),
@@ -596,7 +596,7 @@ public struct ClipboardArchivePruner: Sendable {
             .delete(eventIDs: overflowIDs)
 
         for (eventFile, idsToPrune) in overflowIDsByFile.sorted(by: { $0.key.path < $1.key.path }) {
-            let originalLines = try String(contentsOf: eventFile)
+            let originalLines = try String.readingClipboardText(contentsOf: eventFile)
                 .split(separator: "\n", omittingEmptySubsequences: true)
                 .map(String.init)
             var changed = false

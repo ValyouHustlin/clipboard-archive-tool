@@ -50,7 +50,7 @@ public struct ClipboardArchiveSearcher: Sendable {
         decoder.dateDecodingStrategy = .iso8601
 
         for fileURL in try ClipboardArchiveReader(archiveRoot: archiveRoot).eventFiles().reversed() {
-            let lines = try String(contentsOf: fileURL).split(separator: "\n", omittingEmptySubsequences: true)
+            let lines = try String.readingClipboardText(contentsOf: fileURL).split(separator: "\n", omittingEmptySubsequences: true)
             for line in lines.reversed() {
                 guard let data = String(line).data(using: .utf8),
                       let event = try? decoder.decode(StoredClipboardEvent.self, from: data),
@@ -115,7 +115,7 @@ public struct ClipboardArchiveSearcher: Sendable {
         ) else {
             return nil
         }
-        guard let body = try? String(contentsOf: bodyURL),
+        guard let body = try? String.readingClipboardText(contentsOf: bodyURL),
               body.lowercased().contains(query) else {
             return nil
         }

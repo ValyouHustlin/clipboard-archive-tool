@@ -47,7 +47,7 @@ public struct ClipboardArchiveRedactor: Sendable {
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
 
         for eventFile in try reader.eventFiles() {
-            let originalLines = try String(contentsOf: eventFile)
+            let originalLines = try String.readingClipboardText(contentsOf: eventFile)
                 .split(separator: "\n", omittingEmptySubsequences: false)
                 .map(String.init)
             var changed = false

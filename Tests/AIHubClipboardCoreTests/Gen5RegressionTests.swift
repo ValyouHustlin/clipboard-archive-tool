@@ -152,6 +152,39 @@ struct Gen5RegressionTests {
                 == Data("{ not json".utf8))
     }
 
+    // MARK: - Reading text fast must not stop reading text that still works
+
+    /// The UTF-8 fast path is 11.4x quicker on a real archive, but the
+    /// sniffing initialiser it replaces SUCCEEDS on files that are not valid
+    /// UTF-8. Without the fallback this change would turn a readable legacy or
+    /// imported archive file into a throw — correctness traded for speed. This
+    /// test exists so the fallback cannot be tidied away as dead code.
+    @Test func aLegacyNonUTF8FileIsStillReadable() throws {
+        let base = try root()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let url = base.appendingPathComponent("legacy.ndjson")
+        let text = "legacy-utf16-line\n"
+        // UTF-16 with a byte-order mark: sniffing resolves it confidently,
+        // strict UTF-8 cannot decode it at all.
+        try Data(text.utf16.flatMap { [UInt8($0 & 0xFF), UInt8($0 >> 8)] }
+                 .withUnsafeBufferPointer { Array([0xFF, 0xFE] + $0) })
+            .write(to: url)
+        #expect((try? String(contentsOf: url, encoding: .utf8)) == nil)
+        let read = try String.readingClipboardText(contentsOf: url)
+        print("GEN5_ENTRY legacy-read \(read.count) char(s)")
+        #expect(read == text)
+    }
+
+    /// And the ordinary case still takes the fast path and round-trips.
+    @Test func anOrdinaryUTF8FileRoundTrips() throws {
+        let base = try root()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let url = base.appendingPathComponent("ordinary.ndjson")
+        let text = "ordinary-line-with-accents-café\n"
+        try Data(text.utf8).write(to: url)
+        #expect(try String.readingClipboardText(contentsOf: url) == text)
+    }
+
     // MARK: - A failed rebuild is not retried on every capture
 
     /// Serialising alone is not a failure policy: with no backoff, every

@@ -402,7 +402,7 @@ public struct ClipboardBackupImporter: Sendable {
             }
             let relative = String(filePath.dropFirst(rootPath.count + 1))
             var lineSet = Set<Data>()
-            for line in try String(contentsOf: fileURL).split(separator: "\n", omittingEmptySubsequences: true) {
+            for line in try String.readingClipboardText(contentsOf: fileURL).split(separator: "\n", omittingEmptySubsequences: true) {
                 guard let data = String(line).data(using: .utf8) else {
                     continue
                 }
@@ -468,7 +468,7 @@ public struct ClipboardBackupImporter: Sendable {
         var dayAppends: [String: [Data]] = [:]
         for entry in (entriesByKind["events"] ?? []).sorted(by: { $0.path < $1.path }) {
             let stagedFile = stagingURL.appendingPathComponent(entry.path)
-            for line in try String(contentsOf: stagedFile).split(separator: "\n", omittingEmptySubsequences: true) {
+            for line in try String.readingClipboardText(contentsOf: stagedFile).split(separator: "\n", omittingEmptySubsequences: true) {
                 guard let data = String(line).data(using: .utf8) else {
                     plan.unreadableLines += 1
                     continue
@@ -523,7 +523,7 @@ public struct ClipboardBackupImporter: Sendable {
         var backupLedgerIDsSeen = Set<String>()
         for entry in (entriesByKind["ledger"] ?? []).sorted(by: { $0.path < $1.path }) {
             let stagedFile = stagingURL.appendingPathComponent(entry.path)
-            for line in try String(contentsOf: stagedFile).split(separator: "\n", omittingEmptySubsequences: true) {
+            for line in try String.readingClipboardText(contentsOf: stagedFile).split(separator: "\n", omittingEmptySubsequences: true) {
                 guard let data = String(line).data(using: .utf8),
                       let record = try? decoder.decode(ClipboardDeletionEvent.self, from: data) else {
                     plan.unreadableLines += 1

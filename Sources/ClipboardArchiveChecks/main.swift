@@ -153,7 +153,7 @@ do {
 
         let archiveFile = root
             .appendingPathComponent("raw/2027/01/2027-01-15_clipboard-events.ndjson")
-        let contents = try String(contentsOf: archiveFile)
+        let contents = try String.readingClipboardText(contentsOf: archiveFile)
         try expect(contents.contains("blocked_sensitive_clipboard_item"), "missing blocked audit event")
         try expect(!contents.contains("secret\n"), "blocked event leaked content")
     }

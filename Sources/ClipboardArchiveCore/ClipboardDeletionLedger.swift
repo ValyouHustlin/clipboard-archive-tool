@@ -122,7 +122,7 @@ public struct ClipboardDeletionLedger: Sendable {
         var ids = Set<String>()
 
         for url in ledgerFiles {
-            let lines = try String(contentsOf: url).split(separator: "\n", omittingEmptySubsequences: true)
+            let lines = try String.readingClipboardText(contentsOf: url).split(separator: "\n", omittingEmptySubsequences: true)
             for line in lines {
                 guard let data = String(line).data(using: .utf8),
                       let event = try? decoder.decode(ClipboardDeletionEvent.self, from: data) else {

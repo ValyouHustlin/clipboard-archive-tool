@@ -199,7 +199,7 @@ public struct ClipboardDerivedIndex: Sendable {
             var count = 0
 
             for fileURL in try reader.eventFiles() {
-                let lines = try String(contentsOf: fileURL)
+                let lines = try String.readingClipboardText(contentsOf: fileURL)
                     .split(separator: "\n", omittingEmptySubsequences: true)
                 for line in lines {
                     guard let data = String(line).data(using: .utf8),
