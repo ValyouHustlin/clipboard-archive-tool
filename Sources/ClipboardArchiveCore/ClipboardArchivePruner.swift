@@ -342,7 +342,7 @@ public struct ClipboardArchivePruner: Sendable {
                 let payload = rewrittenLines.joined(separator: "\n") + "\n"
                 let tempURL = eventFile.deletingLastPathComponent()
                     .appendingPathComponent(".\(eventFile.lastPathComponent).tmp-\(UUID().uuidString)")
-                try payload.write(to: tempURL, atomically: true, encoding: .utf8)
+                try payload.writeClipboardAtomically(to: tempURL)
                 _ = try FileManager.default.replaceItemAt(eventFile, withItemAt: tempURL)
                 try ClipboardPrivateFileSystem.secureFile(eventFile)
                 changedFiles += 1
@@ -645,7 +645,7 @@ public struct ClipboardArchivePruner: Sendable {
                 let payload = rewrittenLines.joined(separator: "\n") + "\n"
                 let tempURL = eventFile.deletingLastPathComponent()
                     .appendingPathComponent(".\(eventFile.lastPathComponent).tmp-\(UUID().uuidString)")
-                try payload.write(to: tempURL, atomically: true, encoding: .utf8)
+                try payload.writeClipboardAtomically(to: tempURL)
                 _ = try FileManager.default.replaceItemAt(eventFile, withItemAt: tempURL)
                 try ClipboardPrivateFileSystem.secureFile(eventFile)
                 changedFiles += 1

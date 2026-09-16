@@ -111,7 +111,7 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         )
         window.title = "Clipboard Archive Settings"
         window.minSize = NSSize(width: 760, height: 560)
-        window.setFrameAutosaveName("ClipboardSettingsWindowV2")
+        if !ClipboardRuntime.isIsolated { window.setFrameAutosaveName("ClipboardSettingsWindowV2") }
         // Keyboard pass (Slice 9): recompute the key view loop from layout
         // so Tab walks the cards top-to-bottom, left column then right.
         window.autorecalculatesKeyViewLoop = true
@@ -161,7 +161,7 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         guard let data = representation.representation(using: .png, properties: [:]) else {
             return
         }
-        try data.write(to: url, options: [.atomic])
+        try data.writeClipboardAtomically(to: url)
     }
 #endif
 
@@ -646,7 +646,7 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         // User-initiated browser navigation; the app runtime itself makes
         // no network requests.
         if let url = URL(string: ClipboardVersionInfo.releasePageURLString) {
-            NSWorkspace.shared.open(url)
+            if !ClipboardRuntime.isIsolated { NSWorkspace.shared.open(url) }
         }
     }
 
@@ -696,7 +696,7 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
             // Literal key: kAXTrustedCheckOptionPrompt's documented raw
             // value; the imported global is not concurrency-safe in Swift 6.
             let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-            AXIsProcessTrustedWithOptions(options)
+            if !ClipboardRuntime.isIsolated { AXIsProcessTrustedWithOptions(options) }
         }
         refreshAccessibilityStatus()
     }
@@ -704,7 +704,7 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
     @objc private func openAccessibilitySettings() {
         let link = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
         if let url = URL(string: link) {
-            NSWorkspace.shared.open(url)
+            if !ClipboardRuntime.isIsolated { NSWorkspace.shared.open(url) }
         }
     }
 
@@ -1063,7 +1063,7 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
             appRuleRows.append(AppRuleRow(
                 bundleID: value,
                 mode: ClipboardAppPrivacyRule.blockMode,
-                addedAt: Date(),
+                addedAt: ClipboardRuntime.now,
                 isExplicit: true
             ))
             appRuleRows.sort { $0.bundleID < $1.bundleID }
@@ -1091,7 +1091,7 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         }
         appRuleRows[row].mode = mode
         appRuleRows[row].isExplicit = true
-        appRuleRows[row].addedAt = Date()
+        appRuleRows[row].addedAt = ClipboardRuntime.now
         if ClipboardPrivacyFilter.defaultBlockedBundleIdentifiers
             .contains(appRuleRows[row].bundleID),
             mode == ClipboardAppPrivacyRule.normalMode {
@@ -1107,7 +1107,7 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
     }
 
     @objc private func showArchiveInFinder() {
-        NSWorkspace.shared.open(archiveRoot)
+        if !ClipboardRuntime.isIsolated { NSWorkspace.shared.open(archiveRoot) }
     }
 
     @objc private func save() {

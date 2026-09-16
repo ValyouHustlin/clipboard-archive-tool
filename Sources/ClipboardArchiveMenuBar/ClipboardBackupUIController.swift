@@ -47,6 +47,7 @@ final class ClipboardBackupUIController: NSObject {
     // MARK: - Back up
 
     func runBackup() {
+        guard !ClipboardRuntime.isIsolated else { return }
         guard !isBusy else {
             return
         }
@@ -59,7 +60,7 @@ final class ClipboardBackupUIController: NSObject {
         dayFormatter.calendar = Calendar(identifier: .gregorian)
         dayFormatter.locale = Locale(identifier: "en_US_POSIX")
         dayFormatter.dateFormat = "yyyy-MM-dd"
-        panel.nameFieldStringValue = "Clipboard Archive Backup \(dayFormatter.string(from: Date())).\(ClipboardBackupFormat.fileExtension)"
+        panel.nameFieldStringValue = "Clipboard Archive Backup \(dayFormatter.string(from: ClipboardRuntime.now)).\(ClipboardBackupFormat.fileExtension)"
         panel.isExtensionHidden = false
         NSApp.activate(ignoringOtherApps: true)
         guard panel.runModal() == .OK, let destination = panel.url else {
@@ -132,6 +133,7 @@ final class ClipboardBackupUIController: NSObject {
     // MARK: - Restore
 
     func runRestore() {
+        guard !ClipboardRuntime.isIsolated else { return }
         guard !isBusy else {
             return
         }
@@ -373,7 +375,7 @@ final class ClipboardBackupUIController: NSObject {
         guard let data = representation.representation(using: .png, properties: [:]) else {
             return
         }
-        try data.write(to: url, options: [.atomic])
+        try data.writeClipboardAtomically(to: url)
     }
 #endif
 

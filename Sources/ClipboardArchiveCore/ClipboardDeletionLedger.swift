@@ -6,7 +6,7 @@ public struct ClipboardDeletionEvent: Codable, Equatable, Sendable {
     public var deletedAt: Date
     public var reason: String
 
-    public init(clipboardEventID: String, deletedAt: Date = Date(), reason: String) {
+    public init(clipboardEventID: String, deletedAt: Date = ClipboardRuntime.now, reason: String) {
         self.eventType = "clipboard_event_deleted"
         self.clipboardEventID = clipboardEventID
         self.deletedAt = deletedAt
@@ -84,7 +84,7 @@ public struct ClipboardDeletionLedger: Sendable {
             try handle.write(contentsOf: data)
             try handle.close()
         } else {
-            try data.write(to: url, options: [.atomic])
+            try data.writeClipboardAtomically(to: url)
         }
         try ClipboardPrivateFileSystem.secureFile(url)
         ClipboardDeletionLedgerCache.shared.invalidate(ledgerRoot: ledgerRootKey())

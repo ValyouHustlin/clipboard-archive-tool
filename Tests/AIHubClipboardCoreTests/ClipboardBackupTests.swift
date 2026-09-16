@@ -213,7 +213,7 @@ enum BackupTestSupport {
 struct ClipboardBackupTests {
     // MARK: - Round trips
 
-    @Test func emptyArchiveRoundTripsToEmptyTree() throws {
+    @Test func emptyArchiveRestoreIsRefused() throws {
         let source = try BackupTestSupport.temporaryDirectory("empty-src")
         let restored = try BackupTestSupport.temporaryDirectory("empty-dst")
         let backupFile = try BackupTestSupport.temporaryDirectory("empty-out")
@@ -228,13 +228,11 @@ struct ClipboardBackupTests {
             indexURL: try BackupTestSupport.temporaryDirectory("empty-idx").appendingPathComponent("index.sqlite"),
             settingsURL: restored.appendingPathComponent("settings.json")
         )
-        let outcome = try importer.run(
-            backupFileURL: backupFile,
-            passphrase: BackupTestSupport.passphrase,
-            options: ClipboardBackupImportOptions(merge: false),
-            dryRun: false
-        )
-        #expect(outcome.plan.newEvents == 0)
+        #expect(throws: ClipboardBackupError.self) {
+            try importer.run(backupFileURL: backupFile,
+                passphrase: BackupTestSupport.passphrase,
+                options: ClipboardBackupImportOptions(merge: false), dryRun: false)
+        }
         #expect(try BackupTestSupport.treeSignature(restored, excludingUsageLog: true).isEmpty)
         #expect(BackupTestSupport.stagingDirectories(restored).isEmpty)
     }
@@ -277,7 +275,9 @@ struct ClipboardBackupTests {
         #expect(outcome.indexRebuildFailed == false)
 
         let sourceTree = try BackupTestSupport.treeSignature(source, excludingUsageLog: true)
-        let restoredTree = try BackupTestSupport.treeSignature(restored, excludingUsageLog: true)
+        var restoredTree = try BackupTestSupport.treeSignature(restored, excludingUsageLog: true)
+        restoredTree.removeValue(forKey: "restore-verification.json")
+        #expect(ClipboardRestoreEvidence.read(archiveRoot: restored, settingsURL: importer.settingsURL) != nil)
         #expect(sourceTree == restoredTree)
         #expect(!sourceTree.isEmpty)
 
@@ -311,7 +311,9 @@ struct ClipboardBackupTests {
             options: ClipboardBackupImportOptions(merge: false),
             dryRun: false
         )
-        #expect(try BackupTestSupport.treeSignature(source, excludingUsageLog: true) == BackupTestSupport.treeSignature(restored, excludingUsageLog: true))
+        var restoredTree = try BackupTestSupport.treeSignature(restored, excludingUsageLog: true)
+        restoredTree.removeValue(forKey: "restore-verification.json")
+        #expect(try BackupTestSupport.treeSignature(source, excludingUsageLog: true) == restoredTree)
     }
 
     @Test func exportMemoryStaysBoundedOnLargeBodies() throws {

@@ -21,7 +21,19 @@ public struct ClipboardVerification: Sendable, Equatable {
     public var pointerStatus: ClipboardStorePointerStatus
 
     /// One line per problem, in the order found. Empty means clean.
-    public var problems: [String] {
+    ///
+    /// Split into two halves because they are two different questions with two
+    /// different remedies, and `status` used to answer the first with the
+    /// second: an orphaned body file made it print `index: invalid` and name
+    /// `repair-index`, which cannot fix an orphaned body file. Callers that
+    /// want the whole picture (`verify`) still read `problems` and see exactly
+    /// what they saw before, in the same order.
+    public var problems: [String] { indexProblems + archiveProblems }
+
+    /// Problems with the INDEX itself — existence, readability, SQLite
+    /// integrity, and membership against the archive. These are the ones
+    /// `repair-index` exists to fix.
+    public var indexProblems: [String] {
         var found: [String] = []
         if !indexExists {
             found.append("There is no search index.")
@@ -44,6 +56,14 @@ public struct ClipboardVerification: Sendable, Equatable {
                     : "\(extraInIndex) search index rows point at clips the archive no longer has."
             )
         }
+        return found
+    }
+
+    /// Problems with the ARCHIVE, the settings file or the store pointer.
+    /// `repair-index` fixes none of these, so they must never be folded into
+    /// an index verdict; `status` surfaces them as their own warnings.
+    public var archiveProblems: [String] {
+        var found: [String] = []
         if health.invalidJSONLines > 0 {
             found.append("\(health.invalidJSONLines) line\(health.invalidJSONLines == 1 ? "" : "s") in the archive could not be read.")
         }
@@ -144,7 +164,8 @@ public struct ClipboardArchiveVerifier: Sendable {
             indexedEvents: indexed?.count ?? 0,
             missingFromIndex: eligible.subtracting(indexed ?? []).count,
             extraInIndex: (indexed ?? []).subtracting(eligible).count,
-            indexIntegrityOK: indexExists && index.quickCheck(),
+            indexIntegrityOK: indexExists && index.quickCheck()
+                && (try? index.indexedSearchEventIDs()) == indexed,
             indexExists: indexExists,
             indexReadable: indexed != nil,
             settingsReadable: settingsReadable,

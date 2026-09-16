@@ -110,6 +110,17 @@ CLIPBOARD_ARCHIVE_INDEX_PATH
 CLIPBOARD_ARCHIVE_APPLICATION_SUPPORT_ROOT
 ```
 
+`CLIPBOARD_ARCHIVE_APPLICATION_SUPPORT_ROOT` is NOT a plain relocation knob
+and must not be set on a production launch. It is the development-isolation
+switch: setting it also moves preferences into a private file instead of the
+`app.clipboardarchive` defaults domain, routes dates through `<root>/clock.txt`,
+and points the app at a per-root NAMED pasteboard rather than the general one —
+so an app launched with it set watches a board nothing copies to, captures
+nothing, and is behaving correctly while doing so. A harness that wants
+isolated stores but the real clipboard sets `CLIPBOARD_ARCHIVE_PASTEBOARD=general`.
+See `docs/ISOLATED_TESTING.md`. The installed launch agent sets only
+`CLIPBOARD_ARCHIVE_ARCHIVE_ROOT` and `CLIPBOARD_ARCHIVE_INDEX_PATH`.
+
 One resolver decides both paths for both binaries, each path independently:
 an explicit `--archive-root`/`--index-path` argument, then the environment
 variable, then the pointer file

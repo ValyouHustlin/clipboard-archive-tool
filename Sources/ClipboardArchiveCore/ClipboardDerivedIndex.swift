@@ -75,11 +75,10 @@ public struct ClipboardDerivedIndex: Sendable {
 
     public var archiveRoot: URL
     public var indexURL: URL
-    /// Governs the two paths that still spawn the tool — the rebuild's bulk
-    /// load and the integrity probe — and nothing else. Upserts, deletes and
-    /// reads run in this process, so pointing this at a program that fails
-    /// no longer simulates a broken SQLite for them.
+    /// The rebuild bulk loader only. Integrity probes, upserts, deletes and
+    /// reads use SQLite in process.
     public var sqliteExecutableURL: URL
+    public var sqliteTimeoutSeconds: TimeInterval
     /// Operational sink for rebuilds, passed explicitly by the surface that
     /// resolved it. Nil means silent.
     public var operationalLog: ClipboardOperationalLog?
@@ -88,11 +87,13 @@ public struct ClipboardDerivedIndex: Sendable {
         archiveRoot: URL,
         indexURL: URL,
         sqliteExecutableURL: URL = URL(fileURLWithPath: "/usr/bin/sqlite3"),
-        operationalLog: ClipboardOperationalLog? = nil
+        operationalLog: ClipboardOperationalLog? = nil,
+        sqliteTimeoutSeconds: TimeInterval = 4
     ) {
         self.archiveRoot = archiveRoot
         self.indexURL = indexURL
         self.sqliteExecutableURL = sqliteExecutableURL
+        self.sqliteTimeoutSeconds = sqliteTimeoutSeconds
         self.operationalLog = operationalLog
     }
 
@@ -165,7 +166,7 @@ public struct ClipboardDerivedIndex: Sendable {
             }
         }
 
-        try Data().write(to: temporarySQL, options: [.atomic])
+        try Data().writeClipboardAtomically(to: temporarySQL)
         try ClipboardPrivateFileSystem.secureFile(temporarySQL)
         let sqlOutput = try FileHandle(forWritingTo: temporarySQL)
 
@@ -230,17 +231,8 @@ public struct ClipboardDerivedIndex: Sendable {
             try writeSQL("\nCOMMIT;\n")
             try sqlOutput.close()
 
-            let process = Process()
-            process.executableURL = sqliteExecutableURL
-            process.arguments = [temporaryIndex.path]
-            process.standardInput = try FileHandle(forReadingFrom: temporarySQL)
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
-            try process.run()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else {
-                throw ClipboardDerivedIndexError.sqliteFailed(process.terminationStatus)
-            }
+            try ClipboardSQLiteProcess.run(executable: sqliteExecutableURL,
+                database: temporaryIndex, input: temporarySQL, timeout: sqliteTimeoutSeconds)
             try validateIndex(at: temporaryIndex)
             try ClipboardPrivateFileSystem.secureFile(temporaryIndex)
 
@@ -356,14 +348,36 @@ public struct ClipboardDerivedIndex: Sendable {
         return Set(rows.compactMap { $0["id"] as? String })
     }
 
+    public func indexedSearchEventIDs() throws -> Set<String> {
+        let rows = try ClipboardSQLiteSearch.rows(indexURL: indexURL,
+            sql: "SELECT id AS id FROM clipboard_fts;", terms: [])
+        return Set(rows.compactMap { $0["id"] as? String })
+    }
+
     /// SQLite `PRAGMA quick_check` on the live index file (dashboard
     /// "Verify Integrity"). Returns true when the database reports "ok".
     public func quickCheck() -> Bool {
         guard FileManager.default.fileExists(atPath: indexURL.path) else {
             return false
         }
-        return (try? validateIndex(at: indexURL)) != nil
+        return quickCheckOutcome(at: indexURL) == .ok
     }
+
+    /// What `quick_check` actually said, in the three answers it can give.
+    /// A Bool cannot hold the third one, and collapsing it into `false` is
+    /// what made a busy database look damaged.
+    enum QuickCheckOutcome { case ok, damaged, undetermined }
+
+    /// SQLite codes that mean "ask again later", never "this file is bad".
+    static func isContention(_ code: Int32) -> Bool {
+        code == SQLITE_BUSY || code == SQLITE_LOCKED
+    }
+
+    /// Restored to the tolerance the subprocess implementation used before the
+    /// in-process swap dropped it to 2 s. It only ever costs time when the
+    /// index is genuinely contended, and the alternative is calling an
+    /// ordinary concurrent write a corruption.
+    static let busyTimeoutMilliseconds: Int32 = 5_000
 
     /// Rebuilds the index when it is missing or its schema version does not
     /// match the current one. Must be called OUTSIDE `withExclusiveLock`
@@ -452,47 +466,33 @@ public struct ClipboardDerivedIndex: Sendable {
         case undetermined
     }
 
-    /// One sqlite3 invocation for both questions the self-heal asks, with a
-    /// busy timeout so an ordinary concurrent write is waited out rather
-    /// than read as corruption.
+    /// Native SQLite avoids subprocess pipe/deadline hazards for probes.
     func integrityProbe() -> IntegrityProbe {
-        let process = Process()
-        process.executableURL = sqliteExecutableURL
-        process.arguments = ["-batch", indexURL.path]
-        let input = Pipe()
-        let output = Pipe()
-        let errorOutput = Pipe()
-        process.standardInput = input
-        process.standardOutput = output
-        process.standardError = errorOutput
-        guard (try? process.run()) != nil else {
+        var database: OpaquePointer?
+        let opened = sqlite3_open_v2(indexURL.path, &database, SQLITE_OPEN_READONLY, nil)
+        guard opened == SQLITE_OK, let database else {
+            if let database { sqlite3_close(database) }
             return .undetermined
         }
-        let sql = "PRAGMA busy_timeout=5000;\nPRAGMA quick_check;\nPRAGMA user_version;\n"
-        guard (try? input.fileHandleForWriting.write(contentsOf: Data(sql.utf8))) != nil,
-              (try? input.fileHandleForWriting.close()) != nil else {
-            process.terminate()
-            return .undetermined
+        defer { sqlite3_close(database) }
+        sqlite3_busy_timeout(database, Self.busyTimeoutMilliseconds)
+        var statement: OpaquePointer?
+        // `prepare_v2` can return BUSY too, and calling that damage is the same
+        // mistake one statement earlier.
+        let prepared = sqlite3_prepare_v2(database, "PRAGMA user_version", -1, &statement, nil)
+        guard prepared == SQLITE_OK, let statement else {
+            return Self.isContention(prepared) ? .undetermined : .damaged
         }
-        let out = output.fileHandleForReading.readDataToEndOfFile()
-        let err = String(data: errorOutput.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        process.waitUntilExit()
-        if err.localizedCaseInsensitiveContains("locked") || err.localizedCaseInsensitiveContains("busy") {
-            return .undetermined
+        defer { sqlite3_finalize(statement) }
+        let result = sqlite3_step(statement)
+        if Self.isContention(result) { return .undetermined }
+        guard result == SQLITE_ROW else { return .damaged }
+        let version = Int(sqlite3_column_int(statement, 0))
+        switch quickCheckOutcome(at: indexURL) {
+        case .ok: return .readable(userVersion: version)
+        case .undetermined: return .undetermined
+        case .damaged: return .damaged
         }
-        guard process.terminationStatus == 0 else {
-            return .damaged
-        }
-        let lines = (String(data: out, encoding: .utf8) ?? "")
-            .split(separator: "\n", omittingEmptySubsequences: true)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-        // Three lines, in order: the busy timeout the first pragma echoes,
-        // the quick_check verdict, and the schema version. A damaged
-        // database reports its errors where "ok" would be.
-        guard lines.contains("ok"), let version = lines.last.flatMap({ Int($0) }) else {
-            return .damaged
-        }
-        return .readable(userVersion: version)
     }
 
     private func heal(mode: SchemaCheckMode) throws -> SchemaCheckOutcome {
@@ -527,6 +527,16 @@ public struct ClipboardDerivedIndex: Sendable {
         // cannot be left out of the index forever: the counter moved, and
         // one more pass follows.
         Self.verifiedSchemas.noteDeferral(path)
+        // BACKOFF, because serialising alone is not a failure policy. Once a
+        // rebuild fails for a reason that will not change in a second — an
+        // archive big enough to blow the sqlite deadline, a full disk, a
+        // read-only volume — every later capture calls back into here and arms
+        // another attempt that burns the whole deadline and fails the same way.
+        // Search never returns, the durable ledger keeps `index_rebuild_failed`
+        // (only a FINISHED rebuild clears it), and the machine does that forever
+        // with nobody watching. That is precisely the "three months untouched"
+        // failure this class of code is judged against.
+        guard !Self.verifiedSchemas.rebuildIsBackedOff(path) else { return }
         guard let generation = Self.verifiedSchemas.beginRebuild(path) else {
             return
         }
@@ -535,6 +545,9 @@ public struct ClipboardDerivedIndex: Sendable {
             let succeeded = (try? index.rebuild()) != nil
             if succeeded {
                 Self.verifiedSchemas.record(path, stamp: Self.fileStamp(atPath: path))
+                Self.verifiedSchemas.noteRebuildSuccess(path)
+            } else {
+                Self.verifiedSchemas.noteRebuildFailure(path)
             }
             let deferrals = Self.verifiedSchemas.deferrals(path)
             Self.verifiedSchemas.endRebuild(path)
@@ -590,7 +603,11 @@ public struct ClipboardDerivedIndex: Sendable {
 
     private static let verifiedSchemas = VerifiedSchemaCache()
 
-    private final class VerifiedSchemaCache: @unchecked Sendable {
+    /// Internal rather than private so the rebuild BACKOFF can be tested
+    /// directly. Proving it through the public rebuild path would mean
+    /// manufacturing a real rebuild failure and then waiting out a real delay,
+    /// which is a slow test that proves less.
+    final class VerifiedSchemaCache: @unchecked Sendable {
         private let lock = NSLock()
         private var stamps: [String: FileStamp] = [:]
         private var rebuilding: Set<String> = []
@@ -676,6 +693,41 @@ public struct ClipboardDerivedIndex: Sendable {
                 lock.unlock()
             }
             rebuilding.remove(path)
+        }
+
+        /// Consecutive failed rebuilds per path, and the uptime before which
+        /// the next attempt is pointless.
+        private var failures: [String: Int] = [:]
+        private var blockedUntil: [String: TimeInterval] = [:]
+
+        /// Exponential, capped at five minutes: 2s, 4s, 8s ... 300s.
+        func noteRebuildFailure(_ path: String) {
+            lock.lock()
+            defer {
+                lock.unlock()
+            }
+            let count = (failures[path] ?? 0) + 1
+            failures[path] = count
+            let delay = min(300, pow(2.0, Double(min(count, 8))))
+            blockedUntil[path] = ProcessInfo.processInfo.systemUptime + delay
+        }
+
+        func noteRebuildSuccess(_ path: String) {
+            lock.lock()
+            defer {
+                lock.unlock()
+            }
+            failures[path] = nil
+            blockedUntil[path] = nil
+        }
+
+        func rebuildIsBackedOff(_ path: String) -> Bool {
+            lock.lock()
+            defer {
+                lock.unlock()
+            }
+            guard let until = blockedUntil[path] else { return false }
+            return ProcessInfo.processInfo.systemUptime < until
         }
 
         func hasPendingRebuilds(forPath path: String?) -> Bool {
@@ -1068,32 +1120,47 @@ public struct ClipboardDerivedIndex: Sendable {
     /// "ok", so anything other than exactly that one row fails validation,
     /// as it did when the CLI printed the same rows.
     private func validateIndex(at url: URL) throws {
+        // `undetermined` still fails here, and that is deliberate: this gates a
+        // rebuild's temporary file before promotion, and promoting a file you
+        // could not verify is worse than rebuilding again later.
+        guard quickCheckOutcome(at: url) == .ok else {
+            throw ClipboardDerivedIndexError.validationFailed
+        }
+    }
+
+    func quickCheckOutcome(at url: URL) -> QuickCheckOutcome {
         var database: OpaquePointer?
         let opened = sqlite3_open_v2(url.path, &database, SQLITE_OPEN_READONLY, nil)
         guard opened == SQLITE_OK, let database else {
             if let database {
                 sqlite3_close(database)
             }
-            throw ClipboardDerivedIndexError.validationFailed
+            return Self.isContention(opened) ? .undetermined : .damaged
         }
         defer { sqlite3_close(database) }
-        sqlite3_busy_timeout(database, 2000)
+        sqlite3_busy_timeout(database, Self.busyTimeoutMilliseconds)
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(database, "PRAGMA quick_check;", -1, &statement, nil) == SQLITE_OK,
-              let statement else {
-            throw ClipboardDerivedIndexError.validationFailed
+        let prepared = sqlite3_prepare_v2(database, "PRAGMA quick_check;", -1, &statement, nil)
+        guard prepared == SQLITE_OK, let statement else {
+            return Self.isContention(prepared) ? .undetermined : .damaged
         }
         defer { sqlite3_finalize(statement) }
         var lines: [String] = []
-        while sqlite3_step(statement) == SQLITE_ROW {
-            guard let text = sqlite3_column_text(statement, 0) else {
-                throw ClipboardDerivedIndexError.validationFailed
-            }
+        var step = sqlite3_step(statement)
+        while step == SQLITE_ROW {
+            guard let text = sqlite3_column_text(statement, 0) else { return .damaged }
             lines.append(String(cString: text).trimmingCharacters(in: .whitespacesAndNewlines))
+            step = sqlite3_step(statement)
         }
-        guard lines == ["ok"] else {
-            throw ClipboardDerivedIndexError.validationFailed
-        }
+        // THE TERMINATING CODE IS THE WHOLE FIX. The loop above ends identically
+        // for DONE, BUSY, LOCKED and CORRUPT, so without reading `step` there is
+        // nothing left to tell "healthy, and someone else is writing to it" from
+        // "damaged". Getting that wrong costs a `forget`, a false
+        // index_corrupt_detected row in a log whose job is to grade, and a full
+        // rebuild of an index that was fine.
+        if Self.isContention(step) { return .undetermined }
+        guard step == SQLITE_DONE else { return .damaged }
+        return lines == ["ok"] ? .ok : .damaged
     }
 
     private func escape(_ value: String) -> String {

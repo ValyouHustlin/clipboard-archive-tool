@@ -61,7 +61,7 @@ public struct ClipboardUsageLog: Sendable {
     ) -> Bool {
         let identity = ClipboardRotatingLogFile.bundleVersion()
         guard let data = try? ClipboardRotatingLogFile.rowEncoder().encode(Row(
-            timestamp: Date(),
+            timestamp: ClipboardRuntime.now,
             version: identity.version,
             build: identity.build,
             event: event, outcome: outcome, scope: scope,

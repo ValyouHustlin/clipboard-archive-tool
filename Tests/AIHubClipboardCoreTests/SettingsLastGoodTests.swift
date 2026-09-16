@@ -54,7 +54,14 @@ struct SettingsLastGoodTests {
     /// failure rather than pretending a copy was used. The unreadable file
     /// STAYS — moving the only file there is would turn a transient read
     /// failure into permanent loss, because the next save writes defaults.
-    @Test func corruptSettingsWithoutACopyReturnDefaultsAndKeepTheFile() throws {
+    ///
+    /// A COPY is set aside all the same, and the last two expectations are why:
+    /// `save()` overwrites `settings.json` unconditionally, and the Settings
+    /// window is the sanctioned route to it. Without the copy, the user opening
+    /// Settings to flip one checkbox is what destroys the only record of what
+    /// they had configured. Keeping the original AND preserving a copy is the
+    /// only shape that loses nothing in either direction.
+    @Test func corruptSettingsWithoutACopyReturnDefaultsKeepTheFileAndPreserveACopy() throws {
         let (store, base) = try makeStore()
         defer { try? FileManager.default.removeItem(at: base) }
         let bytes = Data("{ this is not settings".utf8)
@@ -62,11 +69,19 @@ struct SettingsLastGoodTests {
 
         let loaded = store.loadReporting()
         let survived = try Data(contentsOf: store.settingsURL)
-        print("SETTINGS_NO_BAK reason=\(loaded.fallback?.rawValue ?? "none") retention=\(loaded.settings.retentionMode.rawValue) file_kept=\(survived == bytes) quarantine=\(try quarantineFiles(base))")
+        let quarantined = try quarantineFiles(base)
+        print("SETTINGS_NO_BAK reason=\(loaded.fallback?.rawValue ?? "none") retention=\(loaded.settings.retentionMode.rawValue) file_kept=\(survived == bytes) quarantine=\(quarantined)")
         #expect(loaded.fallback == .corrupt)
         #expect(loaded.settings == ClipboardSettings())
         #expect(survived == bytes)
-        #expect(try quarantineFiles(base).isEmpty)
+        #expect(quarantined.count == 1)
+        let preservedURL = base.appendingPathComponent(quarantined[0])
+        // The ORIGINAL bytes, not a re-encoding of the defaults that were
+        // loaded in their place.
+        #expect(try Data(contentsOf: preservedURL) == bytes)
+        // The save that used to be the data-loss event.
+        try store.save(ClipboardSettings())
+        #expect(try Data(contentsOf: preservedURL) == bytes)
     }
 
     /// A healthy file is read as itself; the copy is never consulted, even

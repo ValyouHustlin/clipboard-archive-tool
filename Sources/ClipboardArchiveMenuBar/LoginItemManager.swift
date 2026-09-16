@@ -21,6 +21,7 @@ final class LoginItemManager {
     /// thrown to the caller so Settings can surface them honestly (for
     /// example, when the binary is not in a normal app location).
     func setEnabled(_ enabled: Bool) throws {
+        guard !ClipboardRuntime.isIsolated else { throw CocoaError(.featureUnsupported) }
         if enabled {
             try SMAppService.mainApp.register()
         } else {
@@ -31,6 +32,7 @@ final class LoginItemManager {
     /// Opens System Settings › General › Login Items (used for the
     /// `.requiresApproval` state). User-initiated navigation, not network.
     func openLoginItemsSettings() {
+        guard !ClipboardRuntime.isIsolated else { return }
         SMAppService.openSystemSettingsLoginItems()
     }
 }

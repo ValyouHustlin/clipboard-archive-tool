@@ -88,6 +88,7 @@ public struct ClipboardArchiveWriter: Sendable {
         privacyLabel: PrivacyLabel = .privateLocal,
         sensitivityFlags: [String] = []
     ) throws -> StoredClipboardEvent {
+        try ensureArchiveFormatMarker()
         let contentData = Data(capture.content.utf8)
         // Per-kind content identity (Slice 6): rich captures hash their
         // canonical bytes; text keeps hashing the UTF-8 content unchanged.
@@ -101,6 +102,10 @@ public struct ClipboardArchiveWriter: Sendable {
         /// failure can delete them all (no orphaned bodies — this also
         /// fixes the pre-existing text-body leak).
         var bodyFilesWritten: [URL] = []
+        var committed = false
+        defer {
+            if !committed { for url in bodyFilesWritten { try? FileManager.default.removeItem(at: url) } }
+        }
 
         func largeItemsDirectory() throws -> URL {
             let directory = archiveRoot
@@ -114,9 +119,9 @@ public struct ClipboardArchiveWriter: Sendable {
 
         func writeBody(_ data: Data, fileExtension: String) throws -> URL {
             let bodyURL = try largeItemsDirectory().appendingPathComponent("\(id).\(fileExtension)")
-            try data.write(to: bodyURL, options: [.atomic])
-            try ClipboardPrivateFileSystem.secureFile(bodyURL)
+            try data.writeClipboardAtomically(to: bodyURL)
             bodyFilesWritten.append(bodyURL)
+            try ClipboardPrivateFileSystem.secureFile(bodyURL)
             return bodyURL
         }
 
@@ -265,7 +270,7 @@ public struct ClipboardArchiveWriter: Sendable {
             }
             throw error
         }
-        try ensureArchiveFormatMarker()
+        committed = true
         return event
     }
 
@@ -286,25 +291,26 @@ public struct ClipboardArchiveWriter: Sendable {
     }
 
     public func archiveBlockedCapture(_ capture: ClipboardCapture, reason: String) throws {
+        try ensureArchiveFormatMarker()
         let event = BlockedClipboardEvent(
             capturedAt: capture.capturedAt,
             reason: reason,
             sourceApp: capture.sourceApp
         )
         try appendJSONLine(event, to: dailyEventsURL(for: capture.capturedAt))
-        try ensureArchiveFormatMarker()
     }
 
-    /// Writes `<archiveRoot>/archive-format.json` after the first successful
-    /// archive write if it does not already exist. Never rewrites an existing
+    /// Ensures `<archiveRoot>/archive-format.json` before committing an event.
+    /// A failed metadata write must not follow an accepted event. Never rewrites an existing
     /// marker; absence of the file means format 1 (expansion contract 1).
     private func ensureArchiveFormatMarker() throws {
+        try ClipboardPrivateFileSystem.createDirectory(archiveRoot, archiveRoot: archiveRoot)
         let markerURL = archiveRoot.appendingPathComponent("archive-format.json")
         guard !FileManager.default.fileExists(atPath: markerURL.path) else {
             return
         }
         let marker = Data("{\"archiveFormatVersion\":1,\"minReader\":1}\n".utf8)
-        try marker.write(to: markerURL, options: [.atomic])
+        try marker.writeClipboardAtomically(to: markerURL)
         try ClipboardPrivateFileSystem.secureFile(markerURL)
     }
 

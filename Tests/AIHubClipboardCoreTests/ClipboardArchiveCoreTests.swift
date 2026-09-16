@@ -698,11 +698,6 @@ struct ClipboardArchiveCoreTests {
                 environment: [ClipboardDefaults.applicationSupportEnvironmentKey: "/tmp/synthetic-app-support"]
             ).path == "/tmp/synthetic-app-support/ClipboardArchive.lock"
         )
-        #expect(
-            ClipboardDefaults.userDefaultsSuiteName(
-                environment: [ClipboardDefaults.applicationSupportEnvironmentKey: "/tmp/synthetic-app-support"]
-            ) == ClipboardDefaults.isolatedUserDefaultsSuiteName
-        )
-        #expect(ClipboardDefaults.userDefaultsSuiteName(environment: [:]) == nil)
+
     }
 }

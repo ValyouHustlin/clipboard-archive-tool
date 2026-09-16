@@ -629,7 +629,7 @@ public struct ClipboardBackupExporter: Sendable {
         }
 
         let backupID = UUID()
-        let createdAt = Date()
+        let createdAt = ClipboardRuntime.now
         let iterations = iterationsOverride
             ?? ClipboardBackupFormat.calibratedIterations(passphraseLength: passphrase.count)
         // 16 random salt bytes from CryptoKit's CSPRNG.

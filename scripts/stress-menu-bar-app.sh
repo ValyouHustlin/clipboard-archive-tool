@@ -14,6 +14,10 @@ if /usr/bin/pgrep -x ClipboardArchive >/dev/null 2>&1 &&
   exit 2
 fi
 
+# This harness drives the app through the REAL clipboard on purpose (pbcopy),
+# which is why the running-app guard above exists. The support-root override
+# below isolates the STORES; CLIPBOARD_ARCHIVE_PASTEBOARD=general keeps the app
+# watching the board this script actually writes to.
 rm -rf "$ARCHIVE_ROOT"
 mkdir -p "$ARCHIVE_ROOT"
 
@@ -23,6 +27,7 @@ CLIPBOARD_ARCHIVE_APP_OUTPUT="$APP_PATH" ./scripts/build-menu-bar-app.sh >/dev/n
 CLIPBOARD_ARCHIVE_ARCHIVE_ROOT="$ARCHIVE_ROOT" \
 CLIPBOARD_ARCHIVE_INDEX_PATH="$ARCHIVE_ROOT/index.sqlite" \
 CLIPBOARD_ARCHIVE_APPLICATION_SUPPORT_ROOT="$APP_SUPPORT_ROOT" \
+CLIPBOARD_ARCHIVE_PASTEBOARD=general \
   "$APP_PATH/Contents/MacOS/ClipboardArchive" &
 APP_PID=$!
 

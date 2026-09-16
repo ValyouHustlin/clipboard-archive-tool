@@ -120,21 +120,39 @@ enum StatusCommand {
         var latestHeartbeat: Date?
         var pollsSinceLastHeartbeat: Int
         var launchAgent: LaunchAgentFacts
+        var indexVerifiedAt: Date?
+        var lastRestoreVerifiedAt: Date?
     }
 
     static func gather(_ options: CLIOptions, askLaunchd: Bool) throws -> Report {
         let resolution = options.storeResolution
-        let storesPresent = FileManager.default.fileExists(atPath: options.archiveRoot.path)
+        var archiveIsDirectory: ObjCBool = false
+        let storesPresent = FileManager.default.fileExists(atPath: options.archiveRoot.path, isDirectory: &archiveIsDirectory) && archiveIsDirectory.boolValue
         let lock = lockHolder(lockURL: resolution.lockURL)
-        let settings = ClipboardSettingsStore(settingsURL: resolution.settingsURL).load()
+        let loaded = ClipboardSettingsStore(settingsURL: resolution.settingsURL).loadReporting(readOnly: true)
+        let settings = loaded.settings
+        let now = ClipboardRuntime.now
 
         // Every retained row: a cap here would silently under-report the
         // error count on a busy log, which is the number most worth having.
         let operationalRows = options.operationalLog.read(limit: 0)
-        let heartbeat = operationalRows.last { $0.code == "heartbeat" }
-        let dayAgo = Date().addingTimeInterval(-86_400)
+        let processRows = operationalRows.filter {
+            guard let pid = lock.pid else { return false }
+            return $0.numbers["pid"] == Double(pid)
+        }
+        let heartbeat = processRows.last { $0.code == "heartbeat" }
+        let startup = processRows.last { $0.code == "app_start" }?.timestamp
+        let dayAgo = now.addingTimeInterval(-86_400)
         let errorsLastDay = operationalRows.filter {
             $0.level == "error" && ($0.timestamp.map { $0 >= dayAgo } ?? false)
+        }.count
+
+        let recoveryCodes = ["capture_failed": "capture_recovered", "archive_append_failed": "capture_recovered",
+            "index_rebuild_failed": "index_rebuild_finished", "index_upsert_failed": "index_rebuild_finished"]
+        let activeErrors = operationalRows.enumerated().filter { position, row in
+            guard row.level == "error", row.timestamp.map({ $0 >= dayAgo }) == true else { return false }
+            guard let recovery = recoveryCodes[row.code] else { return true }
+            return !operationalRows.dropFirst(position + 1).contains { $0.code == recovery }
         }.count
 
         let latestCapture = newestCapture(options)
@@ -142,19 +160,27 @@ enum StatusCommand {
         // Today's bucket by name, not the last bucket that has rows: on a
         // quiet day the latter would report an older day's count under a
         // heading that says today.
-        let todayKey = ClipboardUsageStats.dayKey(for: Date())
+        let todayKey = ClipboardUsageStats.dayKey(for: now)
         let today = ClipboardUsageStats.summarize(usage: usage).days.first { $0.day == todayKey }
 
+        let integrity = readIntegrity(options)
+        let pausedPreference = ClipboardRuntime.isIsolated
+            ? ClipboardPreferences().bool(forKey: "capturePaused")
+            : (UserDefaults(suiteName: "app.clipboardarchive")?.bool(forKey: "capturePaused") ?? false)
         let facts = ClipboardStatusFacts(
             storesPresent: storesPresent,
             appRunning: lock.held,
             captureEnabled: settings.archiveEnabled,
-            heartbeatAge: heartbeat?.timestamp.map { Date().timeIntervalSince($0) },
-            lastCaptureAge: latestCapture.map { Date().timeIntervalSince($0) },
+            heartbeatAge: heartbeat?.timestamp.map { now.timeIntervalSince($0) },
+            lastCaptureAge: latestCapture.map { now.timeIntervalSince($0) },
             errorsLastDay: errorsLastDay,
-            indexState: indexState(options),
+            indexState: integrity.index,
             launchAgentProgramMissing: false,
-            launchAgentStoresDiffer: false
+            launchAgentStoresDiffer: false,
+            pollsSinceLastHeartbeat: heartbeat.map { safePollCount($0.numbers["polls"]) },
+            startupAge: startup.map { now.timeIntervalSince($0) },
+            captureSuspended: pausedPreference || settings.isTemporarilyPaused || settings.isPrivateModeActive,
+            activeErrors: activeErrors
         )
 
         var resolvedFacts = facts
@@ -171,46 +197,100 @@ enum StatusCommand {
                 || (pinnedIndex != nil && pinnedIndex != options.indexPath.standardizedFileURL.path)
         }
 
+        var verdict = ClipboardStatusRules.verdict(resolvedFacts)
+        if let fallback = loaded.fallback {
+            verdict.warnings.append("Settings are not fully readable (\(fallback.rawValue)); review the saved configuration.")
+        }
+        if !options.operationalLog.sinkReadable {
+            verdict.warnings.append("The operational log directory is unavailable.")
+        }
+        // Named here rather than silently folded into the index verdict: these
+        // are real, they are not the index's, and before this they were the
+        // problems `status` was reacting to without ever printing one of them.
+        for problem in integrity.archiveProblems {
+            verdict.warnings.append(problem)
+        }
+        for failure in options.operationalLog.unresolvedFailures {
+            if failure == "failure_state_unreadable" {
+                // A warning with no remedy is one an operator can only ignore.
+                verdict.warnings.append(
+                    "The unresolved-failure record could not be read; it is set aside "
+                    + "as a .corrupt- copy the next time a failure is recorded.")
+            } else {
+                verdict.warnings.append("Unresolved operational failure: \(failure).")
+            }
+        }
+        if !verdict.warnings.isEmpty && verdict.exit == .success { verdict.exit = .warnings }
         return Report(
             facts: resolvedFacts,
-            verdict: ClipboardStatusRules.verdict(resolvedFacts),
+            verdict: verdict,
             lockPID: lock.held ? lock.pid : nil,
             capturesToday: today?.captures ?? 0,
             archiveBytes: archiveBytes(options),
             diskFreeBytes: diskFree(options.archiveRoot),
             latestCapture: latestCapture,
             latestHeartbeat: heartbeat?.timestamp,
-            pollsSinceLastHeartbeat: Int(heartbeat?.numbers["polls"] ?? 0),
-            launchAgent: agent
+            pollsSinceLastHeartbeat: safePollCount(heartbeat?.numbers["polls"]),
+            launchAgent: agent,
+            indexVerifiedAt: integrity.index == .fresh ? now : nil,
+            lastRestoreVerifiedAt: ClipboardRestoreEvidence.read(archiveRoot: options.archiveRoot, settingsURL: resolution.settingsURL)?.verifiedAt
         )
     }
 
-    /// Newest capture time: one row from the index, falling back to the
-    /// archive when there is no index to ask.
+    private static func safePollCount(_ value: Double?) -> Int {
+        guard let value, value.isFinite, value >= 0, value < Double(Int.max) else { return 0 }
+        return Int(value)
+    }
+
+    /// Read the archive directly: asking the index here could self-heal it
+    /// before status has a chance to report its damaged state.
     private static func newestCapture(_ options: CLIOptions) -> Date? {
-        let index = ClipboardDerivedIndex(archiveRoot: options.archiveRoot, indexURL: options.indexPath)
-        if FileManager.default.fileExists(atPath: options.indexPath.path),
-           let newest = try? index.browse(limit: 1).first {
-            return newest.capturedAt
-        }
         return try? ClipboardArchiveReader(archiveRoot: options.archiveRoot)
             .recentItems(since: .distantPast, limit: 1).first?.capturedAt
     }
 
-    /// Fresh, stale or missing, decided by modification times rather than a
-    /// full read: `status` promises to be fast.
-    private static func indexState(_ options: CLIOptions) -> ClipboardStatusFacts.IndexState {
-        let manager = FileManager.default
-        guard manager.fileExists(atPath: options.indexPath.path) else {
-            return .missing
+    /// What ONE verification says, kept in the two halves it actually answers:
+    /// how the index is doing, and what else is wrong that is not the index's
+    /// fault. One `verify()` call feeds both — the archive is scanned once.
+    struct IntegrityReading {
+        var index: ClipboardStatusFacts.IndexState
+        /// Real problems that `repair-index` cannot fix, so they are reported
+        /// as their own warnings instead of being folded into the index line.
+        var archiveProblems: [String]
+    }
+
+    /// Recompute integrity instead of treating modification time as proof.
+    private static func readIntegrity(_ options: CLIOptions) -> IntegrityReading {
+        guard FileManager.default.fileExists(atPath: options.indexPath.path) else {
+            return IntegrityReading(index: .missing, archiveProblems: [])
         }
-        let indexModified = (try? options.indexPath.resourceValues(forKeys: [.contentModificationDateKey]))?
-            .contentModificationDate ?? .distantPast
-        let files = (try? ClipboardArchiveReader(archiveRoot: options.archiveRoot).eventFiles()) ?? []
-        let newestDayFile = files.compactMap {
-            (try? $0.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-        }.max() ?? .distantPast
-        return indexModified >= newestDayFile ? .fresh : .stale
+        // Recompute against this exact archive/index pair on every request.
+        // No mtime-based or persisted success can survive a membership change.
+        guard let result = try? ClipboardArchiveVerifier(archiveRoot: options.archiveRoot,
+            indexURL: options.indexPath, settingsURL: options.storeResolution.settingsURL,
+            pointerStatus: .absent).verify() else {
+            return IntegrityReading(index: .invalid, archiveProblems: [])
+        }
+        return IntegrityReading(index: indexVerdict(result),
+                                archiveProblems: result.archiveProblems)
+    }
+
+    /// Grade the INDEX on index evidence only.
+    ///
+    /// The membership split is the point. `verify()` is two independent full
+    /// scans — eligible events, then indexed rows — with no snapshot between
+    /// them, so on a machine that is merely capturing, an event landing between
+    /// the two reads shows up as `missingFromIndex`. That is indistinguishable
+    /// from an index that is genuinely behind, and BOTH are honestly described
+    /// as "catch it up", which is what `.stale` already says. An `extraInIndex`
+    /// row is different in kind: no capture can add one, so the index really is
+    /// claiming a clip the archive does not have, and that earns `.invalid`.
+    private static func indexVerdict(_ result: ClipboardVerification) -> ClipboardStatusFacts.IndexState {
+        if !result.indexExists { return .missing }
+        if !result.indexReadable || !result.indexIntegrityOK { return .invalid }
+        if result.extraInIndex > 0 { return .invalid }
+        if result.missingFromIndex > 0 { return .stale }
+        return .fresh
     }
 
     private static func archiveBytes(_ options: CLIOptions) -> Int64 {
@@ -258,6 +338,8 @@ enum StatusCommand {
                 "captures_today": report.capturesToday,
                 "errors_last_24h": facts.errorsLastDay,
                 "index_state": facts.indexState.rawValue,
+                "index_verified_at": report.indexVerifiedAt.map { ISO8601DateFormatter().string(from: $0) } as Any? ?? NSNull(),
+                "last_successful_restore_verified_at": report.lastRestoreVerifiedAt.map { ISO8601DateFormatter().string(from: $0) } as Any? ?? NSNull(),
                 "archive_bytes": report.archiveBytes,
                 "disk_free_bytes": report.diskFreeBytes,
                 "launch_agent": [
@@ -281,6 +363,8 @@ enum StatusCommand {
         print("captures_today: \(report.capturesToday)")
         print("errors_last_24h: \(facts.errorsLastDay)")
         print("index: \(facts.indexState.rawValue)")
+        print("index_verified_at: \(report.indexVerifiedAt.map { ISO8601DateFormatter().string(from: $0) } ?? "never")")
+        print("last_successful_restore_verified_at: \(report.lastRestoreVerifiedAt.map { ISO8601DateFormatter().string(from: $0) } ?? "never")")
         print("archive_bytes: \(report.archiveBytes)")
         print("disk_free_bytes: \(report.diskFreeBytes)")
         print("launch_agent: \(report.launchAgent.present ? report.launchAgent.plistPath : "not installed")")

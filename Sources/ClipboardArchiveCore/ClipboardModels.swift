@@ -316,7 +316,7 @@ public struct ClipboardCapture: Equatable, Sendable {
     public var rich: ClipboardRichPayload?
 
     public init(
-        capturedAt: Date = Date(),
+        capturedAt: Date = ClipboardRuntime.now,
         content: String,
         sourceApp: ClipboardSourceApp,
         pasteboardTypes: [String] = [],

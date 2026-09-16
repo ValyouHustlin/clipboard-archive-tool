@@ -60,6 +60,7 @@ public struct ClipboardIngestor: Sendable {
             let result = try ingestCapture(capture)
             switch result {
             case let .stored(event, status):
+                operationalLog?.recoverCaptureFailure()
                 usage.record(.capture, outcome: status == .excluded ? .excluded : .success, scope: .archive,
                     durationMs: Date().timeIntervalSince(start) * 1000, bytes: event.byteCount)
                 if status == .failed { usage.record(.error, outcome: .failed, scope: .index) }
@@ -185,6 +186,7 @@ public struct ClipboardIngestor: Sendable {
             guard applied else {
                 return .deferred
             }
+            operationalLog?.recoverIndexUpsertFailure()
             return excluded ? .excluded : .updated
         } catch {
             // The event IS stored; only its searchability failed. The row

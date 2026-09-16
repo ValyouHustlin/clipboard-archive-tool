@@ -196,7 +196,7 @@ final class ClipboardBulkSheetController: NSObject {
     private func currentCriteria() -> ClipboardBulkCriteria {
         var criteria = ClipboardBulkCriteria()
         if let days = Self.dateChoices[max(0, datePopup.indexOfSelectedItem)].days {
-            criteria.until = Calendar.current.date(byAdding: .day, value: -days, to: Date())
+            criteria.until = Calendar.current.date(byAdding: .day, value: -days, to: ClipboardRuntime.now)
         }
         if let app = appPopup.titleOfSelectedItem, app != Self.anyAppTitle {
             criteria.sourceAppName = app
@@ -476,7 +476,7 @@ final class ClipboardBulkSheetController: NSObject {
         guard let data = bitmap.representation(using: .png, properties: [:]) else {
             return
         }
-        try data.write(to: url, options: [.atomic])
+        try data.writeClipboardAtomically(to: url)
     }
 #endif
 }

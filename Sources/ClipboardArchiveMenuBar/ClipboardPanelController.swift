@@ -283,7 +283,7 @@ final class ClipboardPanelController: NSWindowController,
         window.title = "Clipboard History"
         window.minSize = NSSize(width: 720, height: 440)
         window.center()
-        window.setFrameAutosaveName("ClipboardHistoryWindowV2")
+        if !ClipboardRuntime.isIsolated { window.setFrameAutosaveName("ClipboardHistoryWindowV2") }
         super.init(window: window)
         window.onPinKeyEquivalent = { [weak self] in
             guard let self else {
@@ -367,7 +367,7 @@ final class ClipboardPanelController: NSWindowController,
         guard let data = representation.representation(using: .png, properties: [:]) else {
             return
         }
-        try data.write(to: url, options: [.atomic])
+        try data.writeClipboardAtomically(to: url)
     }
 
     func performAutomationSearch(_ query: String) {
@@ -460,7 +460,7 @@ final class ClipboardPanelController: NSWindowController,
             // production store API so the sweep receipt can fire without
             // waiting an hour.
             for hash in selectedContentHashes() {
-                try? annotations.setExpiry(Date().addingTimeInterval(-3_600), forContentHash: hash)
+                try? annotations.setExpiry(ClipboardRuntime.now.addingTimeInterval(-3_600), forContentHash: hash)
             }
             refreshAnnotationState()
             onArchiveMutation(.annotationsChanged(pinRemoved: false))
@@ -1604,7 +1604,7 @@ final class ClipboardPanelController: NSWindowController,
         if !pinnedTargets.isEmpty, !confirmExpiryOverridesPins(count: pinnedTargets.count) {
             return
         }
-        let expiresAt = Date().addingTimeInterval(TimeInterval(hours) * 3_600)
+        let expiresAt = ClipboardRuntime.now.addingTimeInterval(TimeInterval(hours) * 3_600)
         do {
             for hash in targets {
                 try annotations.setExpiry(expiresAt, forContentHash: hash)
@@ -1951,7 +1951,7 @@ final class ClipboardPanelController: NSWindowController,
 
     private func selectedSinceDate() -> Date? {
         let calendar = Calendar.current
-        let now = Date()
+        let now = ClipboardRuntime.now
         switch dateFilterPopup.indexOfSelectedItem {
         case 1:
             return calendar.startOfDay(for: now)
@@ -2345,7 +2345,7 @@ final class ClipboardPanelController: NSWindowController,
     }
 
     @objc private func openArchive() {
-        NSWorkspace.shared.open(archiveRoot)
+        if !ClipboardRuntime.isIsolated { NSWorkspace.shared.open(archiveRoot) }
     }
 
     @objc private func copySelected() {
@@ -2749,8 +2749,8 @@ final class ClipboardPanelController: NSWindowController,
         let since = Calendar.current.date(
             byAdding: .day,
             value: -historyWindow.dayCount,
-            to: Date()
-        ) ?? Date()
+            to: ClipboardRuntime.now
+        ) ?? ClipboardRuntime.now
         let generation = windowLoad.begin()
         let startingScope = scope
         let limit = recentItemLimit

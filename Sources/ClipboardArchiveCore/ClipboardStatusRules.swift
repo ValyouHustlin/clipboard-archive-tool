@@ -8,7 +8,7 @@ import Foundation
 /// particular state.
 public struct ClipboardStatusFacts: Sendable, Equatable {
     public enum IndexState: String, Sendable, Codable {
-        case fresh, stale, missing
+        case fresh, stale, missing, invalid
     }
 
     /// False when the archive root is not there at all.
@@ -20,8 +20,12 @@ public struct ClipboardStatusFacts: Sendable, Equatable {
     public var heartbeatAge: TimeInterval?
     /// How old a heartbeat may be before it counts as gone quiet.
     public var heartbeatTolerance: TimeInterval
+    public var pollsSinceLastHeartbeat: Int?
+    public var startupAge: TimeInterval?
+    public var captureSuspended: Bool
     public var lastCaptureAge: TimeInterval?
     public var errorsLastDay: Int
+    public var activeErrors: Int?
     public var indexState: IndexState
     /// True when the launch agent names a program that is not on disk.
     public var launchAgentProgramMissing: Bool
@@ -38,8 +42,15 @@ public struct ClipboardStatusFacts: Sendable, Equatable {
         errorsLastDay: Int,
         indexState: IndexState,
         launchAgentProgramMissing: Bool = false,
-        launchAgentStoresDiffer: Bool = false
+        launchAgentStoresDiffer: Bool = false,
+        pollsSinceLastHeartbeat: Int? = nil,
+        startupAge: TimeInterval? = nil,
+        captureSuspended: Bool = false,
+        activeErrors: Int? = nil
     ) {
+        self.pollsSinceLastHeartbeat = pollsSinceLastHeartbeat
+        self.startupAge = startupAge
+        self.captureSuspended = captureSuspended
         self.storesPresent = storesPresent
         self.appRunning = appRunning
         self.captureEnabled = captureEnabled
@@ -47,6 +58,7 @@ public struct ClipboardStatusFacts: Sendable, Equatable {
         self.heartbeatTolerance = heartbeatTolerance
         self.lastCaptureAge = lastCaptureAge
         self.errorsLastDay = errorsLastDay
+        self.activeErrors = activeErrors
         self.indexState = indexState
         self.launchAgentProgramMissing = launchAgentProgramMissing
         self.launchAgentStoresDiffer = launchAgentStoresDiffer
@@ -81,15 +93,22 @@ public enum ClipboardStatusRules {
 
         // A heartbeat is the only thing that says capture is still running
         // rather than merely launched, so its absence is the finding.
-        if facts.captureEnabled {
+        if let age = facts.heartbeatAge, age < -5 {
+            warnings.append("The heartbeat timestamp is in the future; capture progress cannot be trusted.")
+        }
+        if facts.captureEnabled && !facts.captureSuspended {
             if facts.appRunning {
+                let starting = facts.startupAge.map { $0 >= 0 && $0 < 60 } ?? false
+                if facts.pollsSinceLastHeartbeat == 0 && !starting {
+                    warnings.append("The app is running but the last heartbeat reports no clipboard polls.")
+                }
                 if let age = facts.heartbeatAge {
                     if age > facts.heartbeatTolerance {
                         warnings.append(
                             "Capture is on and the app is running, but it last reported \(describe(age)) ago."
                         )
                     }
-                } else {
+                } else if !starting {
                     warnings.append("Capture is on and the app is running, but it has never reported in.")
                 }
             } else {
@@ -102,13 +121,16 @@ public enum ClipboardStatusRules {
             break
         case .stale:
             warnings.append("The search index is older than the archive; run repair-index to catch it up.")
+        case .invalid:
+            warnings.append("The search index does not match the archive or failed verification; run verify, then repair-index.")
         case .missing:
             warnings.append("There is no search index; All History and index searches will rebuild it first.")
         }
 
-        if facts.errorsLastDay > 0 {
+        let errorCount = facts.activeErrors ?? facts.errorsLastDay
+        if errorCount > 0 {
             warnings.append(
-                "\(facts.errorsLastDay) error\(facts.errorsLastDay == 1 ? "" : "s") recorded in the last 24 hours."
+                "\(errorCount) unresolved error\(errorCount == 1 ? "" : "s") recorded in the last 24 hours."
             )
         }
 

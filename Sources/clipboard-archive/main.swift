@@ -386,7 +386,7 @@ struct PasteboardMonitor {
 func recordCLICommand(_ log: ClipboardOperationalLog, verb: ClipboardOperationalLog.Verb, exitCode: Int) {
     log.record(
         .cliCommand,
-        level: exitCode == 0 ? .info : .error,
+        level: exitCode == 0 ? .info : (verb == .status || verb == .verify ? .warn : .error),
         count: exitCode,
         verb: verb
     )

@@ -203,6 +203,9 @@ func runBackupCommand(options: CLIOptions) throws {
             options: importOptions,
             dryRun: options.dryRun
         )
+        let restoreEvidence = ClipboardRestoreEvidence.read(archiveRoot: options.archiveRoot,
+            settingsURL: options.storeResolution.settingsURL)
+        let verifiedAt = restoreEvidence?.backupID == outcome.plan.backupID ? restoreEvidence?.verifiedAt : nil
         if options.json {
             struct RestoreOutput: Encodable {
                 var dryRun: Bool
@@ -210,18 +213,23 @@ func runBackupCommand(options: CLIOptions) throws {
                 var indexedCount: Int?
                 var indexRebuildFailed: Bool
                 var appliedSettings: Bool
+                var restoreVerifiedAt: Date?
             }
             let output = RestoreOutput(
                 dryRun: options.dryRun,
                 plan: outcome.plan,
                 indexedCount: outcome.indexedCount,
                 indexRebuildFailed: outcome.indexRebuildFailed,
-                appliedSettings: outcome.appliedSettings
+                appliedSettings: outcome.appliedSettings,
+                restoreVerifiedAt: verifiedAt
             )
             print(String(data: try jsonEncoder.encode(output), encoding: .utf8) ?? "{}")
         } else {
             let plan = outcome.plan
             print(options.dryRun ? "restore dry run (no changes made)" : "restore complete")
+            if !options.dryRun {
+                print("restore_verified_at: \(verifiedAt.map { ISO8601DateFormatter().string(from: $0) } ?? "unavailable")")
+            }
             print("mode: \(plan.mode)")
             print("backup_id: \(plan.backupID)")
             print("new_events: \(plan.newEvents)")

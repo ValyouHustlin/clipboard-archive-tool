@@ -170,6 +170,9 @@ public struct ClipboardBackupImporter: Sendable {
 
         let staged = try stage(backupFileURL: backupFileURL, passphrase: passphrase, progress: progress)
         do {
+            guard staged.manifest.counts.storedEvents > 0 else {
+                throw ClipboardBackupError.ioFailure("backup contains no stored events; no recovery was performed")
+            }
             let prepared = try buildPlan(staged: staged, options: options)
             return prepared
         } catch {
@@ -738,7 +741,7 @@ public struct ClipboardBackupImporter: Sendable {
         let changed = document.annotations != local.annotations || document.collections != local.collections
         if changed {
             document.annotationsVersion = ClipboardAnnotationsDocument.currentVersion
-            document.updatedAt = Date()
+            document.updatedAt = ClipboardRuntime.now
         }
         return AnnotationsMergeResult(
             document: document,
@@ -957,6 +960,20 @@ public struct ClipboardBackupImporter: Sendable {
             indexRebuildFailed = true
         }
 
+        // Gated on the INDEX, not on whole-archive health. A restore unpacks
+        // files out of staging, so an `insecureFiles` or `orphanedRichBodyFiles`
+        // finding is plausible the moment it finishes — and under the old
+        // whole-archive predicate that made a completely successful restore
+        // report `restore_verified_at: unavailable`. A green operation printing
+        // red is the same defect as a red one printing green, on the one receipt
+        // an operator goes looking for after a recovery.
+        if !indexRebuildFailed,
+           let verification = try? ClipboardArchiveVerifier(archiveRoot: archiveRoot,
+                indexURL: indexURL, settingsURL: settingsURL, pointerStatus: .absent).verify(),
+           verification.indexProblems.isEmpty {
+            try? ClipboardRestoreEvidence.write(archiveRoot: archiveRoot, settingsURL: settingsURL,
+                backupID: prepared.plan.backupID, storedEvents: prepared.manifest.counts.storedEvents)
+        }
         try? fileManager.removeItem(at: stagingURL)
 
         return ClipboardBackupImportOutcome(
@@ -1005,7 +1022,7 @@ public struct ClipboardBackupImporter: Sendable {
                 url.deletingLastPathComponent(),
                 archiveRoot: archiveRoot
             )
-            try data.write(to: url, options: [.atomic])
+            try data.writeClipboardAtomically(to: url)
             try ClipboardPrivateFileSystem.secureFile(url)
         }
         if let settingsPath = journal.settingsPath {
@@ -1020,13 +1037,13 @@ public struct ClipboardBackupImporter: Sendable {
                 let preImage = stagingURL.appendingPathComponent(settingsPreImageName)
                 if fileManager.fileExists(atPath: preImage.path) {
                     let data = try Data(contentsOf: preImage)
-                    try data.write(to: settingsURL, options: [.atomic])
+                    try data.writeClipboardAtomically(to: settingsURL)
                     try ClipboardPrivateFileSystem.secureFile(settingsURL)
                 }
             }
             if fileManager.fileExists(atPath: copyPreImage.path) {
                 let data = try Data(contentsOf: copyPreImage)
-                try data.write(to: settingsCopyURL, options: [.atomic])
+                try data.writeClipboardAtomically(to: settingsCopyURL)
                 try ClipboardPrivateFileSystem.secureFile(settingsCopyURL)
             } else {
                 try? fileManager.removeItem(at: settingsCopyURL)
@@ -1094,7 +1111,7 @@ public struct ClipboardBackupImporter: Sendable {
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         let data = try encoder.encode(journal)
         let url = stagingURL.appendingPathComponent(Self.journalFileName)
-        try data.write(to: url, options: [.atomic])
+        try data.writeClipboardAtomically(to: url)
         try ClipboardPrivateFileSystem.secureFile(url)
     }
 
@@ -1155,7 +1172,7 @@ public struct ClipboardBackupImporter: Sendable {
             try handle.write(contentsOf: payload)
             try handle.close()
         } else {
-            try payload.write(to: url, options: [.atomic])
+            try payload.writeClipboardAtomically(to: url)
         }
         try ClipboardPrivateFileSystem.secureFile(url)
     }
@@ -1184,7 +1201,7 @@ public struct ClipboardBackupImporter: Sendable {
         )
         let temporaryURL = url.deletingLastPathComponent()
             .appendingPathComponent(".import-tmp-\(UUID().uuidString)")
-        try data.write(to: temporaryURL, options: [.atomic])
+        try data.writeClipboardAtomically(to: temporaryURL)
         try ClipboardPrivateFileSystem.secureFile(temporaryURL)
         _ = try FileManager.default.replaceItemAt(url, withItemAt: temporaryURL)
         try ClipboardPrivateFileSystem.secureFile(url)

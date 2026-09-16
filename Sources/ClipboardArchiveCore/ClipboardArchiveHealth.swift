@@ -69,7 +69,7 @@ public struct ClipboardArchiveHealthReporter: Sendable {
         self.indexURL = indexURL
     }
 
-    public func health(now: Date = Date(), calendar: Calendar = .current) throws -> ClipboardArchiveHealth {
+    public func health(now: Date = ClipboardRuntime.now, calendar: Calendar = .current) throws -> ClipboardArchiveHealth {
         let annotationsStore = ClipboardAnnotationsStore(archiveRoot: archiveRoot)
         let annotationsDocument = annotationsStore.document()
         let restrictedHashes = Set(
@@ -147,7 +147,7 @@ public struct ClipboardArchiveHealthReporter: Sendable {
             .count
     }
 
-    public func writeDailyManifest(for date: Date = Date(), calendar: Calendar = .current) throws -> URL {
+    public func writeDailyManifest(for date: Date = ClipboardRuntime.now, calendar: Calendar = .current) throws -> URL {
         let start = calendar.startOfDay(for: date)
         let end = calendar.date(byAdding: .day, value: 1, to: start) ?? date.addingTimeInterval(86_400)
         let interval = DateInterval(start: start, end: end)
@@ -156,7 +156,7 @@ public struct ClipboardArchiveHealthReporter: Sendable {
         let manifest = ClipboardDailyManifest(
             schemaVersion: 2,
             manifestDate: day,
-            generatedAt: Date(),
+            generatedAt: ClipboardRuntime.now,
             storedEvents: metrics.storedEvents,
             blockedEvents: metrics.blockedEvents,
             deletedEvents: try deletionCount(in: interval),
@@ -176,7 +176,7 @@ public struct ClipboardArchiveHealthReporter: Sendable {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        try encoder.encode(manifest).write(to: url, options: [.atomic])
+        try encoder.encode(manifest).writeClipboardAtomically(to: url)
         try ClipboardPrivateFileSystem.secureFile(url)
         return url
     }

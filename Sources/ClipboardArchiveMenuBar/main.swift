@@ -21,20 +21,23 @@ final class ClipboardMenuBarApp: NSObject,
     NSApplicationDelegate,
     ClipboardOnboardingWindowControllerDelegate,
     ClipboardSettingsWindowControllerDelegate {
-    private let userDefaults = ClipboardDefaults.userDefaultsSuiteName()
-        .flatMap(UserDefaults.init(suiteName:))
-        ?? UserDefaults.standard
+    private let userDefaults = ClipboardPreferences()
     private let settingsStore = ClipboardSettingsStore()
     private var settings = ClipboardSettings()
+    private var settingsAreTrusted = false
     private var statusItem: NSStatusItem!
     private var timer: Timer?
     private var isPaused = false
-    private var lastChangeCount = NSPasteboard.general.changeCount
+    private var lastChangeCount = 0
     private var lastContentHash: Int?
-    /// The one pasteboard the app touches. In DEBUG UI automation this is
-    /// swapped for a private named pasteboard so gestures never clobber the
-    /// real clipboard; production always uses `NSPasteboard.general`.
-    private var pasteboard = NSPasteboard.general
+    /// The one pasteboard the app touches. Production — no support-root
+    /// override — always uses `NSPasteboard.general`. An ISOLATED run (any
+    /// build, not just DEBUG) is swapped to a private named board so test
+    /// gestures never clobber the real clipboard, unless it opts back out with
+    /// `CLIPBOARD_ARCHIVE_PASTEBOARD=general`.
+    private var pasteboard: NSPasteboard = ClipboardRuntime.pasteboardName.map {
+        NSPasteboard(name: NSPasteboard.Name($0))
+    } ?? NSPasteboard.general
     private let archiveWriter = ClipboardArchiveWriter(archiveRoot: archiveRoot)
     private let derivedIndex = ClipboardDerivedIndex(
         archiveRoot: archiveRoot,
@@ -166,11 +169,30 @@ final class ClipboardMenuBarApp: NSObject,
 #endif
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        lastChangeCount = pasteboard.changeCount
+#if DEBUG
+        if ClipboardRuntime.isIsolated && ProcessInfo.processInfo.environment["CLIPBOARD_ARCHIVE_ISOLATION_RECEIPT"] == "1" {
+            userDefaults.set(true, forKey: "isolationProbe")
+            pasteboard.clearContents()
+            let wrote = pasteboard.setString("synthetic isolation probe", forType: .string)
+            let receipt: [String: Any] = ["preferencesRoundTrip": userDefaults.bool(forKey: "isolationProbe"),
+                "pasteboardName": pasteboard.name.rawValue, "namedPasteboardRoundTrip": wrote && pasteboard.string(forType: .string) == "synthetic isolation probe",
+                "clockEpoch": ClipboardRuntime.now.timeIntervalSince1970,
+                "support": ClipboardDefaults.applicationSupportRoot().path,
+                "archive": archiveRoot.path, "index": resolvedIndexURL.path]
+            if let data = try? JSONSerialization.data(withJSONObject: receipt, options: .sortedKeys) {
+                try? data.write(to: ClipboardDefaults.applicationSupportRoot().appendingPathComponent("isolation-receipt.json"))
+            }
+            NSApp.terminate(nil)
+            return
+        }
+#endif
         ClipboardUsageLog(archiveRoot: archiveRoot).record(.appStart)
         operationalLog.record(.appStart)
         isPaused = userDefaults.bool(forKey: "capturePaused")
         let loadedSettings = settingsStore.loadReporting()
         settings = loadedSettings.settings
+        settingsAreTrusted = loadedSettings.fallback == nil || loadedSettings.fallback == .lastGoodUsed
         switch loadedSettings.fallback {
         case .lastGoodUsed:
             // The chosen settings survived an unreadable file: worth a row,
@@ -206,6 +228,10 @@ final class ClipboardMenuBarApp: NSObject,
         }
         rebuildMenu()
 #if DEBUG
+        if ProcessInfo.processInfo.environment["CLIPBOARD_ARCHIVE_SETTINGS_METADATA_PROBE"] == "1",
+           ClipboardRuntime.isIsolated {
+            showWhatsNew(activate: false)
+        }
         if runPollModeReceiptIfRequested() {
             return
         }
@@ -258,7 +284,7 @@ final class ClipboardMenuBarApp: NSObject,
         // never reimplement gating inline — the fast suite covers the
         // decision table, and this switch only performs the side effects.
         switch ClipboardCaptureGate.decision(
-            now: Date(),
+            now: ClipboardRuntime.now,
             privateModeUntil: settings.privateModeUntil,
             pauseUntil: settings.pauseUntil,
             manuallyPaused: isPaused,
@@ -278,9 +304,9 @@ final class ClipboardMenuBarApp: NSObject,
             // its stale key and tell the user now, not when the pause ends.
             // The pause keeps gating capture; no resync happens until the
             // whole gate lifts.
-            if let privateUntil = settings.privateModeUntil, privateUntil <= Date() {
+            if let privateUntil = settings.privateModeUntil, privateUntil <= ClipboardRuntime.now {
                 settings.privateModeUntil = nil
-                try? settingsStore.save(settings)
+                if settingsAreTrusted { try? settingsStore.save(settings) }
                 lastStatus = "Private mode ended"
                 configureStatusIcon()
                 rebuildMenu()
@@ -293,12 +319,12 @@ final class ClipboardMenuBarApp: NSObject,
             // the last item copied while gated is never retro-captured.
             if settings.privateModeUntil != nil {
                 settings.privateModeUntil = nil
-                try? settingsStore.save(settings)
+                if settingsAreTrusted { try? settingsStore.save(settings) }
                 lastStatus = "Private mode ended"
             }
             if settings.pauseUntil != nil {
                 settings.pauseUntil = nil
-                try? settingsStore.save(settings)
+                if settingsAreTrusted { try? settingsStore.save(settings) }
                 isPaused = false
                 lastStatus = "Capture resumed"
             }
@@ -325,7 +351,7 @@ final class ClipboardMenuBarApp: NSObject,
         }
 
         guard settings.archiveEnabled else {
-            lastStatus = "Archive off \(shortDate(Date()))"
+            lastStatus = "Archive off \(shortDate(ClipboardRuntime.now))"
             rebuildMenu()
             return
         }
@@ -339,7 +365,7 @@ final class ClipboardMenuBarApp: NSObject,
 
         let sourceApp = detectedSourceApp()
         let capture = ClipboardCapture(
-            capturedAt: Date(),
+            capturedAt: ClipboardRuntime.now,
             content: read.content,
             sourceApp: sourceApp,
             pasteboardTypes: pasteboard.types?.map(\.rawValue) ?? [],
@@ -351,7 +377,7 @@ final class ClipboardMenuBarApp: NSObject,
             case let .stored(_, indexUpdate):
                 capturedCount += 1
                 heartbeatCaptures += 1
-                lastSuccessfulCaptureAt = Date()
+                lastSuccessfulCaptureAt = ClipboardRuntime.now
                 // A successful capture clears the error state: the archive
                 // is writable again, so the menu stops reporting a failure.
                 if captureFailureState != nil {
@@ -362,7 +388,7 @@ final class ClipboardMenuBarApp: NSObject,
                 // failed one: the clip is stored but not yet searchable.
                 lastStatus = indexUpdate == .failed || indexUpdate == .deferred
                     ? "Captured; index update pending"
-                    : "Captured \(shortDate(Date()))"
+                    : "Captured \(shortDate(ClipboardRuntime.now))"
                 liveEventCountEstimate = liveEventCountEstimate.map { $0 + 1 }
                 markQuickPickerCacheDirty()
                 applyRetentionLimitIfNeeded()
@@ -372,8 +398,8 @@ final class ClipboardMenuBarApp: NSObject,
                 // Cap-blocked images are a size decision, not a sensitivity
                 // one — the status wording keys off the reason prefix.
                 lastStatus = reason.hasPrefix("image_exceeds_size_cap")
-                    ? "Image too large to store \(shortDate(Date()))"
-                    : "Blocked sensitive item \(shortDate(Date()))"
+                    ? "Image too large to store \(shortDate(ClipboardRuntime.now))"
+                    : "Blocked sensitive item \(shortDate(ClipboardRuntime.now))"
             }
             rebuildMenu()
         } catch {
@@ -398,7 +424,7 @@ final class ClipboardMenuBarApp: NSObject,
     /// update the count and the time.
     private func reportCaptureFailure(_ error: Error) {
         let failure = ClipboardCaptureFailure.classify(error)
-        let now = Date()
+        let now = ClipboardRuntime.now
         if var state = captureFailureState,
            state.failure == failure,
            now.timeIntervalSince(state.reportedAt) < Self.captureFailureRepeatWindow {
@@ -423,7 +449,7 @@ final class ClipboardMenuBarApp: NSObject,
     @objc private func togglePause() {
         isPaused.toggle()
         settings.pauseUntil = nil
-        try? settingsStore.save(settings)
+        if settingsAreTrusted { try? settingsStore.save(settings) }
         userDefaults.set(isPaused, forKey: "capturePaused")
         if !isPaused {
             // FIX (pre-existing privacy bug): resuming from a manual pause
@@ -564,23 +590,23 @@ final class ClipboardMenuBarApp: NSObject,
     // MARK: - Timed private mode (Slice 5)
 
     @objc private func privateMode15Minutes() {
-        startPrivateMode(until: Date().addingTimeInterval(15 * 60))
+        startPrivateMode(until: ClipboardRuntime.now.addingTimeInterval(15 * 60))
     }
 
     @objc private func privateModeOneHour() {
-        startPrivateMode(until: Date().addingTimeInterval(60 * 60))
+        startPrivateMode(until: ClipboardRuntime.now.addingTimeInterval(60 * 60))
     }
 
     @objc private func privateModeUntilTomorrow() {
         let tomorrow = Calendar.current.startOfDay(
-            for: Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date()
+            for: Calendar.current.date(byAdding: .day, value: 1, to: ClipboardRuntime.now) ?? ClipboardRuntime.now
         )
         startPrivateMode(until: tomorrow)
     }
 
     private func startPrivateMode(until: Date) {
         settings.privateModeUntil = until
-        try? settingsStore.save(settings)
+        if settingsAreTrusted { try? settingsStore.save(settings) }
         captureGateWasActive = true
         lastStatus = "Private until \(shortTime(until))"
         configureStatusIcon()
@@ -589,7 +615,7 @@ final class ClipboardMenuBarApp: NSObject,
 
     @objc private func endPrivateMode() {
         settings.privateModeUntil = nil
-        try? settingsStore.save(settings)
+        if settingsAreTrusted { try? settingsStore.save(settings) }
         // Manual exit uses the same resync rule as expiry: nothing copied
         // while private is retro-captured.
         resyncPasteboardStateWithoutIngesting()
@@ -606,11 +632,11 @@ final class ClipboardMenuBarApp: NSObject,
     /// opens — NEVER the capture poll.
     private func sweepExpiredIfDue() {
         let sweeper = ClipboardExpirySweeper(archiveRoot: archiveRoot, indexURL: resolvedIndexURL)
-        guard let due = sweeper.nextDue(), due <= Date() else {
+        guard let due = sweeper.nextDue(), due <= ClipboardRuntime.now else {
             return
         }
         DispatchQueue.global(qos: .utility).async { @Sendable [weak self] in
-            let result = try? sweeper.sweepIfDue()
+            let result = try? sweeper.sweepIfDue(now: ClipboardRuntime.now)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self, let result, result.sweptContentHashes > 0 else {
@@ -693,14 +719,14 @@ final class ClipboardMenuBarApp: NSObject,
     }
 
     @objc private func pauseUntilTomorrow() {
-        let tomorrow = Calendar.current.startOfDay(for: Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date())
+        let tomorrow = Calendar.current.startOfDay(for: Calendar.current.date(byAdding: .day, value: 1, to: ClipboardRuntime.now) ?? ClipboardRuntime.now)
         settings.pauseUntil = tomorrow
         isPaused = true
         saveSettingsAndRefresh("Paused until tomorrow")
     }
 
     private func pauseFor(minutes: Int) {
-        settings.pauseUntil = Calendar.current.date(byAdding: .minute, value: minutes, to: Date())
+        settings.pauseUntil = Calendar.current.date(byAdding: .minute, value: minutes, to: ClipboardRuntime.now)
         isPaused = true
         saveSettingsAndRefresh("Paused for \(minutes)m")
     }
@@ -725,7 +751,7 @@ final class ClipboardMenuBarApp: NSObject,
     }
 
     @objc private func openArchiveFolder() {
-        NSWorkspace.shared.open(archiveRoot)
+        if !ClipboardRuntime.isIsolated { NSWorkspace.shared.open(archiveRoot) }
     }
 
     @objc private func openClipboardWindow() {
@@ -785,7 +811,7 @@ final class ClipboardMenuBarApp: NSObject,
                         return
                     }
                     self.settings.historyGroupDuplicates = enabled
-                    try? self.settingsStore.save(self.settings)
+                    if self.settingsAreTrusted { try? self.settingsStore.save(self.settings) }
                 }
             )
         }
@@ -890,8 +916,8 @@ final class ClipboardMenuBarApp: NSObject,
         let since = Calendar.current.date(
             byAdding: .day,
             value: -settings.historyWindow.dayCount,
-            to: Date()
-        ) ?? Date()
+            to: ClipboardRuntime.now
+        ) ?? ClipboardRuntime.now
         quickPickerCache = (try? reader.recentItems(
             since: since,
             limit: settings.recentItemLimit
@@ -945,6 +971,7 @@ final class ClipboardMenuBarApp: NSObject,
     /// ends. Registration failures surface in Settings and the menu — the
     /// shortcut stays saved but is reported as not active.
     private func applyQuickPickerShortcut() {
+        guard !ClipboardRuntime.isIsolated else { return }
 #if DEBUG
         guard !isAutomationMode else {
             return
@@ -989,6 +1016,7 @@ final class ClipboardMenuBarApp: NSObject,
     /// on every call, and degrades to plain copy-back silently (never a
     /// dialog). Posts ⌘V (virtual key 9) to the HID event tap.
     private func performDirectPaste() {
+        guard !ClipboardRuntime.isIsolated else { return }
 #if DEBUG
         guard !isAutomationMode else {
             return
@@ -1046,10 +1074,12 @@ final class ClipboardMenuBarApp: NSObject,
             liveEventCountEstimate = nil
         }
         self.settings = settings
+        settingsAreTrusted = true
         ingestor = ClipboardIngestor(
             filter: ClipboardPrivacyFilter(settings: settings),
             archiveWriter: archiveWriter,
             derivedIndex: derivedIndex,
+            operationalLog: operationalLog,
             richImageMaxBytes: settings.richImageMaxBytes
         )
         if previousInterval != settings.pollIntervalSeconds {
@@ -1109,7 +1139,7 @@ final class ClipboardMenuBarApp: NSObject,
         whatsNewWindowController?.show(activate: activate)
         if settings.lastSeenAppVersion != ClipboardVersionInfo.currentAppVersion() {
             settings.lastSeenAppVersion = ClipboardVersionInfo.currentAppVersion()
-            try? settingsStore.save(settings)
+            if settingsAreTrusted { try? settingsStore.save(settings) }
         }
     }
 
@@ -1150,8 +1180,8 @@ final class ClipboardMenuBarApp: NSObject,
             return false
         }
         let supportRoot = ClipboardDefaults.applicationSupportRoot()
-        guard archiveRoot.standardizedFileURL.path.hasPrefix("/tmp/"),
-              supportRoot.standardizedFileURL.path.hasPrefix("/tmp/") else {
+        guard ClipboardRuntime.isScratchPath(archiveRoot),
+              ClipboardRuntime.isScratchPath(supportRoot) else {
             FileHandle.standardError.write(
                 Data("UI automation requires isolated /tmp archive and support roots.\n".utf8)
             )
@@ -1160,7 +1190,7 @@ final class ClipboardMenuBarApp: NSObject,
         }
 
         isAutomationMode = true
-        pasteboard = NSPasteboard(name: NSPasteboard.Name("app.clipboardarchive.ui-automation"))
+        pasteboard = NSPasteboard(name: NSPasteboard.Name(ClipboardRuntime.pasteboardName!))
         lastChangeCount = pasteboard.changeCount
         let interval = TimeInterval(
             environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_POLL_INTERVAL"] ?? ""
@@ -1201,7 +1231,7 @@ final class ClipboardMenuBarApp: NSObject,
             withJSONObject: receipt,
             options: [.prettyPrinted, .sortedKeys]
         ) {
-            try? data.write(to: URL(fileURLWithPath: resultPath), options: [.atomic])
+            try? data.writeClipboardAtomically(to: URL(fileURLWithPath: resultPath))
         }
         exit(0)
     }
@@ -1227,8 +1257,8 @@ final class ClipboardMenuBarApp: NSObject,
         }
 
         let supportRoot = ClipboardDefaults.applicationSupportRoot()
-        guard archiveRoot.standardizedFileURL.path.hasPrefix("/tmp/"),
-              supportRoot.standardizedFileURL.path.hasPrefix("/tmp/") else {
+        guard ClipboardRuntime.isScratchPath(archiveRoot),
+              ClipboardRuntime.isScratchPath(supportRoot) else {
             FileHandle.standardError.write(
                 Data("UI automation requires isolated /tmp archive and support roots.\n".utf8)
             )
@@ -1241,7 +1271,7 @@ final class ClipboardMenuBarApp: NSObject,
         // pasteboard so gestures never clobber the real clipboard. The
         // capture-poll dedup state is reseeded against the same pasteboard
         // so the no-re-capture receipt exercises the production path.
-        pasteboard = NSPasteboard(name: NSPasteboard.Name("app.clipboardarchive.ui-automation"))
+        pasteboard = NSPasteboard(name: NSPasteboard.Name(ClipboardRuntime.pasteboardName!))
         lastChangeCount = pasteboard.changeCount
 
         settings = ClipboardSettings(
@@ -1266,6 +1296,7 @@ final class ClipboardMenuBarApp: NSObject,
 
         do {
             try settingsStore.save(settings)
+            settingsAreTrusted = true
             if screen == "history" {
                 if environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_RETENTION_FLOW"] == "pin-prune" {
                     // Pin→prune→survives receipt: this flow is the ONLY
@@ -1454,7 +1485,7 @@ final class ClipboardMenuBarApp: NSObject,
                         // Synchronous sweep so the receipt is deterministic;
                         // production wiring uses the same sweeper off-main.
                         let sweep = try? ClipboardExpirySweeper(archiveRoot: archiveRoot, indexURL: resolvedIndexURL)
-                            .sweepIfDue()
+                            .sweepIfDue(now: ClipboardRuntime.now)
                         self.automationSweepReceipt = [
                             "sweptHashes": sweep?.sweptContentHashes ?? -1,
                             "deletedEvents": sweep?.deletedEvents ?? -1,
@@ -1473,7 +1504,7 @@ final class ClipboardMenuBarApp: NSObject,
                     // Second settle pass (Slice 6): a gesture can select an
                     // image clip whose detail thumbnail renders async; wait
                     // for it so per-kind detail PNGs show the real render.
-                    let postGestureDeadline = Date().addingTimeInterval(5.0)
+                    let postGestureDeadline = ClipboardRuntime.now.addingTimeInterval(5.0)
                     self.pollHistoryAutomationSettled(deadline: postGestureDeadline) { [weak self] in
                         guard let self else {
                             return
@@ -1621,7 +1652,7 @@ final class ClipboardMenuBarApp: NSObject,
         for (offset, fixture) in fixtures.enumerated() {
             try archiveWriter.archiveBlockedCapture(
                 ClipboardCapture(
-                    capturedAt: Date().addingTimeInterval(TimeInterval(-(offset + 1)) * 300),
+                    capturedAt: ClipboardRuntime.now.addingTimeInterval(TimeInterval(-(offset + 1)) * 300),
                     content: "synthetic blocked fixture — content is never stored",
                     sourceApp: fixture.app,
                     pasteboardTypes: ["public.utf8-plain-text"]
@@ -1648,7 +1679,7 @@ final class ClipboardMenuBarApp: NSObject,
             withJSONObject: result,
             options: [.prettyPrinted, .sortedKeys]
         ) {
-            try? data.write(to: URL(fileURLWithPath: resultPath), options: [.atomic])
+            try? data.writeClipboardAtomically(to: URL(fileURLWithPath: resultPath))
         }
     }
 
@@ -1694,7 +1725,7 @@ final class ClipboardMenuBarApp: NSObject,
             withJSONObject: result,
             options: [.prettyPrinted, .sortedKeys]
         ) {
-            try? data.write(to: URL(fileURLWithPath: resultPath), options: [.atomic])
+            try? data.writeClipboardAtomically(to: URL(fileURLWithPath: resultPath))
         }
     }
 
@@ -1709,7 +1740,7 @@ final class ClipboardMenuBarApp: NSObject,
         for slot in 0..<4 {
             let event = try archiveWriter.archiveAllowedCapture(
                 ClipboardCapture(
-                    capturedAt: Date().addingTimeInterval(TimeInterval(-(10 + slot)) * 86_400),
+                    capturedAt: ClipboardRuntime.now.addingTimeInterval(TimeInterval(-(10 + slot)) * 86_400),
                     content: "synthetic old bulk fixture clip \(slot)",
                     sourceApp: apps[slot % apps.count],
                     pasteboardTypes: ["public.utf8-plain-text"]
@@ -1719,7 +1750,7 @@ final class ClipboardMenuBarApp: NSObject,
         }
         _ = try archiveWriter.archiveAllowedCapture(
             ClipboardCapture(
-                capturedAt: Date().addingTimeInterval(-120),
+                capturedAt: ClipboardRuntime.now.addingTimeInterval(-120),
                 content: "synthetic fresh bulk fixture clip",
                 sourceApp: apps[0],
                 pasteboardTypes: ["public.utf8-plain-text"]
@@ -1798,7 +1829,7 @@ final class ClipboardMenuBarApp: NSObject,
             withJSONObject: result,
             options: [.prettyPrinted, .sortedKeys]
         ) {
-            try? data.write(to: URL(fileURLWithPath: resultPath), options: [.atomic])
+            try? data.writeClipboardAtomically(to: URL(fileURLWithPath: resultPath))
         }
     }
 
@@ -1807,12 +1838,13 @@ final class ClipboardMenuBarApp: NSObject,
     /// {storedDuring: 0, blockedDuring: 0, storedAfterResume: 0} plus a
     /// normal capture after a genuinely new copy.
     private func runPrivateModeAutomation(snapshotPath: String) {
+        settingsAreTrusted = true
         _ = snapshotPath
         settings.archiveEnabled = true
-        try? settingsStore.save(settings)
+        if settingsAreTrusted { try? settingsStore.save(settings) }
 
         // Enter private mode through the production menu action path.
-        startPrivateMode(until: Date().addingTimeInterval(15 * 60))
+        startPrivateMode(until: ClipboardRuntime.now.addingTimeInterval(15 * 60))
 
         // Two copies DURING private mode (isolated pasteboard).
         pasteboard.clearContents()
@@ -1851,7 +1883,7 @@ final class ClipboardMenuBarApp: NSObject,
                 withJSONObject: result,
                 options: [.prettyPrinted, .sortedKeys]
             ) {
-                try? data.write(to: URL(fileURLWithPath: resultPath), options: [.atomic])
+                try? data.writeClipboardAtomically(to: URL(fileURLWithPath: resultPath))
             }
         }
         NSApp.terminate(nil)
@@ -1867,7 +1899,7 @@ final class ClipboardMenuBarApp: NSObject,
     ///    index delete — the index still holds the row; only read-time
     ///    suppression can keep it out of results.
     private func seedAllHistoryDriftFixtures() throws {
-        let capturedAt = Date().addingTimeInterval(-30 * 60)
+        let capturedAt = ClipboardRuntime.now.addingTimeInterval(-30 * 60)
         let body = "synthetic doNotIndex fixture launch checklist secret-shaped note"
         let compactFormatter = DateFormatter()
         compactFormatter.calendar = Calendar(identifier: .gregorian)
@@ -1915,7 +1947,7 @@ final class ClipboardMenuBarApp: NSObject,
                 at: dayFile.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            try line.write(to: dayFile, options: [.atomic])
+            try line.writeClipboardAtomically(to: dayFile)
         }
         automationDoNotIndexEventID = doNotIndexEvent.id
 
@@ -2012,7 +2044,7 @@ final class ClipboardMenuBarApp: NSObject,
             withJSONObject: result,
             options: [.prettyPrinted, .sortedKeys]
         ) {
-            try? data.write(to: URL(fileURLWithPath: resultPath), options: [.atomic])
+            try? data.writeClipboardAtomically(to: URL(fileURLWithPath: resultPath))
         }
     }
 
@@ -2029,7 +2061,7 @@ final class ClipboardMenuBarApp: NSObject,
         for slot in 0..<count {
             _ = try archiveWriter.archiveAllowedCapture(
                 ClipboardCapture(
-                    capturedAt: Date().addingTimeInterval(TimeInterval(-(slot * 9 + 2)) * 60),
+                    capturedAt: ClipboardRuntime.now.addingTimeInterval(TimeInterval(-(slot * 9 + 2)) * 60),
                     content: content,
                     sourceApp: apps[slot % apps.count],
                     pasteboardTypes: ["public.utf8-plain-text"]
@@ -2048,7 +2080,7 @@ final class ClipboardMenuBarApp: NSObject,
         for slot in 0..<14 {
             let event = try archiveWriter.archiveAllowedCapture(
                 ClipboardCapture(
-                    capturedAt: Date().addingTimeInterval(TimeInterval(-(14 - slot)) * 600),
+                    capturedAt: ClipboardRuntime.now.addingTimeInterval(TimeInterval(-(14 - slot)) * 600),
                     content: "synthetic retention fixture clip \(slot) of 14",
                     sourceApp: ClipboardSourceApp(name: "Notes", bundleIdentifier: "com.apple.Notes"),
                     pasteboardTypes: ["public.utf8-plain-text"]
@@ -2109,7 +2141,7 @@ final class ClipboardMenuBarApp: NSObject,
             ofItemAtPath: directory.path
         )
         let data = Data(json.utf8)
-        try data.write(to: annotationsStore.annotationsFileURL, options: [.atomic])
+        try data.writeClipboardAtomically(to: annotationsStore.annotationsFileURL)
         try FileManager.default.setAttributes(
             [.posixPermissions: NSNumber(value: Int16(0o600))],
             ofItemAtPath: annotationsStore.annotationsFileURL.path
@@ -2161,7 +2193,7 @@ final class ClipboardMenuBarApp: NSObject,
                 withJSONObject: result,
                 options: [.prettyPrinted, .sortedKeys]
             ) {
-                try? data.write(to: URL(fileURLWithPath: resultPath), options: [.atomic])
+                try? data.writeClipboardAtomically(to: URL(fileURLWithPath: resultPath))
             }
         }
     }
@@ -2195,7 +2227,7 @@ final class ClipboardMenuBarApp: NSObject,
         let content = "Launch recap: https://example.com/launch?utm_source=newsletter&utm_medium=email&page=2&fbclid=abc123#agenda and docs at https://example.com/docs?id=7&gclid=zz"
         _ = try archiveWriter.archiveAllowedCapture(
             ClipboardCapture(
-                capturedAt: Date().addingTimeInterval(-60),
+                capturedAt: ClipboardRuntime.now.addingTimeInterval(-60),
                 content: content,
                 sourceApp: ClipboardSourceApp(name: "Safari", bundleIdentifier: "com.apple.Safari"),
                 pasteboardTypes: ["public.utf8-plain-text"]
@@ -2222,7 +2254,7 @@ final class ClipboardMenuBarApp: NSObject,
     /// color, link) through the production writer so history/picker/detail
     /// renders show every kind.
     private func seedSyntheticRichFixtures() throws {
-        let now = Date()
+        let now = ClipboardRuntime.now
         let filesDirectory = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("clipboard-rich-fixture-files-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: filesDirectory, withIntermediateDirectories: true)
@@ -2299,9 +2331,10 @@ final class ClipboardMenuBarApp: NSObject,
     /// Runs only against the isolated /tmp roots the harness already
     /// enforces, on the private automation pasteboard.
     private func runCaptureFailureAutomation() {
+        settingsAreTrusted = true
         settings.archiveEnabled = true
         settings.captureRichContent = false
-        try? settingsStore.save(settings)
+        if settingsAreTrusted { try? settingsStore.save(settings) }
 
         let rawDirectory = archiveRoot.appendingPathComponent("raw", isDirectory: true)
         try? FileManager.default.createDirectory(at: rawDirectory, withIntermediateDirectories: true)
@@ -2316,9 +2349,10 @@ final class ClipboardMenuBarApp: NSObject,
     /// Drives ~1.5 s of real poll ticks against a WRITABLE isolated
     /// archive, then reports what the heartbeat timer wrote.
     private func runHeartbeatAutomation() {
+        settingsAreTrusted = true
         settings.archiveEnabled = true
         settings.captureRichContent = false
-        try? settingsStore.save(settings)
+        if settingsAreTrusted { try? settingsStore.save(settings) }
         heartbeatTick(remaining: 5)
     }
 
@@ -2358,7 +2392,7 @@ final class ClipboardMenuBarApp: NSObject,
                withJSONObject: result,
                options: [.prettyPrinted, .sortedKeys]
            ) {
-            try? data.write(to: URL(fileURLWithPath: resultPath), options: .atomic)
+            try? data.writeClipboardAtomically(to: URL(fileURLWithPath: resultPath))
         }
         NSApp.terminate(nil)
     }
@@ -2416,7 +2450,7 @@ final class ClipboardMenuBarApp: NSObject,
                withJSONObject: result,
                options: [.prettyPrinted, .sortedKeys]
            ) {
-            try? data.write(to: URL(fileURLWithPath: resultPath), options: .atomic)
+            try? data.writeClipboardAtomically(to: URL(fileURLWithPath: resultPath))
         }
         NSApp.terminate(nil)
     }
@@ -2426,6 +2460,7 @@ final class ClipboardMenuBarApp: NSObject,
     /// then copy-back + a second tick — the receipt proves what was stored,
     /// that the body file exists, byte-equal copy-back, and no re-capture.
     private func runRichCaptureAutomation() {
+        settingsAreTrusted = true
         let environment = ProcessInfo.processInfo.environment
         let kind = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_RICH_CAPTURE"] ?? "image"
         let capBlock = environment["CLIPBOARD_ARCHIVE_UI_AUTOMATION_RICH_CAP_BLOCK"] == "1"
@@ -2435,11 +2470,12 @@ final class ClipboardMenuBarApp: NSObject,
             // Clamp floor (64 KiB): the oversized fixture below is ~80 KB.
             settings.richImageMaxBytes = 64 * 1024
         }
-        try? settingsStore.save(settings)
+        if settingsAreTrusted { try? settingsStore.save(settings) }
         ingestor = ClipboardIngestor(
             filter: ClipboardPrivacyFilter(settings: settings),
             archiveWriter: archiveWriter,
             derivedIndex: derivedIndex,
+            operationalLog: operationalLog,
             richImageMaxBytes: settings.richImageMaxBytes
         )
 
@@ -2557,7 +2593,7 @@ final class ClipboardMenuBarApp: NSObject,
                 withJSONObject: result,
                 options: [.prettyPrinted, .sortedKeys]
             ) {
-                try? data.write(to: URL(fileURLWithPath: resultPath), options: [.atomic])
+                try? data.writeClipboardAtomically(to: URL(fileURLWithPath: resultPath))
             }
         }
         NSApp.terminate(nil)
@@ -2594,7 +2630,7 @@ final class ClipboardMenuBarApp: NSObject,
         for fixture in fixtures {
             try archiveWriter.archiveAllowedCapture(
                 ClipboardCapture(
-                    capturedAt: Date().addingTimeInterval(-fixture.minutesAgo * 60),
+                    capturedAt: ClipboardRuntime.now.addingTimeInterval(-fixture.minutesAgo * 60),
                     content: fixture.content,
                     sourceApp: fixture.app,
                     pasteboardTypes: ["public.utf8-plain-text"]
@@ -2618,7 +2654,8 @@ final class ClipboardMenuBarApp: NSObject,
         saveSettingsAndRefresh(
             archiveEnabled
                 ? "\(retentionMode.displayName) capture enabled"
-                : "Capture remains off"
+                : "Capture remains off",
+            explicitPolicyChoice: true
         )
 #if DEBUG
         // Automation drives the privacy-choice flow directly; the optional
@@ -2635,6 +2672,7 @@ final class ClipboardMenuBarApp: NSObject,
     }
 
     private func applyRetentionLimitIfNeeded() {
+        guard settingsAreTrusted else { return }
         guard let limit = settings.retentionMode.retainedItemLimit else {
             liveEventCountEstimate = nil
             return
@@ -2837,6 +2875,7 @@ final class ClipboardMenuBarApp: NSObject,
     }
 
     @objc private func toggleFullArchive() {
+        guard settingsAreTrusted else { showOnboarding(); return }
         if settings.retentionMode.storesLongTermHistory {
             settings.retentionMode = .recent50
             settings.recentItemLimit = 50
@@ -2849,7 +2888,7 @@ final class ClipboardMenuBarApp: NSObject,
         }
         settings.archiveEnabled = true
         settings.hasCompletedOnboarding = true
-        try? settingsStore.save(settings)
+        if settingsAreTrusted { try? settingsStore.save(settings) }
         markQuickPickerCacheDirty()
         rebuildMenu()
     }
@@ -3066,7 +3105,7 @@ final class ClipboardMenuBarApp: NSObject,
         }
         do {
             try redactor.redact(eventID: id)
-            lastStatus = "Deleted item \(shortDate(Date()))"
+            lastStatus = "Deleted item \(shortDate(ClipboardRuntime.now))"
             markQuickPickerCacheDirty()
             rebuildMenu()
         } catch {
@@ -3084,7 +3123,7 @@ final class ClipboardMenuBarApp: NSObject,
         }
         do {
             try redactor.redact(eventID: event.id)
-            lastStatus = "Deleted latest item \(shortDate(Date()))"
+            lastStatus = "Deleted latest item \(shortDate(ClipboardRuntime.now))"
             markQuickPickerCacheDirty()
             rebuildMenu()
         } catch {
@@ -3093,7 +3132,7 @@ final class ClipboardMenuBarApp: NSObject,
     }
 
     private func sevenDaysAgo() -> Date {
-        Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
+        Calendar.current.date(byAdding: .day, value: -7, to: ClipboardRuntime.now) ?? ClipboardRuntime.now
     }
 
     private func shortDate(_ date: Date) -> String {
@@ -3135,6 +3174,7 @@ final class ClipboardMenuBarApp: NSObject,
     }
 
     private func detectedSourceApp() -> ClipboardSourceApp {
+        if ClipboardRuntime.isIsolated { return ClipboardSourceApp(name: "Scratch", bundleIdentifier: "test.clipboardarchive.scratch") }
         let app = NSWorkspace.shared.frontmostApplication
         if let app, app.bundleIdentifier != "app.clipboardarchive" {
             let source = ClipboardSourceApp(
@@ -3157,13 +3197,21 @@ final class ClipboardMenuBarApp: NSObject,
         )
     }
 
-    private func saveSettingsAndRefresh(_ status: String) {
+    private func saveSettingsAndRefresh(_ status: String, explicitPolicyChoice: Bool = false) {
+        guard settingsAreTrusted || explicitPolicyChoice else {
+            lastStatus = "Review privacy settings before saving"
+            rebuildMenu()
+            return
+        }
         do {
             try settingsStore.save(settings)
+            settingsAreTrusted = true
             ingestor = ClipboardIngestor(
                 filter: ClipboardPrivacyFilter(settings: settings),
                 archiveWriter: archiveWriter,
-                derivedIndex: derivedIndex
+                derivedIndex: derivedIndex,
+                operationalLog: operationalLog,
+                richImageMaxBytes: settings.richImageMaxBytes
             )
             userDefaults.set(isPaused, forKey: "capturePaused")
             markQuickPickerCacheDirty()
@@ -3244,7 +3292,7 @@ final class ClipboardMenuBarApp: NSObject,
     /// carried into the next beat unless the row actually landed.
     private func recordHeartbeat() {
         let sinceCapture = lastSuccessfulCaptureAt
-            .map { Date().timeIntervalSince($0) * 1000 } ?? 0
+            .map { ClipboardRuntime.now.timeIntervalSince($0) * 1000 } ?? 0
         func write() -> Bool {
             operationalLog.record(
                 .heartbeat,

@@ -70,7 +70,7 @@ public struct ClipboardAppPrivacyRule: Codable, Equatable, Sendable {
     public var mode: String
     public var addedAt: Date
 
-    public init(mode: String, addedAt: Date = Date()) {
+    public init(mode: String, addedAt: Date = ClipboardRuntime.now) {
         self.mode = mode
         self.addedAt = addedAt
     }
@@ -249,7 +249,7 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         guard let privateModeUntil else {
             return false
         }
-        return privateModeUntil > Date()
+        return privateModeUntil > ClipboardRuntime.now
     }
 
     /// The quick picker shortcut, falling back to the disabled ⌥⌘V default
@@ -268,7 +268,7 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         guard let pauseUntil else {
             return false
         }
-        return pauseUntil > Date()
+        return pauseUntil > ClipboardRuntime.now
     }
 
     public init(from decoder: Decoder) throws {
@@ -405,7 +405,7 @@ public struct ClipboardSettingsStore: Sendable {
     /// The same read, plus WHY defaults were substituted when they were.
     /// `load()` stays the shape every existing caller uses; a surface that
     /// can report the fallback calls this one.
-    public func loadReporting() -> (settings: ClipboardSettings, fallback: ClipboardSettingsFallbackReason?) {
+    public func loadReporting(readOnly: Bool = false) -> (settings: ClipboardSettings, fallback: ClipboardSettingsFallbackReason?) {
         guard let attributes = try? FileManager.default.attributesOfItem(
             atPath: settingsURL.path
         ),
@@ -416,14 +416,17 @@ public struct ClipboardSettingsStore: Sendable {
             return recoverFromLastGood(reasonIfNoCopy: .missing, quarantining: false)
         }
         do {
-            try ClipboardPrivateFileSystem.secureFile(settingsURL)
+            if !readOnly { try ClipboardPrivateFileSystem.secureFile(settingsURL) }
         } catch {
             // The file is there but could not be tightened; reading it is
             // not safe, and defaults are the wrong answer here too.
             return recoverFromLastGood(reasonIfNoCopy: .insecure, quarantining: false)
         }
         guard let data = try? Data(contentsOf: settingsURL) else {
-            return recoverFromLastGood(reasonIfNoCopy: .unreadable)
+            return recoverFromLastGood(reasonIfNoCopy: .unreadable, quarantining: !readOnly)
+        }
+        guard validDocument(data, compareLastGood: true) else {
+            return recoverFromLastGood(reasonIfNoCopy: .corrupt, quarantining: !readOnly)
         }
         // save() encodes dates as ISO 8601, so load MUST decode them the
         // same way. The plain-decoder fallback keeps hypothetical files with
@@ -434,9 +437,36 @@ public struct ClipboardSettingsStore: Sendable {
             return (settings, nil)
         }
         guard let settings = try? JSONDecoder().decode(ClipboardSettings.self, from: data) else {
-            return recoverFromLastGood(reasonIfNoCopy: .corrupt)
+            return recoverFromLastGood(reasonIfNoCopy: .corrupt, quarantining: !readOnly)
         }
         return (settings, nil)
+    }
+
+    /// Legacy documents may omit newer fields. A document must identify its
+    /// capture choice; if a saved copy exists, losing any of its policy keys
+    /// is truncation, not a migration. Range errors are reported as fallback.
+    private func validDocument(_ data: Data, compareLastGood: Bool) -> Bool {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              object["archiveEnabled"] is NSNumber else { return false }
+        if let version = object["settingsVersion"] as? Int,
+           version < 1 || version > ClipboardSettings.currentSettingsVersion { return false }
+        if let poll = object["pollIntervalSeconds"] as? Double,
+           !poll.isFinite || poll < 0.05 || poll > 60 { return false }
+        if let limit = object["recentItemLimit"] as? Int,
+           limit != ClipboardSettings.clampRecentItemLimit(limit) { return false }
+        if let cap = object["richImageMaxBytes"] as? Int,
+           cap != ClipboardSettings.clampRichImageMaxBytes(cap) { return false }
+        if compareLastGood, let backup = try? Data(contentsOf: lastGoodURL),
+           let previous = try? JSONSerialization.jsonObject(with: backup) as? [String: Any] {
+            let policyKeys = ["archiveEnabled", "retentionMode", "excludedBundleIdentifiers",
+                "excludedAppNameFragments", "appPrivacyRules", "pauseUntil", "privateModeUntil",
+                "hasCompletedOnboarding", "captureRichContent", "recentItemLimit", "richImageMaxBytes"]
+            // Optional dates can be intentionally removed to resume capture.
+            for key in policyKeys where key != "pauseUntil" && key != "privateModeUntil" {
+                if previous[key] != nil && object[key] == nil { return false }
+            }
+        }
+        return true
     }
 
     /// The last-known-good copy, written beside the settings on every
@@ -462,8 +492,18 @@ public struct ClipboardSettingsStore: Sendable {
         let isoDecoder = JSONDecoder()
         isoDecoder.dateDecodingStrategy = .iso8601
         guard let data = try? Data(contentsOf: lastGoodURL),
+              validDocument(data, compareLastGood: false),
               let settings = (try? isoDecoder.decode(ClipboardSettings.self, from: data))
                 ?? (try? JSONDecoder().decode(ClipboardSettings.self, from: data)) else {
+            // There is nothing to restore FROM, but the bad bytes are still the
+            // only record of what was configured, and `save()` overwrites
+            // settings.json unconditionally — so the user opening Settings to
+            // flip one checkbox is what destroys them. Declining to MOVE the
+            // file here was right (a move plus a defaults save IS the permanent
+            // loss the comment above warns about); a COPY has neither problem,
+            // and it is the only way the "set aside for inspection" promise is
+            // kept in the one case where inspection is the only recourse left.
+            if quarantining { preserveUnreadableFile() }
             return (ClipboardSettings(), reasonIfNoCopy)
         }
         if quarantining {
@@ -477,12 +517,30 @@ public struct ClipboardSettingsStore: Sendable {
     /// overwritten — the first failure is the interesting one — and a
     /// quarantine that cannot be written is not worth failing a load over.
     private func quarantineUnreadableFile() {
-        let stamp = Self.quarantineFormatter.string(from: Date())
-        let destination = URL(fileURLWithPath: settingsURL.path + ".corrupt-" + stamp)
-        guard !FileManager.default.fileExists(atPath: destination.path) else {
-            return
-        }
+        guard let destination = freeQuarantineURL() else { return }
         try? FileManager.default.moveItem(at: settingsURL, to: destination)
+        try? ClipboardPrivateFileSystem.secureFile(destination)
+    }
+
+    /// Copies the unreadable file aside and LEAVES THE ORIGINAL IN PLACE, for
+    /// the case where there is no last-good copy to fall back on. Moving there
+    /// would be data loss; copying is a rescue. Best effort throughout: a
+    /// rescue that cannot be written must not fail the load it is rescuing.
+    private func preserveUnreadableFile() {
+        guard let destination = freeQuarantineURL() else { return }
+        try? FileManager.default.copyItem(at: settingsURL, to: destination)
+        try? ClipboardPrivateFileSystem.secureFile(destination)
+    }
+
+    /// `settings.json.corrupt-<utc>`, or nil when there is nothing to set aside
+    /// or a quarantine from this second already exists. An existing quarantine
+    /// is NEVER overwritten — the first failure is the interesting one.
+    private func freeQuarantineURL() -> URL? {
+        guard FileManager.default.fileExists(atPath: settingsURL.path) else { return nil }
+        let stamp = Self.quarantineFormatter.string(from: ClipboardRuntime.now)
+        let destination = URL(fileURLWithPath: settingsURL.path + ".corrupt-" + stamp)
+        guard !FileManager.default.fileExists(atPath: destination.path) else { return nil }
+        return destination
     }
 
     private static let quarantineFormatter: DateFormatter = {
@@ -501,13 +559,13 @@ public struct ClipboardSettingsStore: Sendable {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         let data = try encoder.encode(settings)
-        try data.write(to: settingsURL, options: [.atomic])
+        try data.writeClipboardAtomically(to: settingsURL)
         try ClipboardPrivateFileSystem.secureFile(settingsURL)
         // The last-known-good copy, written only AFTER the real file landed,
         // so the copy can never be newer than the settings it backs. Best
         // effort: a copy that cannot be written must not fail a save the
         // user just made.
-        if (try? data.write(to: lastGoodURL, options: [.atomic])) != nil {
+        if (try? data.writeClipboardAtomically(to: lastGoodURL)) != nil {
             try? ClipboardPrivateFileSystem.secureFile(lastGoodURL)
         }
     }

@@ -60,7 +60,7 @@ final class ClipboardDashboardWindowController: NSWindowController {
         )
         window.title = "Storage & Health"
         window.minSize = NSSize(width: 640, height: 520)
-        window.setFrameAutosaveName("ClipboardDashboardWindow")
+        if !ClipboardRuntime.isIsolated { window.setFrameAutosaveName("ClipboardDashboardWindow") }
         super.init(window: window)
         buildUI()
         refresh()
@@ -101,7 +101,7 @@ final class ClipboardDashboardWindowController: NSWindowController {
         guard let data = representation.representation(using: .png, properties: [:]) else {
             return
         }
-        try data.write(to: url, options: [.atomic])
+        try data.writeClipboardAtomically(to: url)
     }
 
     var automationIsSettled: Bool {
@@ -387,7 +387,7 @@ final class ClipboardDashboardWindowController: NSWindowController {
         let reader = reader
         workQueue.async { @Sendable [weak self] in
             let health = try? ClipboardArchiveHealthReporter(archiveRoot: archiveRoot, indexURL: resolvedIndexURL).health()
-            let since = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
+            let since = Calendar.current.date(byAdding: .day, value: -7, to: ClipboardRuntime.now) ?? ClipboardRuntime.now
             let blocked = (try? reader.recentBlockedEvents(since: since, limit: 8)) ?? []
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
@@ -399,7 +399,7 @@ final class ClipboardDashboardWindowController: NSWindowController {
                     self.renderBlocked(blocked)
                     self.statusLabel.stringValue = health == nil
                         ? "Health check failed"
-                        : "Updated \(Self.timeFormatter.string(from: Date()))"
+                        : "Updated \(Self.timeFormatter.string(from: ClipboardRuntime.now))"
                 }
             }
         }
@@ -534,8 +534,8 @@ final class ClipboardDashboardWindowController: NSWindowController {
 
     private func cleanupCutoff() -> Date {
         let days = Self.cleanupChoices[max(0, cleanupAgePopup.indexOfSelectedItem)].days
-        return Calendar.current.date(byAdding: .day, value: -days, to: Date())
-            ?? Date().addingTimeInterval(TimeInterval(-days) * 86_400)
+        return Calendar.current.date(byAdding: .day, value: -days, to: ClipboardRuntime.now)
+            ?? ClipboardRuntime.now.addingTimeInterval(TimeInterval(-days) * 86_400)
     }
 
     @objc private func cleanupCriteriaChanged() {

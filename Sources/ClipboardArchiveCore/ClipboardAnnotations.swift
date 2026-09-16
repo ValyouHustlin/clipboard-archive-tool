@@ -74,7 +74,7 @@ public struct ClipboardAnnotationCollection: Codable, Equatable, Sendable {
     public init(
         id: String = "col_\(UUID().uuidString)",
         name: String,
-        createdAt: Date = Date(),
+        createdAt: Date = ClipboardRuntime.now,
         contentHashes: [String] = []
     ) {
         self.id = id
@@ -111,7 +111,7 @@ public struct ClipboardAnnotationsDocument: Codable, Equatable, Sendable {
 
     public init(
         annotationsVersion: Int = ClipboardAnnotationsDocument.currentVersion,
-        updatedAt: Date = Date(),
+        updatedAt: Date = ClipboardRuntime.now,
         annotations: [String: ClipboardAnnotationRecord] = [:],
         collections: [ClipboardAnnotationCollection] = []
     ) {
@@ -354,7 +354,7 @@ public struct ClipboardAnnotationsStore: Sendable {
             if pinned {
                 record.pinned = true
                 if record.pinnedAt == nil {
-                    record.pinnedAt = Date()
+                    record.pinnedAt = ClipboardRuntime.now
                 }
             } else {
                 // Invariant: snippet ⇒ pinned, so unpinning clears the
@@ -391,7 +391,7 @@ public struct ClipboardAnnotationsStore: Sendable {
                 record.snippetTitle = (trimmed?.isEmpty ?? true) ? nil : trimmed
                 record.pinned = true
                 if record.pinnedAt == nil {
-                    record.pinnedAt = Date()
+                    record.pinnedAt = ClipboardRuntime.now
                 }
             } else {
                 record.snippet = false
@@ -574,7 +574,7 @@ public struct ClipboardAnnotationsStore: Sendable {
             return
         }
         document.annotationsVersion = ClipboardAnnotationsDocument.currentVersion
-        document.updatedAt = Date()
+        document.updatedAt = ClipboardRuntime.now
         try save(document)
     }
 
@@ -582,7 +582,7 @@ public struct ClipboardAnnotationsStore: Sendable {
         let formatter = ISO8601DateFormatter()
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         let asideURL = annotationsDirectoryURL.appendingPathComponent(
-            "annotations.json.corrupt-\(formatter.string(from: Date()))"
+            "annotations.json.corrupt-\(formatter.string(from: ClipboardRuntime.now))"
         )
         // moveItem does not follow symlinks, so a symlinked annotations.json
         // is moved aside without touching its target.
@@ -602,7 +602,7 @@ public struct ClipboardAnnotationsStore: Sendable {
         let temporaryURL = annotationsDirectoryURL.appendingPathComponent(
             ".annotations.json.tmp-\(UUID().uuidString)"
         )
-        try data.write(to: temporaryURL, options: [.atomic])
+        try data.writeClipboardAtomically(to: temporaryURL)
         try ClipboardPrivateFileSystem.secureFile(temporaryURL)
         _ = try FileManager.default.replaceItemAt(annotationsFileURL, withItemAt: temporaryURL)
         try ClipboardPrivateFileSystem.secureFile(annotationsFileURL)

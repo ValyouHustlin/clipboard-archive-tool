@@ -139,7 +139,7 @@ public enum ClipboardStoreLocator {
     public static func publishPointer(
         for resolution: ClipboardStoreResolution,
         writtenBy: String,
-        now: Date = Date()
+        now: Date = ClipboardRuntime.now
     ) throws -> Bool {
         let archivePublishable = isPublishable(resolution.archiveOrigin)
         let indexPublishable = isPublishable(resolution.indexOrigin)

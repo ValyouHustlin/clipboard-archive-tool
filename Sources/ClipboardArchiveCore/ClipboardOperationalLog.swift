@@ -145,7 +145,7 @@ public struct ClipboardOperationalLog: Sendable {
         case sweepExpired = "sweep-expired"
         case repairIndex = "repair-index"
         case indexSearch = "index-search"
-        case health, stores, logs, backup
+        case health, stores, logs, backup, status, verify
         case writeManifest = "write-manifest"
         case help
         case unknown
@@ -224,9 +224,14 @@ public struct ClipboardOperationalLog: Sendable {
         rssBytes: Int = 0,
         verb: Verb = .notApplicable
     ) -> Bool {
+        let failureState = ClipboardFailureState(logDirectory: directory)
+        let persistentCodes: Set<Code> = [.captureFailed, .archiveAppendFailed, .indexUpsertFailed, .indexRebuildFailed]
+        if persistentCodes.contains(code) { _ = failureState.update(add: code.rawValue) }
+        if code == .captureRecovered { _ = failureState.update(remove: ["capture_failed", "archive_append_failed"]) }
+        if code == .indexRebuildFinished { _ = failureState.update(remove: ["index_upsert_failed", "index_rebuild_failed"]) }
         let identity = ClipboardRotatingLogFile.bundleVersion()
         guard let data = try? ClipboardRotatingLogFile.rowEncoder().encode(Row(
-            timestamp: Date(),
+            timestamp: ClipboardRuntime.now,
             pid: Int(getpid()),
             version: identity.version,
             build: identity.build,
@@ -244,7 +249,10 @@ public struct ClipboardOperationalLog: Sendable {
         )) else {
             return false
         }
-        return file.append(data)
+        let appended = file.append(data)
+        if !appended { _ = failureState.update(add: "log_unavailable") }
+        else if unresolvedFailures.contains("log_unavailable") { _ = failureState.update(remove: ["log_unavailable"]) }
+        return appended
     }
 }
 

@@ -46,7 +46,7 @@ public struct ClipboardExpirySweeper: Sendable {
     /// pinned clip) and ledger reason `expired-sensitive`, then clear the
     /// annotation so the expiry never re-fires.
     @discardableResult
-    public func sweepIfDue(now: Date = Date()) throws -> ClipboardExpirySweepResult {
+    public func sweepIfDue(now: Date = ClipboardRuntime.now) throws -> ClipboardExpirySweepResult {
         guard let due = nextDue(), due <= now else {
             return ClipboardExpirySweepResult()
         }

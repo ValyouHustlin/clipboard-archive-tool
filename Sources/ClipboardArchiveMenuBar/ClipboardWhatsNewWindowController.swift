@@ -82,7 +82,7 @@ final class ClipboardWhatsNewWindowController: NSWindowController {
         guard let data = representation.representation(using: .png, properties: [:]) else {
             return
         }
-        try data.write(to: url, options: [.atomic])
+        try data.writeClipboardAtomically(to: url)
     }
 
     func performAutomationDone() {
