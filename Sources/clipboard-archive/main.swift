@@ -396,6 +396,13 @@ let cliVerb = ClipboardOperationalLog.Verb(
     command: CommandLine.arguments.dropFirst().first ?? "help"
 )
 
+// Said before anything is parsed or read, because a half-isolated run
+// produces output that looks valid and is measured against the wrong stores.
+// stderr, so it cannot corrupt a `--json` consumer.
+if let breach = ClipboardRuntime.isolationBreach() {
+    FileHandle.standardError.write(Data("clipboard-archive: \(breach.sentence)\n".utf8))
+}
+
 /// What this invocation will exit with. New verbs assign it; the older
 /// ones leave it at success and throw when they fail.
 var cliExit = ClipboardCLIExit.success

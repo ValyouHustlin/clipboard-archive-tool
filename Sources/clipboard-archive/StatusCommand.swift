@@ -342,6 +342,18 @@ enum StatusCommand {
                 "last_successful_restore_verified_at": report.lastRestoreVerifiedAt.map { ISO8601DateFormatter().string(from: $0) } as Any? ?? NSNull(),
                 "archive_bytes": report.archiveBytes,
                 "disk_free_bytes": report.diskFreeBytes,
+                // Which stores this answer is ABOUT. Without it a reader
+                // cannot tell a scratch measurement from a production one,
+                // and a run that fell back to the real stores looks identical
+                // to one that was pinned at them on purpose.
+                "stores": [
+                    "archive_root": options.storeResolution.archiveRoot.path,
+                    "archive_origin": options.storeResolution.archiveOrigin.rawValue,
+                    "index_path": options.storeResolution.indexPath.path,
+                    "index_origin": options.storeResolution.indexOrigin.rawValue,
+                    "application_support_root": options.storeResolution.applicationSupportRoot.path,
+                    "isolation_breach": ClipboardRuntime.isolationBreach().map { $0.sentence as Any } ?? NSNull()
+                ],
                 "launch_agent": [
                     "plist_present": report.launchAgent.present,
                     "program_path": report.launchAgent.programPath as Any? ?? NSNull(),
@@ -367,6 +379,8 @@ enum StatusCommand {
         print("last_successful_restore_verified_at: \(report.lastRestoreVerifiedAt.map { ISO8601DateFormatter().string(from: $0) } ?? "never")")
         print("archive_bytes: \(report.archiveBytes)")
         print("disk_free_bytes: \(report.diskFreeBytes)")
+        print("archive_root: \(options.storeResolution.archiveRoot.path) (\(options.storeResolution.archiveOrigin.rawValue))")
+        print("index_path: \(options.storeResolution.indexPath.path) (\(options.storeResolution.indexOrigin.rawValue))")
         print("launch_agent: \(report.launchAgent.present ? report.launchAgent.plistPath : "not installed")")
         if report.launchAgent.present {
             print("launch_agent_program: \(report.launchAgent.programPath ?? "none") (\(report.launchAgent.programExists ? "present" : "MISSING"))")
