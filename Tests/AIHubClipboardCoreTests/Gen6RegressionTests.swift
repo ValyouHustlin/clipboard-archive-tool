@@ -79,3 +79,112 @@ struct Gen6RegressionTests {
         #expect(breach?.scratchKeys == [archive])
     }
 }
+
+/// CA-C2-01. A pause reaches into the verdict and disarms every check that
+/// would say capture has stopped. Before this, the whole branch was skipped
+/// when suspended, so a machine paused ten years out answered exit 0 with an
+/// empty warning list while nothing had been archived since the pause began —
+/// a green status over a dead capture loop, which is the bar's named failure.
+@Suite("Gen6 pause reporting")
+struct Gen6PauseTests {
+    private func facts(
+        suspended: Bool,
+        suspendedFor: TimeInterval? = nil,
+        appRunning: Bool = true
+    ) -> ClipboardStatusFacts {
+        ClipboardStatusFacts(
+            storesPresent: true,
+            appRunning: appRunning,
+            captureEnabled: true,
+            heartbeatAge: 60,
+            lastCaptureAge: 120,
+            errorsLastDay: 0,
+            indexState: .fresh,
+            captureSuspended: suspended,
+            captureSuspendedForSeconds: suspendedFor
+        )
+    }
+
+    @Test func aPausedCaptureIsNeverGreen() {
+        let verdict = ClipboardStatusRules.verdict(facts(suspended: true))
+        #expect(verdict.exit == .warnings)
+        #expect(verdict.isHealthy == false)
+        #expect(verdict.warnings.contains { $0.contains("paused") })
+    }
+
+    /// The duration is the whole point: "paused" alone cannot tell a ten
+    /// minute break from a silence that outlasts the year.
+    @Test func thePauseWarningNamesHowMuchLongerItRuns() {
+        let verdict = ClipboardStatusRules.verdict(facts(suspended: true, suspendedFor: 7 * 24 * 60 * 60))
+        #expect(verdict.warnings.contains { $0.contains("7 days") })
+    }
+
+    /// A paused machine whose app has also died still reports the pause
+    /// rather than falling silent on both.
+    @Test func aPausedCaptureWithNoAppRunningStillWarns() {
+        let verdict = ClipboardStatusRules.verdict(facts(suspended: true, appRunning: false))
+        #expect(verdict.exit == .warnings)
+    }
+
+    @Test func anUnpausedHealthyMachineIsStillGreen() {
+        let verdict = ClipboardStatusRules.verdict(facts(suspended: false))
+        #expect(verdict.exit == .success)
+        #expect(verdict.warnings.isEmpty)
+    }
+}
+
+/// The clamp that stops an absurd pause existing in the first place.
+@Suite("Gen6 pause clamp")
+struct Gen6PauseClampTests {
+    @Test func aTenYearPauseIsBoundedToTheMaximum() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let absurd = now.addingTimeInterval(10 * 365 * 24 * 60 * 60)
+        let clamped = ClipboardSettings.clampPause(absurd, now: now)
+        #expect(clamped == now.addingTimeInterval(ClipboardSettings.maximumPauseInterval))
+    }
+
+    /// The menu bar's longest pause is "until tomorrow". Nothing the app
+    /// itself writes may be moved by the clamp.
+    @Test func anOrdinaryPauseIsLeftExactlyAsItWas() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let tomorrow = now.addingTimeInterval(24 * 60 * 60)
+        #expect(ClipboardSettings.clampPause(tomorrow, now: now) == tomorrow)
+    }
+
+    /// A date already past is not a pause. Moving it forward would invent one.
+    @Test func anExpiredPauseIsNotMovedForward() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let past = now.addingTimeInterval(-60)
+        #expect(ClipboardSettings.clampPause(past, now: now) == past)
+    }
+
+    @Test func noPauseStaysNoPause() {
+        #expect(ClipboardSettings.clampPause(nil, now: Date()) == nil)
+    }
+
+    /// Through the FILE, not just the pure function. The clamp has to happen
+    /// where an absurd value actually arrives — a settings document someone
+    /// hand-edited or a corrupted write — or it protects nothing.
+    @Test func aFarFuturePauseInTheSettingsFileIsBoundedOnLoad() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipboard-gen6-clamp-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("settings.json")
+
+        let tenYears = ClipboardRuntime.now.addingTimeInterval(10 * 365 * 24 * 60 * 60)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        let document = """
+        {"archiveEnabled":true,"hasCompletedOnboarding":true,"settingsVersion":1,\
+        "pauseUntil":"\(formatter.string(from: tenYears))"}
+        """
+        try Data(document.utf8).write(to: url)
+
+        let loaded = ClipboardSettingsStore(settingsURL: url).load()
+        let remaining = try #require(loaded.remainingPauseInterval)
+        #expect(remaining <= ClipboardSettings.maximumPauseInterval + 5)
+        // Still a pause — the clamp bounds it, it does not cancel it.
+        #expect(loaded.isTemporarilyPaused)
+    }
+}

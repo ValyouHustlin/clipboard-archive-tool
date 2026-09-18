@@ -121,6 +121,17 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
     /// larger images become a visible blocked event instead of a body file.
     public static let defaultRichImageMaxBytes = 10 * 1024 * 1024
 
+    /// The longest a pause may run before it is treated as a stuck value
+    /// rather than a choice.
+    ///
+    /// A pause disarms the alarm that says capture has stopped, so an
+    /// unbounded one is a permanent silence: nothing is archived and the
+    /// machine reports itself healthy for as long as the date says. The menu
+    /// bar can only produce "until tomorrow" or a minutes offset, so nothing
+    /// the app itself writes comes near this cap — it bounds a hand-edited or
+    /// corrupted file, which is where the absurd values come from.
+    public static let maximumPauseInterval: TimeInterval = 7 * 24 * 60 * 60
+
     public var excludedBundleIdentifiers: [String]
     public var excludedAppNameFragments: [String]
     public var pauseUntil: Date?
@@ -271,11 +282,31 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         return pauseUntil > ClipboardRuntime.now
     }
 
+    /// How much longer the pause has to run, or nil when capture is not
+    /// paused. The surfaces report it, because "paused" without a duration
+    /// cannot tell a ten-minute break from a silence that outlasts the year.
+    public var remainingPauseInterval: TimeInterval? {
+        guard let pauseUntil else { return nil }
+        let remaining = pauseUntil.timeIntervalSince(ClipboardRuntime.now)
+        return remaining > 0 ? remaining : nil
+    }
+
+    /// Bound a pause to `maximumPauseInterval` from now. A date already in the
+    /// past is left alone: it is not a pause at all, and moving it would
+    /// invent one.
+    static func clampPause(_ date: Date?, now: Date = ClipboardRuntime.now) -> Date? {
+        guard let date, date > now else { return date }
+        let cap = now.addingTimeInterval(maximumPauseInterval)
+        return date > cap ? cap : date
+    }
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         excludedBundleIdentifiers = try container.decodeIfPresent([String].self, forKey: .excludedBundleIdentifiers) ?? []
         excludedAppNameFragments = try container.decodeIfPresent([String].self, forKey: .excludedAppNameFragments) ?? []
-        pauseUntil = Self.flexibleDate(in: container, forKey: .pauseUntil)
+        // Bounded on the way in, so no later reader has to remember to
+        // distrust it. Held in memory only: this does not rewrite the file.
+        pauseUntil = Self.clampPause(Self.flexibleDate(in: container, forKey: .pauseUntil))
         pollIntervalSeconds = try container.decodeIfPresent(TimeInterval.self, forKey: .pollIntervalSeconds) ?? 0.2
         archiveEnabled = try container.decodeIfPresent(Bool.self, forKey: .archiveEnabled) ?? true
         let decodedLimit = try container.decodeIfPresent(Int.self, forKey: .recentItemLimit) ?? 50

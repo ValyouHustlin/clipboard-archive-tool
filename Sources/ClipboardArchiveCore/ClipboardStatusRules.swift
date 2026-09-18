@@ -23,6 +23,8 @@ public struct ClipboardStatusFacts: Sendable, Equatable {
     public var pollsSinceLastHeartbeat: Int?
     public var startupAge: TimeInterval?
     public var captureSuspended: Bool
+    /// How much longer a suspension has to run, when the surface knows.
+    public var captureSuspendedForSeconds: TimeInterval?
     public var lastCaptureAge: TimeInterval?
     public var errorsLastDay: Int
     public var activeErrors: Int?
@@ -46,11 +48,13 @@ public struct ClipboardStatusFacts: Sendable, Equatable {
         pollsSinceLastHeartbeat: Int? = nil,
         startupAge: TimeInterval? = nil,
         captureSuspended: Bool = false,
+        captureSuspendedForSeconds: TimeInterval? = nil,
         activeErrors: Int? = nil
     ) {
         self.pollsSinceLastHeartbeat = pollsSinceLastHeartbeat
         self.startupAge = startupAge
         self.captureSuspended = captureSuspended
+        self.captureSuspendedForSeconds = captureSuspendedForSeconds
         self.storesPresent = storesPresent
         self.appRunning = appRunning
         self.captureEnabled = captureEnabled
@@ -114,6 +118,16 @@ public enum ClipboardStatusRules {
             } else {
                 warnings.append("Capture is on but the app is not running, so nothing is being archived.")
             }
+        } else if facts.captureEnabled && facts.captureSuspended {
+            // A pause disarms every check above it. Reporting the pause is
+            // what keeps that from reading as health: before this, a machine
+            // paused ten years out answered exit 0 with no warnings at all,
+            // while nothing had been archived since the pause began.
+            let duration = facts.captureSuspendedForSeconds.map { " for another \(describe($0))" } ?? ""
+            warnings.append(
+                "Capture is on but paused\(duration), so nothing is being archived and "
+                + "the checks that would say so are disarmed."
+            )
         }
 
         switch facts.indexState {

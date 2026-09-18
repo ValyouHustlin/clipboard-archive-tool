@@ -180,6 +180,7 @@ enum StatusCommand {
             pollsSinceLastHeartbeat: heartbeat.map { safePollCount($0.numbers["polls"]) },
             startupAge: startup.map { now.timeIntervalSince($0) },
             captureSuspended: pausedPreference || settings.isTemporarilyPaused || settings.isPrivateModeActive,
+            captureSuspendedForSeconds: settings.remainingPauseInterval,
             activeErrors: activeErrors
         )
 
@@ -332,6 +333,8 @@ enum StatusCommand {
                 "app_running": facts.appRunning,
                 "pid": report.lockPID.map { Int($0) as Any } ?? NSNull(),
                 "capture_enabled": facts.captureEnabled,
+                "capture_suspended": facts.captureSuspended,
+                "capture_suspended_for_seconds": facts.captureSuspendedForSeconds.map { Int($0) as Any } ?? NSNull(),
                 "heartbeat_age_seconds": facts.heartbeatAge.map { Int($0) as Any } ?? NSNull(),
                 "polls_last_heartbeat": report.pollsSinceLastHeartbeat,
                 "last_capture_age_seconds": facts.lastCaptureAge.map { Int($0) as Any } ?? NSNull(),
@@ -370,6 +373,7 @@ enum StatusCommand {
         print("Clipboard Archive status")
         print("app_running: \(facts.appRunning)\(report.lockPID.map { " (pid \($0))" } ?? "")")
         print("capture_enabled: \(facts.captureEnabled)")
+        print("capture_suspended: \(facts.captureSuspended)\(facts.captureSuspendedForSeconds.map { " (\(ClipboardStatusRules.describe($0)) left)" } ?? "")")
         print("heartbeat: \(facts.heartbeatAge.map { "\(ClipboardStatusRules.describe($0)) ago" } ?? "never")")
         print("last_capture: \(facts.lastCaptureAge.map { "\(ClipboardStatusRules.describe($0)) ago" } ?? "never")")
         print("captures_today: \(report.capturesToday)")

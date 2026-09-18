@@ -259,7 +259,18 @@ struct PrivacyRulesTests {
                 addedAt: Date(timeIntervalSince1970: 1_800_000_000)
             )
         ]
-        settings.pauseUntil = Date(timeIntervalSince1970: 1_800_000_100)
+        // Within ClipboardSettings.maximumPauseInterval on purpose: a pause
+        // further out than the cap is bounded on load (CA-C2-01), so a fixed
+        // far-future fixture would be testing the clamp, not the date
+        // round-trip this test is about. The clamp has its own coverage in
+        // Gen6RegressionTests.
+        // Whole seconds: the stored form is ISO 8601 without fractional
+        // seconds, so a date carrying a fraction cannot round-trip exactly.
+        // The original fixture was a whole number for the same reason.
+        let pause = Date(
+            timeIntervalSince1970: (ClipboardRuntime.now.timeIntervalSince1970 + 3_600).rounded(.down)
+        )
+        settings.pauseUntil = pause
         settings.privateModeUntil = Date(timeIntervalSince1970: 1_800_000_200)
         try store.save(settings)
 
@@ -268,7 +279,7 @@ struct PrivacyRulesTests {
         // Persisted ISO 8601 dates load back exactly (settings-store decode
         // fix shipped with this slice: dates in the file previously reset
         // the whole settings decode).
-        #expect(loaded.pauseUntil == Date(timeIntervalSince1970: 1_800_000_100))
+        #expect(loaded.pauseUntil == pause)
         #expect(loaded.privateModeUntil == Date(timeIntervalSince1970: 1_800_000_200))
     }
 

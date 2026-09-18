@@ -52,8 +52,16 @@ struct C1RegressionTests {
         facts.pollsSinceLastHeartbeat = 0
         facts.startupAge = 20
         #expect(ClipboardStatusRules.verdict(facts).isHealthy)
+        // REVERSED for CA-C2-01. This line asserted that a suspended capture
+        // reads healthy, which is the defect cycle 2 filed: a pause disarms
+        // every check above it, so a machine paused years out answered exit 0
+        // with an empty warning list while nothing was being archived. A
+        // suspension is now REPORTED rather than skipped. The rest of this
+        // test is unchanged.
         facts.startupAge = nil; facts.captureSuspended = true
-        #expect(ClipboardStatusRules.verdict(facts).isHealthy)
+        let suspended = ClipboardStatusRules.verdict(facts)
+        #expect(!suspended.isHealthy)
+        #expect(suspended.warnings.contains { $0.contains("paused") })
     }
 
     @Test func logLossCannotClearFailuresAndRecoveryIsScoped() throws {
