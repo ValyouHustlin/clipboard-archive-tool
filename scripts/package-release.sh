@@ -4,7 +4,7 @@ export PATH="/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="${CLIPBOARD_ARCHIVE_VERSION:-0.3.0}"
-BUILD_NUMBER="${CLIPBOARD_ARCHIVE_BUILD:-8}"
+BUILD_NUMBER="${CLIPBOARD_ARCHIVE_BUILD:-9}"
 ARCH="$(uname -m)"
 NAME="ClipboardArchive-${VERSION}-macos-${ARCH}"
 RELEASE_ROOT="$ROOT/releases"

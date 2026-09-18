@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.3.0 build 9 - 2026-09-18
+
+- Say when a run is only half isolated. Pinning the archive and index into a
+  scratch directory without also setting the application-support root gave a
+  run whose stores were scratch while its preferences, pasteboard, clock seam
+  and log directory stayed on the real ones, and nothing said so. The command
+  line now writes one sentence to standard error when it sees that, and
+  `status` reports the archive root, the index path, where each was resolved
+  from, and the support root it actually used. A launch agent pinning the real
+  paths is not affected: the check looks at whether the path is scratch, not
+  at whether the variable is set.
+- Report a paused capture instead of skipping it. A pause disarmed every check
+  that says capture has stopped, so a machine with capture switched on and a
+  pause running could answer "no problems" while nothing was being archived.
+  A pause is now reported with how much longer it has to run, and a stored
+  pause is bounded to seven days, which no pause set from the menu can reach.
+
+## 0.3.0 build 8 - 2026-09-15
+
+Packaged but never installed; its contents ship in build 9.
+
+- Read the archive as UTF-8 so `status` answers in seconds rather than tens of
+  seconds on a large archive, with a fallback that still reads a file written
+  in another encoding.
+- Repair what certification found: an index being read while it is busy is no
+  longer reported as damaged, a child process's exit code is no longer
+  confused with its wait status, and a loader child no longer inherits a
+  blocked signal mask across exec.
+- Document the pasteboard opt-out beside the isolation seams it belongs to.
+
 ## 0.3.0 build 7 - 2026-09-15
 
 - Embed the standalone command-line version in its executable, so it reports
