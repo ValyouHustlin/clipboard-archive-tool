@@ -197,6 +197,15 @@ struct UpdateRulesTests {
     }
 
     @Test
+    func testACleanFinishSaysInstalledOnlyWhenTheInstallHappened() {
+        // Found 2026-10-03 by a mutant that declined every update: the
+        // helper said "installed" and exited 0 because it had found one.
+        #expect(ClipboardUpdaterExit.forCleanFinish(found: true, installed: true) == .installed)
+        #expect(ClipboardUpdaterExit.forCleanFinish(found: true, installed: false) == .failed)
+        #expect(ClipboardUpdaterExit.forCleanFinish(found: false, installed: false) == .upToDate)
+    }
+
+    @Test
     func testUnattendedExitCodesFollowTheCommandLineContract() {
         #expect(ClipboardUpdaterExit.installed.rawValue == 0)
         #expect(ClipboardUpdaterExit.failed.rawValue == 1)

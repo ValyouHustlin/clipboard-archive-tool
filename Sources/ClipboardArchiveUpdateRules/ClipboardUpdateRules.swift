@@ -194,6 +194,14 @@ public enum ClipboardUpdaterExit: Int32, Sendable {
     static let refusalCodes: Set<Int> = [1, 2, 3, 3001, 3002, 4006, 4009]
     static let noUpdateCode = 1001
 
+    /// The exit for a check that finished without an error. "Installed" is
+    /// said only when the install was seen to finish, never because an
+    /// update was found.
+    public static func forCleanFinish(found: Bool, installed: Bool) -> ClipboardUpdaterExit {
+        if installed { return .installed }
+        return found ? .failed : .upToDate
+    }
+
     /// The exit for a finished check that reported an error. The library
     /// wraps a signature failure in an install or parse error, so the whole
     /// chain is read, outermost first. `fromUpdater` marks an element in the

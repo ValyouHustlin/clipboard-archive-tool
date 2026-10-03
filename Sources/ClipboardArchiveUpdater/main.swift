@@ -78,7 +78,8 @@ class PrivacyDelegate: NSObject, SPUUpdaterDelegate {
 /// goes. Modelled on Sparkle's own command-line driver.
 final class UnattendedUserDriver: NSObject, SPUUserDriver {
     let verbose: Bool
-    private(set) var installedVersion: String?
+    private(set) var foundVersion: String?
+    private(set) var installed = false
     private var expected: UInt64 = 0
     private var received: UInt64 = 0
     private var lastPercent = -1
@@ -109,8 +110,8 @@ final class UnattendedUserDriver: NSObject, SPUUserDriver {
             reply(.dismiss)
             return
         }
-        installedVersion = "\(appcastItem.displayVersionString) (\(appcastItem.versionString))"
-        say("Found update \(installedVersion ?? "").")
+        foundVersion = "\(appcastItem.displayVersionString) (\(appcastItem.versionString))"
+        say("Found update \(foundVersion ?? "").")
         reply(.install)
     }
 
@@ -162,6 +163,7 @@ final class UnattendedUserDriver: NSObject, SPUUserDriver {
     }
 
     func showUpdateInstalledAndRelaunched(_ relaunched: Bool, acknowledgement: @escaping () -> Void) {
+        installed = true
         say(relaunched ? "Installed and relaunched." : "Installed.")
         acknowledgement()
     }
@@ -188,12 +190,16 @@ final class UnattendedDelegate: PrivacyDelegate {
 
     func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck, error: Error?) {
         guard let error = error as NSError? else {
-            if let version = driver.installedVersion {
-                print("installed: \(version)")
-                exit(ClipboardUpdaterExit.installed.rawValue)
+            let outcome = ClipboardUpdaterExit.forCleanFinish(found: driver.foundVersion != nil, installed: driver.installed)
+            switch outcome {
+            case .installed:
+                print("installed: \(driver.foundVersion ?? "the update")")
+            case .upToDate:
+                print("up to date")
+            default:
+                print("failed: found \(driver.foundVersion ?? "an update") but it was not installed")
             }
-            print("up to date")
-            exit(ClipboardUpdaterExit.upToDate.rawValue)
+            exit(outcome.rawValue)
         }
         var chain: [NSError] = [error]
         while chain.count < 8, let next = chain.last?.userInfo[NSUnderlyingErrorKey] as? NSError {
