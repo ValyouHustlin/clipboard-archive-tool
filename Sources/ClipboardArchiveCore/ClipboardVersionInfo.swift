@@ -22,17 +22,26 @@ public struct ClipboardVersionInfo: Equatable, Sendable {
     public static let updateGuidance =
         "Updates are manual: check the project's GitHub Releases page."
 
+    /// The story for a copy built with an update feed: a separate helper
+    /// does the network part, so the app itself still never connects.
+    public static let automaticUpdateGuidance =
+        "Updates arrive through a separate updater that never sees your clips; use Check for Updates… in the menu."
+
     public var appVersion: String
     public var appBuild: String?
     public var eventSchemaVersion: Int
     public var indexSchemaVersion: Int
+    /// True when this copy carries a set-up update helper.
+    public var updatesEnabled: Bool
 
     public init(
         appVersion: String,
         appBuild: String? = nil,
         eventSchemaVersion: Int = StoredClipboardEvent.currentSchemaVersion,
-        indexSchemaVersion: Int = ClipboardDerivedIndex.currentIndexSchemaVersion
+        indexSchemaVersion: Int = ClipboardDerivedIndex.currentIndexSchemaVersion,
+        updatesEnabled: Bool = false
     ) {
+        self.updatesEnabled = updatesEnabled
         self.appVersion = appVersion
         self.appBuild = appBuild
         self.eventSchemaVersion = eventSchemaVersion
@@ -62,7 +71,7 @@ public struct ClipboardVersionInfo: Equatable, Sendable {
         [
             versionDisplay,
             "Archive format v\(Self.archiveFormatVersion) · event schema v\(eventSchemaVersion) · search index schema v\(indexSchemaVersion)",
-            Self.updateGuidance
+            updatesEnabled ? Self.automaticUpdateGuidance : Self.updateGuidance
         ]
     }
 }

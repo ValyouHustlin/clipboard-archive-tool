@@ -578,7 +578,7 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
             action: #selector(openReleasePage)
         )
         openReleasesButton.toolTip =
-            "Open the GitHub Releases page in your browser (the app itself never checks for updates)"
+            "Open the GitHub Releases page in your browser (the app itself never connects; a separate updater does)"
         openReleasesButton.setAccessibilityLabel("Open the release page in the browser")
         let aboutButtons = NSStackView(views: [copyURLButton, openReleasesButton])
         aboutButtons.orientation = .horizontal
@@ -601,7 +601,8 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
         let info = Bundle.main.infoDictionary
         return ClipboardVersionInfo(
             appVersion: info?["CFBundleShortVersionString"] as? String ?? "development",
-            appBuild: info?["CFBundleVersion"] as? String
+            appBuild: info?["CFBundleVersion"] as? String,
+            updatesEnabled: UpdaterLauncher.isSetUp
         )
     }
 

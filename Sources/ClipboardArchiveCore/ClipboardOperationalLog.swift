@@ -92,6 +92,9 @@ public struct ClipboardOperationalLog: Sendable {
         case expirySwept = "expiry_swept"
         case pointerPublished = "pointer_published"
         case pointerPublishFailed = "pointer_publish_failed"
+        /// The bundled update helper could not be started. Capture is not
+        /// affected; updates simply do not run until the next launch.
+        case updaterLaunchFailed = "updater_launch_failed"
         /// One row per CLI invocation: `verb` names the command and
         /// `count` carries its exit code (0 on success).
         case cliCommand = "cli_command"
@@ -102,7 +105,7 @@ public struct ClipboardOperationalLog: Sendable {
             switch self {
             case .appStart, .appStop, .heartbeat:
                 return .app
-            case .secondInstanceRefused, .pointerPublished, .pointerPublishFailed:
+            case .secondInstanceRefused, .pointerPublished, .pointerPublishFailed, .updaterLaunchFailed:
                 return .launch
             case .settingsFallback, .settingsLastGoodUsed:
                 return .settings
@@ -127,7 +130,8 @@ public struct ClipboardOperationalLog: Sendable {
             case .captureFailed, .indexRebuildFailed, .archiveAppendFailed:
                 return .error
             case .secondInstanceRefused, .settingsFallback, .settingsLastGoodUsed, .indexUpsertFailed,
-                 .pointerPublishFailed, .indexMissingDetected, .indexCorruptDetected, .archiveTailRepaired:
+                 .pointerPublishFailed, .indexMissingDetected, .indexCorruptDetected, .archiveTailRepaired,
+                 .updaterLaunchFailed:
                 return .warn
             default:
                 return .info

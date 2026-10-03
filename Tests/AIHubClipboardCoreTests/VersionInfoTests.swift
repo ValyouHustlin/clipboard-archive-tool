@@ -49,6 +49,22 @@ struct VersionInfoTests {
     }
 
     @Test
+    func testAboutSaysHowUpdatesArriveWhenTheUpdaterIsSetUp() {
+        // A copy built with an update feed is not updated by hand; the About
+        // line must say so, and must say the clipboard never leaves.
+        let info = ClipboardVersionInfo(appVersion: "0.4.0", appBuild: "10", updatesEnabled: true)
+        #expect(info.summaryLines.count == 3)
+        #expect(info.summaryLines[2] == ClipboardVersionInfo.automaticUpdateGuidance)
+        #expect(ClipboardVersionInfo.automaticUpdateGuidance.contains("Check for Updates"))
+        #expect(ClipboardVersionInfo.automaticUpdateGuidance.contains("never sees your clips"))
+        // Without the updater the manual story stands.
+        #expect(
+            ClipboardVersionInfo(appVersion: "0.4.0", appBuild: "10").summaryLines[2]
+                == ClipboardVersionInfo.updateGuidance
+        )
+    }
+
+    @Test
     func testReleasePageURLIsTheSingleAllowlistedConstant() {
         // check-local-only.sh allowlists exactly this literal (source scan
         // and binary strings scan). If the value changes, BOTH allowlist

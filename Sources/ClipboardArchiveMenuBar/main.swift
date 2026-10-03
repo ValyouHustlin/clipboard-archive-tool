@@ -227,6 +227,7 @@ final class ClipboardMenuBarApp: NSObject,
             self?.toggleQuickPicker()
         }
         rebuildMenu()
+        UpdaterLauncher.startInBackgroundIfSetUp()
 #if DEBUG
         if ProcessInfo.processInfo.environment["CLIPBOARD_ARCHIVE_SETTINGS_METADATA_PROBE"] == "1",
            ClipboardRuntime.isIsolated {
@@ -821,6 +822,10 @@ final class ClipboardMenuBarApp: NSObject,
             focusSearch: focusSearch,
             activate: activate
         )
+    }
+
+    @objc private func checkForUpdates() {
+        UpdaterLauncher.checkNow()
     }
 
     @objc private func showPreferences() {
@@ -2803,6 +2808,7 @@ final class ClipboardMenuBarApp: NSObject,
         menu.addItem(NSMenuItem(title: "Search History…", action: #selector(openClipboardSearch), keyEquivalent: "f"))
         menu.addItem(NSMenuItem(title: isPaused ? "Resume Capture" : "Pause Capture", action: #selector(togglePause), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Settings...", action: #selector(showPreferences), keyEquivalent: ","))
+        menu.addItem(NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
 
         let recentMenu = NSMenuItem(title: "More Recent Items", action: nil, keyEquivalent: "")
