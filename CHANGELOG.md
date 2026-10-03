@@ -17,6 +17,8 @@
   itself must be signed, the request sends no system profile, and a copy
   built without a feed never checks at all. "Check for Updates…" is in the
   menu; the helper also runs from a terminal with `--unattended`.
+  The feed signature requirement never lapses, and a feed URL set in user
+  defaults is ignored.
 - Say when the launch agent would start more than one app. A login item that
   hands `open` two app paths starts two copies; `status` read only the first
   path and called it healthy.
