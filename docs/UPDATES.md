@@ -51,6 +51,12 @@ like any download. Where the feed is hosted is a separate decision; see
 - The feed must be HTTPS. The only exception is plain HTTP to `127.0.0.1` or
   `localhost`, which exists so the update path can be tested on one Mac.
 - A downgrade is refused.
+- None of this lapses: the build pins the library's grace period for a badly
+  signed feed to zero, and the helper ignores any feed URL set in user
+  defaults.
+- Once copies are Developer ID signed, a disk image signed by the same Apple
+  team is accepted even if its Ed25519 signature fails (the library's
+  key-rotation path); see SECURITY.md.
 
 Both refusals are exercised by `scripts/test-update-e2e.sh`.
 

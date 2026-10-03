@@ -99,6 +99,19 @@ An update is installed only when:
   the installed copy, checked before it is unpacked, and
 - it is not a downgrade.
 
+The feed's signature never expires: the build sets
+`SUSignedFeedFailureExpirationInterval` to 0, without which the updater
+library would parse an unverified feed 20 days after its first bad
+signature, and the helper refuses any copy built without it. The helper
+also uses only the feed built into the app, never a `SUFeedURL` from user
+defaults.
+
+One documented exception, for key rotation: once the installed copy is
+Developer ID signed, an update disk image that fails its Ed25519 check is
+still accepted if it carries a valid Developer ID signature from the same
+Apple team. That trusts the Apple signing identity instead of the update
+key; it does not apply to today's ad hoc copies.
+
 The private update key is the root of that trust. Losing it means installed
 copies can no longer be updated automatically; leaking it means someone else
 can sign updates. Keep it in the login keychain of the release Mac with one
