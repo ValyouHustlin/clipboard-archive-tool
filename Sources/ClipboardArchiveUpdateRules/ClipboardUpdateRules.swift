@@ -68,7 +68,7 @@ public enum ClipboardUpdateConfiguration {
 
         // HTTPS for anything published. Plain HTTP only to this machine's
         // loopback, so the update path can be driven end to end without a
-        // server anywhere (Sparkle's downloader refuses file: URLs).
+        // server anywhere (the updater library's downloader refuses file: URLs).
         guard let url = URL(string: feedString), isAcceptableFeed(url) else {
             return .refused(.insecureFeed)
         }
