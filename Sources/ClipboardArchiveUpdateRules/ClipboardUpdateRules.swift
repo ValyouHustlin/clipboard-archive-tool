@@ -187,4 +187,25 @@ public enum ClipboardUpdaterExit: Int32, Sendable {
     case notConfigured = 3
     case refused = 4
     case upToDate = 5
+
+    /// Updater-library error codes that mean "this update or feed is not
+    /// trustworthy": no key, insufficient signing, insecure feed, bad
+    /// signature, failed validation, downgrade, not a valid update.
+    static let refusalCodes: Set<Int> = [1, 2, 3, 3001, 3002, 4006, 4009]
+    static let noUpdateCode = 1001
+
+    /// The exit for a finished check that reported an error. The library
+    /// wraps a signature failure in an install or parse error, so the whole
+    /// chain is read, outermost first. `fromUpdater` marks an element in the
+    /// updater library's own error domain.
+    public static func classify(errorChain: [(fromUpdater: Bool, code: Int)]) -> ClipboardUpdaterExit {
+        let own = errorChain.filter(\.fromUpdater).map(\.code)
+        if own.contains(where: refusalCodes.contains) {
+            return .refused
+        }
+        if own.first == noUpdateCode {
+            return .upToDate
+        }
+        return .failed
+    }
 }

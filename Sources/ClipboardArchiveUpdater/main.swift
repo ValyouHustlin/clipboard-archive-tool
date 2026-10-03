@@ -195,21 +195,20 @@ final class UnattendedDelegate: PrivacyDelegate {
             print("up to date")
             exit(ClipboardUpdaterExit.upToDate.rawValue)
         }
-        if error.domain == SUSparkleErrorDomain, error.code == Int(SUError.noUpdateError.rawValue) {
+        var chain: [NSError] = [error]
+        while chain.count < 8, let next = chain.last?.userInfo[NSUnderlyingErrorKey] as? NSError {
+            chain.append(next)
+        }
+        let outcome = ClipboardUpdaterExit.classify(
+            errorChain: chain.map { (fromUpdater: $0.domain == SUSparkleErrorDomain, code: $0.code) }
+        )
+        if outcome == .upToDate {
             print("up to date")
-            exit(ClipboardUpdaterExit.upToDate.rawValue)
+            exit(outcome.rawValue)
         }
-        let refusals: Set<Int> = [
-            SUError.noPublicDSAFoundError, .insufficientSigningError, .insecureFeedURLError,
-            .signatureError, .validationError, .notValidUpdateError, .downgradeError,
-        ].map { Int($0.rawValue) }.reduce(into: Set<Int>()) { $0.insert($1) }
-        let refused = error.domain == SUSparkleErrorDomain && refusals.contains(error.code)
-        var reason = "\(error.localizedDescription) (\(error.domain) \(error.code))"
-        if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError {
-            reason += "; \(underlying.localizedDescription) (\(underlying.domain) \(underlying.code))"
-        }
-        print("\(refused ? "refused" : "failed"): \(reason)")
-        exit(refused ? ClipboardUpdaterExit.refused.rawValue : ClipboardUpdaterExit.failed.rawValue)
+        let reason = chain.map { "\($0.localizedDescription) (\($0.domain) \($0.code))" }.joined(separator: "; ")
+        print("\(outcome == .refused ? "refused" : "failed"): \(reason)")
+        exit(outcome.rawValue)
     }
 }
 

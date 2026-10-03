@@ -158,7 +158,7 @@ printf 'x' >> "$FEED/ClipboardArchive-$BASE_VERSION-build$N2.dmg"
 B="$S/Applications-tampered-update"
 install_n "$B"
 /usr/bin/defaults delete "$TEST_ID.updates" >/dev/null 2>&1 || true
-rm -rf "$HOME/Library/Caches/$TEST_ID.updater"
+rm -rf "$HOME/Library/Caches/$TEST_ID" "$HOME/Library/Caches/$TEST_ID.updater"
 set +e
 "$B/$APP_NAME/$HELPER_REL" --unattended > "$S/update3.out" 2>&1
 rc=$?
@@ -179,13 +179,13 @@ PY
 C="$S/Applications-tampered-feed"
 install_n "$C"
 /usr/bin/defaults delete "$TEST_ID.updates" >/dev/null 2>&1 || true
-rm -rf "$HOME/Library/Caches/$TEST_ID.updater"
+rm -rf "$HOME/Library/Caches/$TEST_ID" "$HOME/Library/Caches/$TEST_ID.updater"
 set +e
 "$C/$APP_NAME/$HELPER_REL" --unattended > "$S/update4.out" 2>&1
 rc=$?
 set -e
 sed 's/^/  /' "$S/update4.out"; echo "  rc=$rc"
-check "tampered feed is not acted on (non-zero exit)" '[ "$rc" -ne 0 ] && [ "$rc" -ne 5 ]'
+check "tampered feed is refused (exit 4)" '[ "$rc" -eq 4 ]'
 check "copy stays on build N" '[ "$(version_of "$C/$APP_NAME")" = "$N1" ]'
 cp "$S/appcast.good" "$FEED/appcast.xml"
 

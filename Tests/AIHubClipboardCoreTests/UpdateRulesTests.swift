@@ -176,6 +176,27 @@ struct UpdateRulesTests {
     }
 
     @Test
+    func testSignatureFailuresAnywhereInTheErrorChainAreRefusals() {
+        // `true` marks an error from the updater library's own domain; the
+        // helper decides that, so the network-free rules never name it.
+        let sparkle = true
+        // Observed 2026-10-03: a tampered disk image arrives as an install
+        // error wrapping an install error wrapping a validation error.
+        #expect(ClipboardUpdaterExit.classify(errorChain: [(sparkle, 4005), (sparkle, 4005), (sparkle, 3002)]) == .refused)
+        // A feed edited after signing: a parse error wrapping a validation error.
+        #expect(ClipboardUpdaterExit.classify(errorChain: [(sparkle, 1000), (sparkle, 3002)]) == .refused)
+        #expect(ClipboardUpdaterExit.classify(errorChain: [(sparkle, 3001)]) == .refused)
+        #expect(ClipboardUpdaterExit.classify(errorChain: [(sparkle, 4006)]) == .refused)
+        // Nothing newer is not a failure.
+        #expect(ClipboardUpdaterExit.classify(errorChain: [(sparkle, 1001)]) == .upToDate)
+        // A dead network is a failure, not a refusal.
+        #expect(ClipboardUpdaterExit.classify(errorChain: [(sparkle, 2001), (false, -1004)]) == .failed)
+        // The same numbers from another domain mean nothing here.
+        #expect(ClipboardUpdaterExit.classify(errorChain: [(false, 3002)]) == .failed)
+        #expect(ClipboardUpdaterExit.classify(errorChain: []) == .failed)
+    }
+
+    @Test
     func testUnattendedExitCodesFollowTheCommandLineContract() {
         #expect(ClipboardUpdaterExit.installed.rawValue == 0)
         #expect(ClipboardUpdaterExit.failed.rawValue == 1)
