@@ -34,6 +34,9 @@ cleanup() {
   # Sparkle's state for the TEST identifier only, by exact name.
   /usr/bin/defaults delete "$TEST_ID.updates" >/dev/null 2>&1 || true
   /usr/bin/defaults delete "$TEST_ID.updater" >/dev/null 2>&1 || true
+  # defaults delete leaves the emptied files behind; these two names are the
+  # test identifier's only, never the real app's.
+  rm -f "$HOME/Library/Preferences/$TEST_ID.updates.plist" "$HOME/Library/Preferences/$TEST_ID.updater.plist"
   rm -rf "$HOME/Library/Caches/$TEST_ID" "$HOME/Library/Caches/$TEST_ID.updater" \
          "$HOME/Library/HTTPStorages/$TEST_ID.updater" "$HOME/Library/HTTPStorages/$TEST_ID.updater.binarycookies"
 }
