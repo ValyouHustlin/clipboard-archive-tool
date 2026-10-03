@@ -29,11 +29,27 @@ jobs:
       - name: Package release
         run: ./scripts/package-release.sh
 
+      # The folder name follows the newest CHANGELOG entry; never a literal.
+      - name: Name the release folder
+        run: |
+          . scripts/lib/release-identity.sh
+          read -r version build <<<"$(release_identity_newest CHANGELOG.md)"
+          echo "RELEASE_DIR=releases/ClipboardArchive-${version}-macos-$(uname -m)" >> "$GITHUB_ENV"
+
       - name: Validate release
-        run: ./scripts/validate-release.sh "releases/ClipboardArchive-0.2.0-macos-$(uname -m)"
+        run: ./scripts/validate-release.sh "$RELEASE_DIR"
 
       - name: Check local-only boundary
-        run: ./scripts/check-local-only.sh "releases/ClipboardArchive-0.2.0-macos-$(uname -m)"
+        run: ./scripts/check-local-only.sh "$RELEASE_DIR"
 
       - name: Test failed-update rollback
-        run: ./scripts/test-install-rollback.sh "releases/ClipboardArchive-0.2.0-macos-$(uname -m)"
+        run: ./scripts/test-install-rollback.sh "$RELEASE_DIR"
+
+      - name: Test release refusals, notes, leak scan and gate
+        run: ./scripts/test-release.sh
+
+      - name: Build the disk image release
+        run: ./scripts/release.sh --out "$RUNNER_TEMP/dmg-release"
+
+      - name: Test an update from build N to N+1
+        run: ./scripts/test-update-e2e.sh

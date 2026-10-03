@@ -1,6 +1,26 @@
 # Install And Update
 
-Clipboard Archive ships as a folder containing:
+## Disk image
+
+Open `ClipboardArchive-<version>-build<n>.dmg` and drag **Clipboard Archive**
+onto **Applications**. Check the download first if you like:
+
+```bash
+shasum -a 256 -c ClipboardArchive-<version>-build<n>.dmg.sha256
+```
+
+Until releases are Developer ID signed and notarized, macOS will not open a
+downloaded copy with a double-click: right-click the app, choose **Open**,
+then confirm once.
+
+A disk image release built with an update feed updates itself; see
+[UPDATES.md](UPDATES.md). It does not install the `clipboard-archive`
+command or a LaunchAgent: turn on **Launch at Login** in Settings, or use the
+release folder below if you want the CLI.
+
+## Release folder
+
+Clipboard Archive also ships as a folder containing:
 
 ```text
 ClipboardArchive.app
@@ -55,8 +75,9 @@ rewrites the LaunchAgent, and starts the new app. Existing archive data remains
 in place. If the new app does not remain running, the prior app and LaunchAgent
 are restored.
 
-Updates are file handoffs. The installed app does not check the internet for
-new versions.
+Release-folder installs update by file handoff. The app does not check the
+internet for new versions; only a disk image release built with a feed has
+the update helper.
 
 ## CLI
 

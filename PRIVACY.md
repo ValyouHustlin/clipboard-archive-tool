@@ -4,8 +4,13 @@ Clipboard Archive is local-first.
 
 - Clipboard contents are stored on the Mac where the app is installed.
 - The app does not send clipboard contents to cloud services.
-- The app has no network sync, remote analytics, crash reporting, or
-  in-app update checks.
+- The app has no network sync, remote analytics or crash reporting, and the
+  app process that reads the clipboard makes no network request at all.
+- Updates (disk image releases built with an update feed only) are done by a
+  separate helper app that has no clipboard code. It sends an HTTPS request
+  for the update feed and for the update file, with the app name and
+  version in the user agent, and nothing else: no system profile, no clips,
+  no identifier. See [docs/UPDATES.md](docs/UPDATES.md).
 - After install, normal capture/search/archive operation works without an
   internet connection.
 - Password managers and credential-like content are blocked by default.

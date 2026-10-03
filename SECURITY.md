@@ -8,8 +8,9 @@ managed enterprise distribution without additional controls.
 
 - It does not encrypt clipboard archive files at rest.
 - It does not claim password-manager blocking is perfect.
-- It does not notarize release builds unless you add an Apple Developer ID
-  signing and notarization workflow.
+- It does not notarize release builds until a Developer ID certificate
+  exists; `scripts/release.sh --sign developer-id --notarize` is the path,
+  and it refuses while the certificate is missing.
 - It does not protect copied content from malware, another process running as
   the same user, unlocked laptop access, Time Machine, APFS snapshots, or other
   backups that already captured the files.
@@ -76,7 +77,32 @@ signing provides local code-signing structure but no Apple Team ID and no
 notarization.
 
 For wider distribution, use a Developer ID certificate, hardened runtime, and
-Apple notarization.
+Apple notarization: `scripts/release.sh --sign developer-id --notarize`
+(see [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md)).
+
+## Updates
+
+The app that reads the clipboard has no network code. Updates run in a
+separate helper app (`Contents/Helpers/Clipboard Archive Updater.app`) that
+has no clipboard code; `scripts/check-local-only.sh` enforces both halves.
+The helper is a process of the same user, so this is a code boundary, not an
+operating-system sandbox: it keeps network-facing parsing out of the process
+that holds clipboard contents, and keeps clipboard access out of the process
+that talks to the network.
+
+An update is installed only when:
+
+- the feed is HTTPS (plain HTTP is accepted only to 127.0.0.1 or localhost,
+  for local tests),
+- the feed carries a valid Ed25519 signature,
+- the update file carries a valid Ed25519 signature from the key built into
+  the installed copy, checked before it is unpacked, and
+- it is not a downgrade.
+
+The private update key is the root of that trust. Losing it means installed
+copies can no longer be updated automatically; leaking it means someone else
+can sign updates. Keep it in the login keychain of the release Mac with one
+offline backup, never in this repository.
 
 Bundled `SHA256SUMS` detect corruption or mismatched extracted files. Because
 the checksum file ships beside the artifact, it does not authenticate the

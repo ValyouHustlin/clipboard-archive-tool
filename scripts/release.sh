@@ -48,6 +48,8 @@ usage: scripts/release.sh [options]
   --appcast FILE           an existing appcast to add this release to
   --allow-dirty            build from uncommitted changes (the release says so)
   --preflight-only         run every check that does not need a build, then stop
+  --fetch-sparkle-tools    download Sparkle's generate_keys and sign_update
+                           (pinned, checksum-verified) to .build/sparkle-tools, then stop
   -h, --help               this text
 
 Exit codes: 0 built, 1 failed, 2 usage, 3 refused (a precondition is missing).
@@ -62,6 +64,7 @@ VERSION=""; BUILD=""; OUT=""; SIGN="adhoc"; IDENTITY=""; NOTARIZE=false
 NOTARY_PROFILE="${CLIPBOARD_ARCHIVE_NOTARY_PROFILE:-}"; FEED_URL=""
 ED_PUBLIC_KEY_FILE="$ROOT/release/update-signing-public-key.txt"; ED_PUBLIC_KEY_FILE_SET=false
 ED_KEY_FILE=""; DOWNLOAD_PREFIX=""; EXISTING_APPCAST=""; ALLOW_DIRTY=false; PREFLIGHT_ONLY=false
+FETCH_TOOLS_ONLY=false
 
 need_value() { [ "$#" -ge 2 ] && [ -n "$2" ] || { echo "release: $1 needs a value" >&2; usage >&2; exit 2; }; }
 while [ "$#" -gt 0 ]; do
@@ -80,6 +83,7 @@ while [ "$#" -gt 0 ]; do
     --appcast) need_value "$@"; EXISTING_APPCAST="$2"; shift 2 ;;
     --allow-dirty) ALLOW_DIRTY=true; shift ;;
     --preflight-only) PREFLIGHT_ONLY=true; shift ;;
+    --fetch-sparkle-tools) FETCH_TOOLS_ONLY=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "release: unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -89,6 +93,28 @@ case "$SIGN" in
   adhoc|developer-id) ;;
   *) echo "release: --sign must be adhoc or developer-id, not '$SIGN'" >&2; exit 2 ;;
 esac
+
+# Sparkle's command-line tools (generate_keys, sign_update), pinned by
+# version and checksum, fetched once into .build.
+TOOLS="${CLIPBOARD_ARCHIVE_SPARKLE_TOOLS:-$ROOT/.build/sparkle-tools/$SPARKLE_VERSION}"
+fetch_sparkle_tools() {
+  [ -x "$TOOLS/bin/sign_update" ] && return 0
+  local download
+  download="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/sparkle-tools.XXXXXX")"
+  /usr/bin/curl -fsSL -o "$download/sparkle.tar.xz" \
+    "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz"
+  echo "$SPARKLE_TOOLS_SHA256  $download/sparkle.tar.xz" | /usr/bin/shasum -a 256 -c - >/dev/null \
+    || { rm -rf "$download"; die "Sparkle $SPARKLE_VERSION tools download does not match its pinned checksum"; }
+  mkdir -p "$TOOLS"
+  /usr/bin/tar -xf "$download/sparkle.tar.xz" -C "$TOOLS" bin
+  rm -rf "$download"
+}
+
+if $FETCH_TOOLS_ONLY; then
+  fetch_sparkle_tools
+  echo "sparkle tools: $TOOLS/bin"
+  exit 0
+fi
 
 # --- Preflight: everything that can refuse does so before anything is built.
 
@@ -301,15 +327,7 @@ echo "sha256: $DMG_SHA256"
 APPCAST=""
 if [ -n "$FEED_URL" ] && [ -n "$DOWNLOAD_PREFIX" ]; then
   step "appcast"
-  TOOLS="${CLIPBOARD_ARCHIVE_SPARKLE_TOOLS:-$ROOT/.build/sparkle-tools/$SPARKLE_VERSION}"
-  if [ ! -x "$TOOLS/bin/sign_update" ]; then
-    mkdir -p "$TOOLS"
-    /usr/bin/curl -fsSL -o "$WORK/sparkle.tar.xz" \
-      "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz"
-    echo "$SPARKLE_TOOLS_SHA256  $WORK/sparkle.tar.xz" | /usr/bin/shasum -a 256 -c - >/dev/null \
-      || die "Sparkle $SPARKLE_VERSION tools download does not match its pinned checksum"
-    /usr/bin/tar -xf "$WORK/sparkle.tar.xz" -C "$TOOLS" bin
-  fi
+  fetch_sparkle_tools
   KEY_ARGS=()
   [ -n "$ED_KEY_FILE" ] && KEY_ARGS=(--ed-key-file "$ED_KEY_FILE")
   signature_line="$("$TOOLS/bin/sign_update" ${KEY_ARGS[@]+"${KEY_ARGS[@]}"} "$DMG")"

@@ -35,6 +35,18 @@ releases/ClipboardArchive-0.2.0-macos-arm64.zip
 releases/ClipboardArchive-0.2.0-macos-arm64.tar.gz
 ```
 
+For the disk image release (`./scripts/release.sh`), also attach:
+
+```text
+releases/<version>-build<n>/ClipboardArchive-<version>-build<n>.dmg
+releases/<version>-build<n>/ClipboardArchive-<version>-build<n>.dmg.sha256
+```
+
+If copies are built to update themselves from GitHub, the feed URL would be
+`https://github.com/<owner>/<repo>/releases/latest/download/appcast.xml` and
+`appcast.xml` is attached to every release. Where the feed lives is still an
+open decision; see [UPDATES.md](UPDATES.md).
+
 ## Update Another Mac
 
 Manual file handoff still works:

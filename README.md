@@ -60,8 +60,10 @@ subscription product. It has two jobs:
 - Storage modes: remember 10 items, remember 50 items, or keep a full archive.
 - Daily manifests and health reports.
 - Install/update scripts for copying releases to other Macs.
-- No network sync, remote analytics, crash reporting, or in-app update
-  checks. Updates are manual via the GitHub Releases page.
+- A drag-to-Applications disk image built by `scripts/release.sh`, which can
+  update itself through a separate helper app that never sees your clips.
+- No network sync, remote analytics or crash reporting. The app that reads
+  the clipboard makes no network request; see [docs/UPDATES.md](docs/UPDATES.md).
 
 ## Install A Release
 
@@ -160,6 +162,8 @@ archive data remains in place.
 
 The installed app operates fully offline. It does not need internet access for
 capture, search, archive storage, health checks, or updates by file handoff.
+Only the optional update helper connects, and only to the feed it was built
+with.
 
 See [docs/INSTALL.md](docs/INSTALL.md).
 
@@ -183,7 +187,7 @@ From the repository root:
 
 ```bash
 ./scripts/package-release.sh
-./scripts/validate-release.sh releases/ClipboardArchive-0.2.0-macos-arm64
+./scripts/validate-release.sh releases/ClipboardArchive-<version>-macos-arm64
 ```
 
 Outputs:
@@ -194,16 +198,19 @@ releases/ClipboardArchive-<version>-macos-<arch>.tar.gz
 releases/ClipboardArchive-<version>-macos-<arch>.zip
 ```
 
-Versioned build:
+The version and build number come from the newest
+`## <version> build <n> - <date>` entry in CHANGELOG.md.
+
+A drag-to-Applications disk image, with its checksum and release notes:
 
 ```bash
-CLIPBOARD_ARCHIVE_VERSION=0.2.0 CLIPBOARD_ARCHIVE_BUILD=6 ./scripts/package-release.sh
+./scripts/release.sh
 ```
 
 See [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md).
 
 Update guidance lives in [docs/UPDATES.md](docs/UPDATES.md). The app itself
-does not check the internet for updates.
+never connects to anything; a separate helper does the update work.
 
 GitHub release guidance lives in [docs/GITHUB.md](docs/GITHUB.md). The GitHub
 updater is a separate human-run Terminal helper; it is not part of app runtime.
@@ -233,8 +240,8 @@ swift run clipboard-archive write-manifest
 ./scripts/scale-benchmark.sh 50000
 ```
 
-The installed app itself has no network behavior. GitHub is only used by
-human-run install/update commands.
+The app process itself has no network behavior. The update helper and the
+human-run install/update commands are the only parts that connect.
 
 ## Data Model
 
