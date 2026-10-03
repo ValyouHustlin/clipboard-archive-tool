@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.0 build 10 - 2026-10-03
+
+- Ship as a disk image you drag to Applications. `scripts/release.sh` builds
+  the app, signs it, wraps it in a disk image with an Applications shortcut,
+  writes the image's SHA-256 beside it, and takes these release notes from
+  this file. It refuses before building when a precondition is missing: a
+  CHANGELOG entry for the version, a clean working tree, or, for
+  `--sign developer-id`, a Developer ID certificate in the keychain.
+- Update in place. A separate helper inside the app,
+  `Clipboard Archive Updater`, checks for, downloads and installs new
+  versions with Sparkle 2. The app that reads the clipboard still makes no
+  network request and links no updater; the helper links no clipboard code.
+  `scripts/check-local-only.sh` checks both halves of that split. Every
+  update must carry an Ed25519 signature from the release key, the feed
+  itself must be signed, the request sends no system profile, and a copy
+  built without a feed never checks at all. "Check for Updates…" is in the
+  menu; the helper also runs from a terminal with `--unattended`.
+- Say when the launch agent would start more than one app. A login item that
+  hands `open` two app paths starts two copies; `status` read only the first
+  path and called it healthy.
+- Read the release version and build number from this file in every release
+  script, instead of a literal in each.
+
 ## 0.3.0 build 9 - 2026-09-18
 
 - Say when a run is only half isolated. Pinning the archive and index into a
