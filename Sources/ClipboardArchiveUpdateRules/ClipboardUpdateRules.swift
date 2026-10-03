@@ -17,6 +17,7 @@ public enum ClipboardUpdateConfiguration {
         case malformedKey
         case systemProfilingEnabled
         case unsignedFeed
+        case signedFeedCanLapse
     }
 
     public enum Outcome: Sendable, Equatable {
@@ -47,6 +48,8 @@ public enum ClipboardUpdateConfiguration {
                 return "This copy asks to send a system profile with update checks, which Clipboard Archive never does."
             case .refused(.unsignedFeed):
                 return "This copy does not require a signed update feed, so the updater will not use it."
+            case .refused(.signedFeedCanLapse):
+                return "This copy would stop requiring a signed update feed after a while, so the updater will not use it."
             }
         }
     }
@@ -55,6 +58,9 @@ public enum ClipboardUpdateConfiguration {
     public static let publicKeyKey = "SUPublicEDKey"
     public static let systemProfilingKey = "SUEnableSystemProfiling"
     public static let requireSignedFeedKey = "SURequireSignedFeed"
+    /// How long a feed may fail its signature before the library parses it
+    /// unverified anyway (a key-rotation affordance). Must be exactly zero.
+    public static let signedFeedFailureExpiryKey = "SUSignedFeedFailureExpirationInterval"
 
     public static func evaluate(infoDictionary info: [String: Any]) -> Outcome {
         let feedString = (info[feedURLKey] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -81,6 +87,9 @@ public enum ClipboardUpdateConfiguration {
         guard isTrue(info[requireSignedFeedKey]) else {
             return .refused(.unsignedFeed)
         }
+        guard isNumericZero(info[signedFeedFailureExpiryKey]) else {
+            return .refused(.signedFeedCanLapse)
+        }
         return .ready(feedURL: url)
     }
 
@@ -93,6 +102,17 @@ public enum ClipboardUpdateConfiguration {
         default:
             return false
         }
+    }
+
+    /// A real number that is zero. Absent, a string or a Boolean is not:
+    /// the library reads only numbers and treats anything else as its
+    /// 20-day default.
+    private static func isNumericZero(_ value: Any?) -> Bool {
+        guard let number = value as? NSNumber, !(value is String),
+              CFGetTypeID(number) != CFBooleanGetTypeID() else {
+            return false
+        }
+        return number.doubleValue == 0
     }
 
     private static func isTrue(_ value: Any?) -> Bool {

@@ -15,9 +15,11 @@ struct UpdateRulesTests {
         feed: String? = "https://example.invalid/appcast.xml",
         key: String? = publicKey,
         profiling: Any? = nil,
-        signedFeed: Any? = true
+        signedFeed: Any? = true,
+        feedFailureExpiry: Any? = 0
     ) -> [String: Any] {
         var info: [String: Any] = ["CFBundleIdentifier": "app.clipboardarchive"]
+        if let feedFailureExpiry { info["SUSignedFeedFailureExpirationInterval"] = feedFailureExpiry }
         if let feed { info["SUFeedURL"] = feed }
         if let key { info["SUPublicEDKey"] = key }
         if let profiling { info["SUEnableSystemProfiling"] = profiling }
@@ -107,11 +109,31 @@ struct UpdateRulesTests {
     }
 
     @Test
+    func testASignedFeedThatCanLapseIsRefused() {
+        // Doctor V36: without this key set to zero, the updater library
+        // starts parsing an unverified feed 20 days after the first bad
+        // signature, so "the feed must be signed" would quietly expire.
+        #expect(
+            ClipboardUpdateConfiguration.evaluate(infoDictionary: Self.info(feedFailureExpiry: nil))
+                == .refused(.signedFeedCanLapse)
+        )
+        for lapse: Any in [1_728_000, 1, 0.5, "0"] {
+            #expect(
+                ClipboardUpdateConfiguration.evaluate(infoDictionary: Self.info(feedFailureExpiry: lapse))
+                    == .refused(.signedFeedCanLapse)
+            )
+        }
+        #expect(ClipboardUpdateConfiguration.evaluate(infoDictionary: Self.info(feedFailureExpiry: 0)).isReady)
+        #expect(ClipboardUpdateConfiguration.evaluate(infoDictionary: Self.info(feedFailureExpiry: 0.0)).isReady)
+    }
+
+    @Test
     func testEveryOutcomeSaysSomethingAPersonCanRead() {
         let outcomes: [ClipboardUpdateConfiguration.Outcome] = [
             .notConfigured(.noFeed), .notConfigured(.noKey),
             .refused(.insecureFeed), .refused(.malformedKey),
             .refused(.systemProfilingEnabled), .refused(.unsignedFeed),
+            .refused(.signedFeedCanLapse),
         ]
         for outcome in outcomes {
             #expect(!outcome.sentence.isEmpty)

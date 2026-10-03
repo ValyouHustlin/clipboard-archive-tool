@@ -114,16 +114,20 @@ acceptable_url() {
 # version and checksum, fetched once into .build.
 TOOLS="${CLIPBOARD_ARCHIVE_SPARKLE_TOOLS:-$ROOT/.build/sparkle-tools/$SPARKLE_VERSION}"
 fetch_sparkle_tools() {
-  [ -x "$TOOLS/bin/sign_update" ] && return 0
-  local download
-  download="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/sparkle-tools.XXXXXX")"
-  /usr/bin/curl -fsSL -o "$download/sparkle.tar.xz" \
-    "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz"
-  echo "$SPARKLE_TOOLS_SHA256  $download/sparkle.tar.xz" | /usr/bin/shasum -a 256 -c - >/dev/null \
-    || { rm -rf "$download"; die "Sparkle $SPARKLE_VERSION tools download does not match its pinned checksum"; }
-  mkdir -p "$TOOLS"
-  /usr/bin/tar -xf "$download/sparkle.tar.xz" -C "$TOOLS" bin
-  rm -rf "$download"
+  # The pinned archive is kept and re-hashed on every use, and the tools are
+  # unpacked from it each time, so a changed file in the cache is never run.
+  local archive="$TOOLS/Sparkle-$SPARKLE_VERSION.tar.xz"
+  if [ ! -f "$archive" ] || ! echo "$SPARKLE_TOOLS_SHA256  $archive" | /usr/bin/shasum -a 256 -c - >/dev/null 2>&1; then
+    mkdir -p "$TOOLS"
+    rm -f "$archive"
+    /usr/bin/curl -fsSL -o "$archive.part" \
+      "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz"
+    echo "$SPARKLE_TOOLS_SHA256  $archive.part" | /usr/bin/shasum -a 256 -c - >/dev/null \
+      || { rm -f "$archive.part"; die "Sparkle $SPARKLE_VERSION tools download does not match its pinned checksum"; }
+    mv "$archive.part" "$archive"
+  fi
+  rm -rf "$TOOLS/bin"
+  /usr/bin/tar -xf "$archive" -C "$TOOLS" bin
 }
 
 if $FETCH_TOOLS_ONLY; then
@@ -301,6 +305,9 @@ if [ -n "$FEED_URL" ]; then
   pb "Add :SUPublicEDKey string $ED_PUBLIC_KEY"
   pb "Add :SURequireSignedFeed bool true"
   pb "Add :SUVerifyUpdateBeforeExtraction bool true"
+  # Never fall back to parsing an unverified feed (the library's default is
+  # to do so 20 days after the first bad signature).
+  pb "Add :SUSignedFeedFailureExpirationInterval integer 0"
 fi
 /usr/bin/plutil -lint "$INFO" >/dev/null
 

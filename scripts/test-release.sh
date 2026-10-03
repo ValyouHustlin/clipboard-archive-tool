@@ -116,6 +116,25 @@ touch "$SRC/Sources/ClipboardArchiveCore/Untracked.swift"
 run "an untracked file counts as uncommitted" 3 "uncommitted changes" -- --preflight-only
 rm -f "$SRC/Sources/ClipboardArchiveCore/Untracked.swift"
 
+echo "## cached Sparkle tools"
+cached="$ROOT/.build/sparkle-tools/2.10.0/Sparkle-2.10.0.tar.xz"
+if [ -f "$cached" ]; then
+  mkdir -p "$T/tools"
+  cp "$cached" "$T/tools/"
+  (cd "$SRC" && CLIPBOARD_ARCHIVE_SPARKLE_TOOLS="$T/tools" ./scripts/release.sh --fetch-sparkle-tools >/dev/null)
+  good="$(shasum -a 256 "$T/tools/bin/sign_update" | cut -d' ' -f1)"
+  echo tampered >> "$T/tools/bin/sign_update"
+  (cd "$SRC" && CLIPBOARD_ARCHIVE_SPARKLE_TOOLS="$T/tools" ./scripts/release.sh --fetch-sparkle-tools >/dev/null)
+  [ "$(shasum -a 256 "$T/tools/bin/sign_update" | cut -d' ' -f1)" = "$good" ] \
+    && pass "a changed cached tool is replaced from the verified archive" || failt "a changed cached tool survived"
+  printf 'x' >> "$T/tools/Sparkle-2.10.0.tar.xz"
+  (cd "$SRC" && CLIPBOARD_ARCHIVE_SPARKLE_TOOLS="$T/tools" ./scripts/release.sh --fetch-sparkle-tools >/dev/null)
+  [ "$(shasum -a 256 "$T/tools/Sparkle-2.10.0.tar.xz" | cut -d' ' -f1)" = "c2bf58aa8387266ac179357b1415d6f2635f044da8be41042af32425dae6da0c" ] \
+    && pass "a changed cached archive is fetched again and re-verified" || failt "a changed cached archive was kept"
+else
+  echo "SKIP  cached Sparkle tools (run ./scripts/release.sh --fetch-sparkle-tools once to enable)"
+fi
+
 echo "## release notes"
 read -r V B <<<"$(cd "$SRC" && . scripts/lib/release-identity.sh && release_identity_newest CHANGELOG.md)"
 python3 "$SRC/scripts/release_tools.py" notes "$SRC/CHANGELOG.md" "$V" "$B" --md "$T/n.md" --html "$T/n.html"

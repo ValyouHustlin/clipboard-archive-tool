@@ -42,9 +42,12 @@ guard let expectedHost, hostBundle.bundleIdentifier == expectedHost else {
 }
 
 let configuration = ClipboardUpdateConfiguration.evaluate(infoDictionary: hostInfo)
+/// The feed this copy was built with. The library would otherwise let a
+/// `SUFeedURL` in user defaults outrank it (Doctor V36).
+var builtInFeedURL = ""
 switch configuration {
-case .ready:
-    break
+case .ready(let feedURL):
+    builtInFeedURL = feedURL.absoluteString
 case .notConfigured:
     if mode == .checkNow {
         _ = NSApplication.shared
@@ -61,8 +64,13 @@ case .refused:
     fail(.refused, configuration.sentence)
 }
 
-/// Sparkle callbacks that matter to every mode: never send a profile.
+/// Sparkle callbacks that matter to every mode: never send a profile, and
+/// only ever read the feed built into the app.
 class PrivacyDelegate: NSObject, SPUUpdaterDelegate {
+    func feedURLString(for updater: SPUUpdater) -> String? {
+        builtInFeedURL
+    }
+
     func feedParameters(for updater: SPUUpdater, sendingSystemProfile: Bool) -> [[String: String]] {
         []
     }

@@ -134,13 +134,16 @@ echo "installed: $(version_of "$A/$APP_NAME")"
 check "installed copy is build N" '[ "$(version_of "$A/$APP_NAME")" = "$N1" ]'
 
 say "N's own updater, unattended: N -> N+1"
+# A feed URL planted in user defaults must not outrank the built-in one.
+/usr/bin/defaults write "$TEST_ID.updates" SUFeedURL "http://127.0.0.1:9/planted-appcast.xml"
+echo "planted SUFeedURL in $TEST_ID.updates: $(/usr/bin/defaults read "$TEST_ID.updates" SUFeedURL)"
 set +e
 "$A/$APP_NAME/$HELPER_REL" --unattended --verbose > "$S/update.out" 2> "$S/update.err"
 rc=$?
 set -e
 sed 's/^/  stderr: /' "$S/update.err"; sed 's/^/  stdout: /' "$S/update.out"
 echo "  rc=$rc"
-check "updater exits 0 (installed)" '[ "$rc" -eq 0 ]'
+check "updater exits 0 (installed), ignoring the planted feed URL" '[ "$rc" -eq 0 ]'
 check "installed copy is now build N+1" '[ "$(version_of "$A/$APP_NAME")" = "$N2" ]'
 check "helper inside it is build N+1 too" \
   '[ "$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$A/$APP_NAME/Contents/Helpers/Clipboard Archive Updater.app/Contents/Info.plist")" = "$N2" ]'
@@ -187,12 +190,17 @@ C="$S/Applications-tampered-feed"
 install_n "$C"
 /usr/bin/defaults delete "$TEST_ID.updates" >/dev/null 2>&1 || true
 rm -rf "$HOME/Library/Caches/$TEST_ID" "$HOME/Library/Caches/$TEST_ID.updater"
+# Pretend the feed first failed its signature years ago. With the library's
+# default, that would let it parse the unverified feed; the build pins the
+# grace period to zero, so it must still refuse.
+/usr/bin/defaults write "$TEST_ID.updater" "SUInitialFailedFeedSigningValidationDate_$TEST_ID" -date "2020-01-01 00:00:00 +0000"
+echo "backdated first feed-signature failure: $(/usr/bin/defaults read "$TEST_ID.updater" "SUInitialFailedFeedSigningValidationDate_$TEST_ID")"
 set +e
 "$C/$APP_NAME/$HELPER_REL" --unattended > "$S/update4.out" 2>&1
 rc=$?
 set -e
 sed 's/^/  /' "$S/update4.out"; echo "  rc=$rc"
-check "tampered feed is refused (exit 4)" '[ "$rc" -eq 4 ]'
+check "tampered feed is refused (exit 4), even 6 years after its first failure" '[ "$rc" -eq 4 ]'
 check "copy stays on build N" '[ "$(version_of "$C/$APP_NAME")" = "$N1" ]'
 cp "$S/appcast.good" "$FEED/appcast.xml"
 
