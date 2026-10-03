@@ -310,20 +310,20 @@ if [ -n "$FEED_URL" ] && [ -n "$DOWNLOAD_PREFIX" ]; then
   fi
   KEY_ARGS=()
   [ -n "$ED_KEY_FILE" ] && KEY_ARGS=(--ed-key-file "$ED_KEY_FILE")
-  signature_line="$("$TOOLS/bin/sign_update" "${KEY_ARGS[@]}" "$DMG")"
+  signature_line="$("$TOOLS/bin/sign_update" ${KEY_ARGS[@]+"${KEY_ARGS[@]}"} "$DMG")"
   ED_SIGNATURE="$(printf '%s' "$signature_line" | /usr/bin/sed -n 's/.*sparkle:edSignature="\([^"]*\)".*/\1/p')"
   [ -n "$ED_SIGNATURE" ] || die "sign_update returned no signature"
   # The private key that signed must match the public key built into the app.
-  "$TOOLS/bin/sign_update" --verify "${KEY_ARGS[@]}" "$DMG" "$ED_SIGNATURE" >/dev/null \
+  "$TOOLS/bin/sign_update" --verify ${KEY_ARGS[@]+"${KEY_ARGS[@]}"} "$DMG" "$ED_SIGNATURE" >/dev/null \
     || die "the update signature does not verify"
   APPCAST="$OUT/appcast.xml"
   APPCAST_ARGS=()
   [ -n "$EXISTING_APPCAST" ] && APPCAST_ARGS=(--existing "$EXISTING_APPCAST")
-  /usr/bin/python3 "$ROOT/scripts/release_tools.py" appcast --out "$APPCAST" "${APPCAST_ARGS[@]}" \
+  /usr/bin/python3 "$ROOT/scripts/release_tools.py" appcast --out "$APPCAST" ${APPCAST_ARGS[@]+"${APPCAST_ARGS[@]}"} \
     --version "$BUILD" --short "$VERSION" --url "${DOWNLOAD_PREFIX%/}/$DMG_NAME" \
     --length "$DMG_BYTES" --ed-signature "$ED_SIGNATURE" --notes-html "$NOTES_HTML"
   # The app requires a signed feed: sign_update embeds the signature in it.
-  "$TOOLS/bin/sign_update" "${KEY_ARGS[@]}" --disable-signing-warning "$APPCAST" >/dev/null
+  "$TOOLS/bin/sign_update" ${KEY_ARGS[@]+"${KEY_ARGS[@]}"} --disable-signing-warning "$APPCAST" >/dev/null
   /usr/bin/python3 "$ROOT/scripts/release_tools.py" leak-scan "$APPCAST"
   echo "appcast: $APPCAST"
 fi
