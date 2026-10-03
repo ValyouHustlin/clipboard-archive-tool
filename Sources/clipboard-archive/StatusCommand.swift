@@ -8,6 +8,8 @@ struct LaunchAgentFacts {
     var present: Bool
     var programPath: String?
     var programExists: Bool
+    /// Everything the agent would start; more than one is a defect.
+    var programTargets: [String]
     /// The stores the plist pins, when it pins any.
     var archiveRoot: String?
     var indexPath: String?
@@ -24,6 +26,7 @@ struct LaunchAgentFacts {
             present: FileManager.default.fileExists(atPath: plistPath),
             programPath: nil,
             programExists: false,
+            programTargets: [],
             archiveRoot: nil,
             indexPath: nil,
             loadedInLaunchd: nil
@@ -35,13 +38,15 @@ struct LaunchAgentFacts {
               ) as? [String: Any] else {
             return facts
         }
-        if let program = plist["Program"] as? String {
-            facts.programPath = program
-        } else if let arguments = plist["ProgramArguments"] as? [String], let first = arguments.first {
-            // `/usr/bin/open <app>` names the app in the second argument;
-            // the thing that has to exist is what would actually be run.
-            facts.programPath = arguments.count > 1 && first.hasSuffix("/open") ? arguments[1] : first
-        }
+        // `/usr/bin/open <app>` names the app as an operand; the thing that
+        // has to exist is what would actually be run, and every operand is
+        // run, not just the first.
+        let program = ClipboardLaunchAgentProgram.parse(
+            program: plist["Program"] as? String,
+            arguments: plist["ProgramArguments"] as? [String]
+        )
+        facts.programTargets = program.targets
+        facts.programPath = program.primaryPath
         facts.programExists = facts.programPath.map {
             FileManager.default.fileExists(atPath: $0)
         } ?? false
@@ -191,6 +196,7 @@ enum StatusCommand {
         )
         if agent.present {
             resolvedFacts.launchAgentProgramMissing = !agent.programExists
+            resolvedFacts.launchAgentTargetCount = agent.programTargets.count
             let pinnedArchive = agent.archiveRoot.map { URL(fileURLWithPath: $0).standardizedFileURL.path }
             let pinnedIndex = agent.indexPath.map { URL(fileURLWithPath: $0).standardizedFileURL.path }
             resolvedFacts.launchAgentStoresDiffer =
@@ -361,6 +367,7 @@ enum StatusCommand {
                     "plist_present": report.launchAgent.present,
                     "program_path": report.launchAgent.programPath as Any? ?? NSNull(),
                     "program_exists": report.launchAgent.programExists,
+                    "program_targets": report.launchAgent.programTargets,
                     "loaded": report.launchAgent.loadedInLaunchd.map { $0 as Any } ?? NSNull(),
                     "stores_differ": facts.launchAgentStoresDiffer
                 ],
@@ -388,6 +395,9 @@ enum StatusCommand {
         print("launch_agent: \(report.launchAgent.present ? report.launchAgent.plistPath : "not installed")")
         if report.launchAgent.present {
             print("launch_agent_program: \(report.launchAgent.programPath ?? "none") (\(report.launchAgent.programExists ? "present" : "MISSING"))")
+            if report.launchAgent.programTargets.count > 1 {
+                print("launch_agent_targets: \(report.launchAgent.programTargets.count) (\(report.launchAgent.programTargets.joined(separator: ", ")))")
+            }
             if let loaded = report.launchAgent.loadedInLaunchd {
                 print("launch_agent_loaded: \(loaded)")
             }

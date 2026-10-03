@@ -33,6 +33,8 @@ public struct ClipboardStatusFacts: Sendable, Equatable {
     public var launchAgentProgramMissing: Bool
     /// True when the launch agent pins stores other than the resolved ones.
     public var launchAgentStoresDiffer: Bool
+    /// How many apps the launch agent would start; nil when there is no agent.
+    public var launchAgentTargetCount: Int?
 
     public init(
         storesPresent: Bool,
@@ -49,8 +51,10 @@ public struct ClipboardStatusFacts: Sendable, Equatable {
         startupAge: TimeInterval? = nil,
         captureSuspended: Bool = false,
         captureSuspendedForSeconds: TimeInterval? = nil,
-        activeErrors: Int? = nil
+        activeErrors: Int? = nil,
+        launchAgentTargetCount: Int? = nil
     ) {
+        self.launchAgentTargetCount = launchAgentTargetCount
         self.pollsSinceLastHeartbeat = pollsSinceLastHeartbeat
         self.startupAge = startupAge
         self.captureSuspended = captureSuspended
@@ -154,6 +158,13 @@ public enum ClipboardStatusRules {
 
         if facts.launchAgentStoresDiffer {
             warnings.append("The launch agent pins different stores than this command resolved.")
+        }
+
+        if let count = facts.launchAgentTargetCount, count > 1 {
+            warnings.append(
+                "The launch agent names \(count) apps to start; it should name one, "
+                + "or a login can start more than one copy."
+            )
         }
 
         return ClipboardStatusVerdict(exit: warnings.isEmpty ? .success : .warnings, warnings: warnings)
