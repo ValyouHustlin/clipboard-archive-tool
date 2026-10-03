@@ -3,8 +3,15 @@ set -euo pipefail
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${CLIPBOARD_ARCHIVE_VERSION:-0.3.0}"
-BUILD_NUMBER="${CLIPBOARD_ARCHIVE_BUILD:-9}"
+# shellcheck source=lib/release-identity.sh
+. "$ROOT/scripts/lib/release-identity.sh"
+read -r CHANGELOG_VERSION CHANGELOG_BUILD <<<"$(release_identity_newest "$ROOT/CHANGELOG.md")"
+VERSION="${CLIPBOARD_ARCHIVE_VERSION:-$CHANGELOG_VERSION}"
+BUILD_NUMBER="${CLIPBOARD_ARCHIVE_BUILD:-$CHANGELOG_BUILD}"
+if [ -z "$VERSION" ] || [ -z "$BUILD_NUMBER" ]; then
+  echo "no release identity: CHANGELOG.md has no '## <version> build <n> - <date>' entry" >&2
+  exit 1
+fi
 ARCH="$(uname -m)"
 NAME="ClipboardArchive-${VERSION}-macos-${ARCH}"
 RELEASE_ROOT="$ROOT/releases"

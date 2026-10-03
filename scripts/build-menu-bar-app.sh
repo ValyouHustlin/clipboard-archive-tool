@@ -4,9 +4,24 @@ export PATH="/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="ClipboardArchive"
-VERSION="${CLIPBOARD_ARCHIVE_VERSION:-0.3.0}"
-BUILD_NUMBER="${CLIPBOARD_ARCHIVE_BUILD:-9}"
+# shellcheck source=lib/release-identity.sh
+. "$ROOT/scripts/lib/release-identity.sh"
+read -r CHANGELOG_VERSION CHANGELOG_BUILD <<<"$(release_identity_newest "$ROOT/CHANGELOG.md")"
+VERSION="${CLIPBOARD_ARCHIVE_VERSION:-$CHANGELOG_VERSION}"
+BUILD_NUMBER="${CLIPBOARD_ARCHIVE_BUILD:-$CHANGELOG_BUILD}"
+if [ -z "$VERSION" ] || [ -z "$BUILD_NUMBER" ]; then
+  echo "no release identity: CHANGELOG.md has no '## <version> build <n> - <date>' entry" >&2
+  exit 1
+fi
 APP_DIR="${CLIPBOARD_ARCHIVE_APP_OUTPUT:-$ROOT/dist/${APP_NAME}.app}"
+# Tests that install a copy beside the real app use their own identifier, so
+# nothing keyed on the identifier (preferences, the updater's state, a quit
+# event from an installer) can reach the real one.
+BUNDLE_ID="${CLIPBOARD_ARCHIVE_BUNDLE_ID:-app.clipboardarchive}"
+case "$BUNDLE_ID" in
+  app.clipboardarchive|app.clipboardarchive.*) ;;
+  *) echo "bundle identifier must be app.clipboardarchive or below it: $BUNDLE_ID" >&2; exit 1 ;;
+esac
 CONTENTS="$APP_DIR/Contents"
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
@@ -40,7 +55,7 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <key>CFBundleExecutable</key>
   <string>ClipboardArchive</string>
   <key>CFBundleIdentifier</key>
-  <string>app.clipboardarchive</string>
+  <string>$BUNDLE_ID</string>
   <key>CFBundleName</key>
   <string>Clipboard Archive</string>
   <key>CFBundleDisplayName</key>
