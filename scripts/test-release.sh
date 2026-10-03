@@ -44,7 +44,7 @@ run() {
   out="$(cd "$SRC" && env ${envs[@]+"${envs[@]}"} ./scripts/release.sh "$@" 2>&1)"
   rc=$?
   set -e
-  if [ "$rc" -eq "$expected" ] && printf '%s' "$out" | grep -Eq -- "$pattern"; then
+  if [ "$rc" -eq "$expected" ] && printf '%s' "$out" | tr '\n' ' ' | grep -Eq -- "$pattern"; then
     pass "$name (rc $rc)"
   else
     failt "$name (rc $rc, wanted $expected and /$pattern/)"
