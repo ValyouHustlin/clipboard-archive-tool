@@ -92,13 +92,15 @@ Create it once, on the Mac that makes releases:
 
 ```bash
 ./scripts/release.sh --fetch-sparkle-tools
-.build/sparkle-tools/2.10.0/bin/generate_keys
+.build/sparkle-tools/2.10.0/bin/generate_keys --account clipboard-archive
 ```
+
+(Done 2026-10-03; the public key is in `release/update-signing-public-key.txt`.)
 
 `generate_keys` stores the private key in the login keychain and prints the
 public key. Save the public key, alone on one line, as
 `release/update-signing-public-key.txt`. Export a backup of the private key
-with `generate_keys -x <file>` and keep it in the password manager, not in
+with `generate_keys --account clipboard-archive -x <file>` and keep it in the password manager, not in
 this repository. (`--fetch-sparkle-tools` downloads Sparkle's
 tools, pinned by version and checksum, into `.build/sparkle-tools/2.10.0`.)
 

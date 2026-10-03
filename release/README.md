@@ -4,6 +4,7 @@
 update-capable copy is built with, base64 on one line. It is public by
 design. `scripts/release.sh --feed-url ...` reads it and refuses without it.
 
-It does not exist yet: the key pair is created once by the release owner
-(see docs/UPDATES.md, "The update signing key"). The private half lives in
-the release Mac's login keychain with one offline backup, never here.
+Created 2026-10-03 with Sparkle's `generate_keys --account clipboard-archive`.
+The private half lives in the release Mac's login keychain under that account
+name, with one backup in the release Mac's secrets store, never here.
+`release.sh` signs with that keychain account unless given `--ed-key-file`.

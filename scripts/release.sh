@@ -48,7 +48,9 @@ usage: scripts/release.sh [options]
   --ed-public-key-file F   the update signing public key (base64); default:
                            release/update-signing-public-key.txt
   --ed-key-file F          private key file used to sign the update and the
-                           appcast; default: Sparkle's login-keychain item
+                           appcast; default: the login-keychain account below
+  --ed-key-account NAME    Sparkle login-keychain account holding the private
+                           key (default: clipboard-archive)
   --download-url-prefix U  where the disk image will be published; with
                            --feed-url this writes the appcast
   --appcast FILE           an existing appcast to add this release to
@@ -71,6 +73,7 @@ NOTARY_PROFILE="${CLIPBOARD_ARCHIVE_NOTARY_PROFILE:-}"; FEED_URL=""
 ED_PUBLIC_KEY_FILE="$ROOT/release/update-signing-public-key.txt"; ED_PUBLIC_KEY_FILE_SET=false
 ED_KEY_FILE=""; DOWNLOAD_PREFIX=""; EXISTING_APPCAST=""; ALLOW_DIRTY=false; PREFLIGHT_ONLY=false
 FETCH_TOOLS_ONLY=false
+ED_KEY_ACCOUNT="clipboard-archive"
 
 need_value() { [ "$#" -ge 2 ] && [ -n "$2" ] || { echo "release: $1 needs a value" >&2; usage >&2; exit 2; }; }
 while [ "$#" -gt 0 ]; do
@@ -85,6 +88,7 @@ while [ "$#" -gt 0 ]; do
     --feed-url) need_value "$@"; FEED_URL="$2"; shift 2 ;;
     --ed-public-key-file) need_value "$@"; ED_PUBLIC_KEY_FILE="$2"; ED_PUBLIC_KEY_FILE_SET=true; shift 2 ;;
     --ed-key-file) need_value "$@"; ED_KEY_FILE="$2"; shift 2 ;;
+    --ed-key-account) need_value "$@"; ED_KEY_ACCOUNT="$2"; shift 2 ;;
     --download-url-prefix) need_value "$@"; DOWNLOAD_PREFIX="$2"; shift 2 ;;
     --appcast) need_value "$@"; EXISTING_APPCAST="$2"; shift 2 ;;
     --allow-dirty) ALLOW_DIRTY=true; shift ;;
@@ -216,7 +220,7 @@ if [ -n "$FEED_URL" ]; then
       signer_public="$(/usr/bin/xcrun swift "$ROOT/scripts/lib/ed25519-public-key.swift" "$ED_KEY_FILE" 2>/dev/null || true)"
     else
       fetch_sparkle_tools
-      signer_public="$("$TOOLS/bin/generate_keys" -p 2>/dev/null)" || signer_public=""
+      signer_public="$("$TOOLS/bin/generate_keys" -p --account "$ED_KEY_ACCOUNT" 2>/dev/null)" || signer_public=""
       signer_public="$(printf '%s' "$signer_public" | /usr/bin/tail -1 | /usr/bin/tr -d ' \n\r\t')"
     fi
     [ -n "$signer_public" ] || refuse "could not read the update signing key (--ed-key-file, or Sparkle's login-keychain item)"
@@ -372,7 +376,7 @@ APPCAST=""
 if [ -n "$FEED_URL" ] && [ -n "$DOWNLOAD_PREFIX" ]; then
   step "appcast"
   fetch_sparkle_tools
-  KEY_ARGS=()
+  KEY_ARGS=(--account "$ED_KEY_ACCOUNT")
   [ -n "$ED_KEY_FILE" ] && KEY_ARGS=(--ed-key-file "$ED_KEY_FILE")
   signature_line="$("$TOOLS/bin/sign_update" ${KEY_ARGS[@]+"${KEY_ARGS[@]}"} "$DMG")"
   ED_SIGNATURE="$(printf '%s' "$signature_line" | /usr/bin/sed -n 's/.*sparkle:edSignature="\([^"]*\)".*/\1/p')"
