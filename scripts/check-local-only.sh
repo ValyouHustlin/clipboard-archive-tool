@@ -30,6 +30,10 @@ fail() {
   exit 1
 }
 
+# Every check below reads ripgrep's output; without it they would all see
+# nothing and pass. Fail closed instead.
+command -v rg >/dev/null 2>&1 || fail "ripgrep (rg) is required; without it this gate would check nothing"
+
 NETWORK_SOURCE='URLSession|NSURLConnection|CFNetwork|Network\.framework|NWConnection|NWPath|WebSocket|CloudKit|CKContainer|WKWebView|SFSafari|Sparkle|SUUpdater|Telemetry|analytics|crashlytics|firebase|curl|wget|scp|rsync|http://|https://'
 
 production_source_matches="$(

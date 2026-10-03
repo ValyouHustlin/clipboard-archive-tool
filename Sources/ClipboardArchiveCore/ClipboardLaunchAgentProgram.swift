@@ -14,11 +14,12 @@ public struct ClipboardLaunchAgentProgram: Sendable, Equatable {
     /// The target `status` checks for existence and prints.
     public var primaryPath: String? { targets.first }
 
-    /// `open` options that consume the argument after them. `-a` is the one
-    /// whose value is itself something `open` starts.
+    /// `open` options that consume the argument after them.
     private static let openOptionsWithValue: Set<String> = [
-        "-a", "-b", "-s", "-i", "-o", "--env", "--stdin", "--stdout", "--stderr",
+        "-a", "-b", "-s", "-i", "-o", "-u", "--arch", "--env", "--stdin", "--stdout", "--stderr",
     ]
+    /// Of those, the ones whose value names an app `open` starts.
+    private static let openOptionsNamingAnApp: Set<String> = ["-a", "-b"]
 
     public static func parse(program: String?, arguments: [String]?) -> ClipboardLaunchAgentProgram {
         if let program, !program.isEmpty {
@@ -40,7 +41,7 @@ public struct ClipboardLaunchAgentProgram: Sendable, Equatable {
             }
             if openOptionsWithValue.contains(argument) {
                 let valueIndex = arguments.index(after: index)
-                if argument == "-a", valueIndex < arguments.endIndex {
+                if openOptionsNamingAnApp.contains(argument), valueIndex < arguments.endIndex {
                     targets.append(arguments[valueIndex])
                 }
                 index = arguments.index(after: valueIndex)

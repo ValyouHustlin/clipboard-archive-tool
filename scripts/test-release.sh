@@ -83,6 +83,28 @@ run "a good feed and key pass preflight" 0 "updates: feed https://updates.exampl
   -- --feed-url https://updates.example.invalid/appcast.xml --ed-public-key-file "$T/good.pub" --preflight-only
 run "loopback http feed passes preflight" 0 "preflight ok" \
   -- --feed-url http://127.0.0.1:8080/appcast.xml --ed-public-key-file "$T/good.pub" --preflight-only
+run "a feed with a user-info part refuses" 3 "must be https://" \
+  -- --feed-url "http://127.0.0.1:80@evil.example.invalid/appcast.xml" --ed-public-key-file "$T/good.pub" --preflight-only
+run "a plain-http download prefix refuses" 3 "--download-url-prefix must be https://" \
+  -- --feed-url https://updates.example.invalid/appcast.xml --ed-public-key-file "$T/good.pub" \
+  --download-url-prefix http://downloads.example.invalid --preflight-only
+( umask 077; /usr/bin/head -c 32 /dev/urandom | /usr/bin/base64 > "$T/signer.key" )
+/usr/bin/xcrun swift "$SRC/scripts/lib/ed25519-public-key.swift" "$T/signer.key" > "$T/signer.pub"
+run "a signing key that does not match the built-in public key refuses" 3 "does not match" \
+  -- --feed-url https://updates.example.invalid/appcast.xml --ed-public-key-file "$T/good.pub" \
+  --download-url-prefix https://downloads.example.invalid --ed-key-file "$T/signer.key" --preflight-only
+run "a signing key that matches passes preflight" 0 "signing key matches the public key built in.*preflight ok" \
+  -- --feed-url https://updates.example.invalid/appcast.xml --ed-public-key-file "$T/signer.pub" \
+  --download-url-prefix https://downloads.example.invalid --ed-key-file "$T/signer.key" --preflight-only
+printf '#!/bin/sh\ncase "$1" in history) echo "No Keychain password item found for profile" >&2; exit 69;; esac\nexit 0\n' > "$T/notary-bad"
+printf '#!/bin/sh\nexit 0\n' > "$T/notary-good"
+chmod +x "$T/notary-bad" "$T/notary-good"
+run "--notarize with a profile that does not work refuses" 3 "notary profile 'missing' is not usable" \
+  CLIPBOARD_ARCHIVE_SECURITY_BIN="$ONE" CLIPBOARD_ARCHIVE_NOTARYTOOL="$T/notary-bad" \
+  -- --sign developer-id --notarize --notary-profile missing --preflight-only
+run "--notarize with a working profile passes preflight" 0 "notarize: profile clipboard-archive.*preflight ok" \
+  CLIPBOARD_ARCHIVE_SECURITY_BIN="$ONE" CLIPBOARD_ARCHIVE_NOTARYTOOL="$T/notary-good" \
+  -- --sign developer-id --notarize --notary-profile clipboard-archive --preflight-only
 run "a download prefix without a feed refuses" 3 "writes an appcast nothing reads" \
   -- --download-url-prefix https://downloads.example.invalid --preflight-only
 run "an unknown option is a usage error" 2 "unknown option" -- --frobnicate
@@ -90,6 +112,9 @@ echo "# local change" >> "$SRC/README.md"
 run "uncommitted changes refuse" 3 "uncommitted changes" -- --preflight-only
 run "--allow-dirty says DIRTY" 0 "\(DIRTY\).*preflight ok" -- --allow-dirty --preflight-only
 git -C "$SRC" checkout --quiet README.md
+touch "$SRC/Sources/ClipboardArchiveCore/Untracked.swift"
+run "an untracked file counts as uncommitted" 3 "uncommitted changes" -- --preflight-only
+rm -f "$SRC/Sources/ClipboardArchiveCore/Untracked.swift"
 
 echo "## release notes"
 read -r V B <<<"$(cd "$SRC" && . scripts/lib/release-identity.sh && release_identity_newest CHANGELOG.md)"
@@ -148,6 +173,9 @@ printf '\nlet _ = NSPasteboard.general\n' >> "$T/graph/Sources/ClipboardArchiveU
 set +e; out="$("$T/graph/scripts/check-local-only.sh" 2>&1)"; rc=$?; set -e
 [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "reach for the clipboard" \
   && pass "the helper touching the pasteboard fails the gate" || { failt "helper->pasteboard not caught"; echo "$out"; }
+set +e; out="$(PATH=/usr/bin:/bin "$SRC/scripts/check-local-only.sh" 2>&1)"; rc=$?; set -e
+[ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "ripgrep (rg) is required" \
+  && pass "the gate fails closed without ripgrep" || { failt "gate passed without ripgrep"; echo "$out"; }
 set +e; out="$("$SRC/scripts/check-local-only.sh" 2>&1)"; rc=$?; set -e
 [ "$rc" -eq 0 ] && pass "HEAD passes the gate" || { failt "HEAD fails the gate"; echo "$out"; }
 

@@ -53,6 +53,25 @@ struct LaunchAgentProgramTests {
     }
 
     @Test
+    func testOpenByBundleIdentifierCountsAsATarget() {
+        // Found by the fresh reader: -b starts an app as surely as -a does.
+        let program = ClipboardLaunchAgentProgram.parse(
+            program: nil,
+            arguments: ["/usr/bin/open", "-b", "app.clipboardarchive", "-a", "Clipboard Archive"]
+        )
+        #expect(program.targets == ["app.clipboardarchive", "Clipboard Archive"])
+    }
+
+    @Test
+    func testArchitectureAndURLValuesAreNotTargets() {
+        let program = ClipboardLaunchAgentProgram.parse(
+            program: nil,
+            arguments: ["/usr/bin/open", "--arch", "arm64", "-u", "https://example.invalid", "/Applications/Clipboard Archive.app"]
+        )
+        #expect(program.targets == ["/Applications/Clipboard Archive.app"])
+    }
+
+    @Test
     func testDirectExecutableIsItsOwnSingleTarget() {
         let direct = ClipboardLaunchAgentProgram.parse(
             program: nil,

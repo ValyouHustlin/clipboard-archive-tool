@@ -252,7 +252,7 @@ final class BackgroundDelegate: PrivacyDelegate {
     /// The installer relaunches the new app, and the new app starts the new
     /// helper. This one, from the replaced bundle, steps aside.
     func updaterWillRelaunchApplication(_ updater: SPUUpdater) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
             NSApp.terminate(nil)
         }
     }

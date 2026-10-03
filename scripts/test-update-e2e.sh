@@ -59,7 +59,7 @@ git -C "$S/src" status --short | head -5
 say "throwaway Ed25519 key pair (scratch only, never the keychain)"
 mkdir -p "$S/keys"
 ( umask 077; /usr/bin/head -c 32 /dev/urandom | /usr/bin/base64 > "$S/keys/private.txt" )
-/usr/bin/xcrun swift "$ROOT/scripts/test-support/ed25519-public-key.swift" "$S/keys/private.txt" > "$S/keys/public.txt"
+/usr/bin/xcrun swift "$ROOT/scripts/lib/ed25519-public-key.swift" "$S/keys/private.txt" > "$S/keys/public.txt"
 echo "public key: $(cat "$S/keys/public.txt")"
 
 read -r BASE_VERSION BASE_BUILD <<<"$(cd "$S/src" && . scripts/lib/release-identity.sh && release_identity_newest CHANGELOG.md)"
@@ -146,6 +146,10 @@ check "helper inside it is build N+1 too" \
   '[ "$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$A/$APP_NAME/Contents/Helpers/Clipboard Archive Updater.app/Contents/Info.plist")" = "$N2" ]'
 check "updated app passes codesign --verify --deep --strict" '/usr/bin/codesign --verify --deep --strict "$A/$APP_NAME" 2>/dev/null'
 check "updated app carries no quarantine flag" '! /usr/bin/xattr -r "$A/$APP_NAME" | grep -q com.apple.quarantine'
+# The installer relaunches only an app that was running. None was: prove no
+# copy from this scratch tree came up (it would not be isolated).
+sleep 2
+check "no app from the scratch tree is running" '! /usr/bin/pgrep -f "$S/Applications" >/dev/null'
 
 say "second run: nothing newer"
 set +e
@@ -206,6 +210,8 @@ rc=$?
 set -e
 sed 's/^/  /' "$S/update5.out"; echo "  rc=$rc"
 check "no-feed copy exits 3 (not set up) without a request" '[ "$rc" -eq 3 ]'
+
+check "still no app from the scratch tree is running" '! /usr/bin/pgrep -f "$S/Applications" >/dev/null'
 
 say "result"
 if [ "$FAILED" -eq 0 ]; then

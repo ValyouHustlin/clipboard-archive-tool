@@ -29,10 +29,13 @@ appcast.xml                                      only with --feed-url and --down
 
 What it does, in order, stopping at the first problem:
 
-1. **Preflight.** A CHANGELOG entry for the version, a clean working tree
-   (`--allow-dirty` overrides and the release says DIRTY), and for
-   `--sign developer-id` a Developer ID Application certificate in the
-   keychain. Refusals exit 3 before anything is built.
+1. **Preflight.** A CHANGELOG entry for the version; a clean working tree,
+   untracked files included (`--allow-dirty` overrides and the release says
+   DIRTY); for `--sign developer-id` a Developer ID Application certificate
+   in the keychain; for `--notarize` a notary profile that `notarytool
+   history` accepts; with a feed, HTTPS URLs and a signing key whose public
+   half matches `release/update-signing-public-key.txt`. Refusals exit 3
+   before anything is built.
 2. **Build** the app and the update helper in release mode.
 3. **Assemble** the helper inside the app with Sparkle's framework (its XPC
    services removed; the app is not sandboxed).

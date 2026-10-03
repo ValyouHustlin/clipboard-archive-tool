@@ -22,6 +22,12 @@ SPARKLE_TOOLS_SHA256="c2bf58aa8387266ac179357b1415d6f2635f044da8be41042af32425da
 APP_DISPLAY_NAME="Clipboard Archive"
 HELPER_NAME="Clipboard Archive Updater"
 SECURITY_BIN="${CLIPBOARD_ARCHIVE_SECURITY_BIN:-/usr/bin/security}"
+# Overridable so the refusal can be tested without Apple credentials.
+if [ -n "${CLIPBOARD_ARCHIVE_NOTARYTOOL:-}" ]; then
+  NOTARYTOOL=("$CLIPBOARD_ARCHIVE_NOTARYTOOL")
+else
+  NOTARYTOOL=(/usr/bin/xcrun notarytool)
+fi
 
 usage() {
   cat <<'USAGE'
@@ -94,6 +100,16 @@ case "$SIGN" in
   *) echo "release: --sign must be adhoc or developer-id, not '$SIGN'" >&2; exit 2 ;;
 esac
 
+# A URL an update may come from: HTTPS, or plain HTTP to this Mac only.
+# No user-info part, which could hide the real host behind a loopback name.
+acceptable_url() {
+  case "$1" in
+    *@*) return 1 ;;
+    https://?*|http://127.0.0.1|http://127.0.0.1[:/]*|http://localhost|http://localhost[:/]*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Sparkle's command-line tools (generate_keys, sign_update), pinned by
 # version and checksum, fetched once into .build.
 TOOLS="${CLIPBOARD_ARCHIVE_SPARKLE_TOOLS:-$ROOT/.build/sparkle-tools/$SPARKLE_VERSION}"
@@ -134,7 +150,7 @@ echo "version: $VERSION (build $BUILD)"
 
 COMMIT="$(/usr/bin/git -C "$ROOT" rev-parse HEAD)"
 DIRTY=false
-if [ -n "$(/usr/bin/git -C "$ROOT" status --porcelain --untracked-files=no)" ]; then
+if [ -n "$(/usr/bin/git -C "$ROOT" status --porcelain --untracked-files=normal)" ]; then
   DIRTY=true
   $ALLOW_DIRTY || refuse "the working tree has uncommitted changes; commit them or pass --allow-dirty"
 fi
@@ -166,16 +182,21 @@ fi
 if $NOTARIZE; then
   [ "$SIGN" = "developer-id" ] || refuse "--notarize needs --sign developer-id; Apple does not notarize ad hoc signatures"
   [ -n "$NOTARY_PROFILE" ] || refuse "--notarize needs --notary-profile NAME (saved with 'xcrun notarytool store-credentials NAME')"
-  /usr/bin/xcrun --find notarytool >/dev/null 2>&1 || refuse "notarytool is not installed (Xcode command line tools)"
+  "${NOTARYTOOL[@]}" --help >/dev/null 2>&1 || refuse "notarytool is not installed (Xcode command line tools)"
+  # Asking for the history proves the saved profile exists and its
+  # credentials work, before an hour of building finds out at submit.
+  "${NOTARYTOOL[@]}" history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1 \
+    || refuse "notary profile '$NOTARY_PROFILE' is not usable ('notarytool history' failed).
+  Save it with 'xcrun notarytool store-credentials $NOTARY_PROFILE', then run this again."
   echo "notarize: profile $NOTARY_PROFILE"
 fi
 
 ED_PUBLIC_KEY=""
 if [ -n "$FEED_URL" ]; then
-  case "$FEED_URL" in
-    https://?*|http://127.0.0.1[:/]*|http://localhost[:/]*) ;;
-    *) refuse "--feed-url must be https:// (or http://127.0.0.1 / localhost for a local test): $FEED_URL" ;;
-  esac
+  acceptable_url "$FEED_URL" \
+    || refuse "--feed-url must be https:// (or http://127.0.0.1 / localhost for a local test): $FEED_URL"
+  [ -z "$DOWNLOAD_PREFIX" ] || acceptable_url "$DOWNLOAD_PREFIX" \
+    || refuse "--download-url-prefix must be https:// (or http://127.0.0.1 / localhost for a local test): $DOWNLOAD_PREFIX"
   [ -f "$ED_PUBLIC_KEY_FILE" ] || refuse "--feed-url needs the update signing public key; '$ED_PUBLIC_KEY_FILE' does not exist.
   Create the key once with Sparkle's generate_keys (it stays in the login keychain) and save
   the public half there, or pass --ed-public-key-file."
@@ -183,6 +204,22 @@ if [ -n "$FEED_URL" ]; then
   decoded_bytes="$(printf '%s' "$ED_PUBLIC_KEY" | /usr/bin/base64 -D 2>/dev/null | /usr/bin/wc -c | /usr/bin/tr -d ' ')"
   [ "$decoded_bytes" = "32" ] || refuse "'$ED_PUBLIC_KEY_FILE' is not a base64 Ed25519 public key (32 bytes)"
   echo "updates: feed $FEED_URL"
+  if [ -n "$DOWNLOAD_PREFIX" ]; then
+    # The key that will sign must be the key every copy is built to trust:
+    # a mismatch would ship copies that refuse every update they are sent.
+    if [ -n "$ED_KEY_FILE" ]; then
+      [ -f "$ED_KEY_FILE" ] || refuse "--ed-key-file '$ED_KEY_FILE' does not exist"
+      signer_public="$(/usr/bin/xcrun swift "$ROOT/scripts/lib/ed25519-public-key.swift" "$ED_KEY_FILE" 2>/dev/null || true)"
+    else
+      fetch_sparkle_tools
+      signer_public="$("$TOOLS/bin/generate_keys" -p 2>/dev/null)" || signer_public=""
+      signer_public="$(printf '%s' "$signer_public" | /usr/bin/tail -1 | /usr/bin/tr -d ' \n\r\t')"
+    fi
+    [ -n "$signer_public" ] || refuse "could not read the update signing key (--ed-key-file, or Sparkle's login-keychain item)"
+    [ "$signer_public" = "$ED_PUBLIC_KEY" ] || refuse "the update signing key does not match '$ED_PUBLIC_KEY_FILE'.
+  Copies built with that public key would refuse every update this key signs."
+    echo "updates: signing key matches the public key built in"
+  fi
   [ -n "$DOWNLOAD_PREFIX" ] && echo "updates: disk image will be served from $DOWNLOAD_PREFIX"
   [ -z "$EXISTING_APPCAST" ] || [ -f "$EXISTING_APPCAST" ] || refuse "--appcast '$EXISTING_APPCAST' does not exist"
 else
@@ -298,7 +335,7 @@ NOTES_HTML="$OUT/release-notes.html"
 if $NOTARIZE; then
   step "notarize the app"
   /usr/bin/ditto -c -k --keepParent "$APP" "$WORK/app.zip"
-  /usr/bin/xcrun notarytool submit "$WORK/app.zip" --keychain-profile "$NOTARY_PROFILE" --wait
+  "${NOTARYTOOL[@]}" submit "$WORK/app.zip" --keychain-profile "$NOTARY_PROFILE" --wait
   /usr/bin/xcrun stapler staple "$APP"
 fi
 
@@ -314,7 +351,7 @@ if [ "$SIGN" = "developer-id" ]; then
 fi
 if $NOTARIZE; then
   step "notarize the disk image"
-  /usr/bin/xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
+  "${NOTARYTOOL[@]}" submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
   /usr/bin/xcrun stapler staple "$DMG"
 fi
 /usr/bin/hdiutil verify -quiet "$DMG"
@@ -333,7 +370,7 @@ if [ -n "$FEED_URL" ] && [ -n "$DOWNLOAD_PREFIX" ]; then
   signature_line="$("$TOOLS/bin/sign_update" ${KEY_ARGS[@]+"${KEY_ARGS[@]}"} "$DMG")"
   ED_SIGNATURE="$(printf '%s' "$signature_line" | /usr/bin/sed -n 's/.*sparkle:edSignature="\([^"]*\)".*/\1/p')"
   [ -n "$ED_SIGNATURE" ] || die "sign_update returned no signature"
-  # The private key that signed must match the public key built into the app.
+  # Belt and braces: the signature verifies (the key match was proven in preflight).
   "$TOOLS/bin/sign_update" --verify ${KEY_ARGS[@]+"${KEY_ARGS[@]}"} "$DMG" "$ED_SIGNATURE" >/dev/null \
     || die "the update signature does not verify"
   APPCAST="$OUT/appcast.xml"

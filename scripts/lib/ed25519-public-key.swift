@@ -1,6 +1,7 @@
 // Prints the base64 Ed25519 public key for a base64 32-byte seed read from
-// the file named in the first argument. Test support only: the update tests
-// make a throwaway key pair in scratch and never touch the keychain.
+// the file named in the first argument (Sparkle's private key file format).
+// release.sh uses it to prove a key file matches the public key it builds
+// in; the update test uses it for its throwaway scratch key.
 import CryptoKit
 import Foundation
 

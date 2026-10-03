@@ -28,6 +28,24 @@ enum UpdaterLauncher {
     static func startInBackgroundIfSetUp() {
         guard isSetUp, let helper = helperURL else { return }
         open(helper, arguments: [], activate: false)
+        // Just after an update, the helper from the replaced bundle may still
+        // be stepping aside, and LaunchServices then starts nothing. Look
+        // again once it has gone.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
+            if !isRunning(helper) {
+                open(helper, arguments: [], activate: false)
+            }
+        }
+    }
+
+    private static var hostIdentifier: String {
+        Bundle.main.bundleIdentifier ?? "app.clipboardarchive"
+    }
+
+    private static func isRunning(_ helper: URL) -> Bool {
+        NSRunningApplication.runningApplications(
+            withBundleIdentifier: ClipboardUpdaterLayout.helperBundleIdentifier(forHost: hostIdentifier)
+        ).contains { $0.bundleURL?.standardizedFileURL == helper.standardizedFileURL }
     }
 
     /// "Check for Updates…": a running helper is told by notification, since
@@ -43,13 +61,9 @@ enum UpdaterLauncher {
             alert.runModal()
             return
         }
-        let host = Bundle.main.bundleIdentifier ?? "app.clipboardarchive"
-        let running = NSRunningApplication.runningApplications(
-            withBundleIdentifier: ClipboardUpdaterLayout.helperBundleIdentifier(forHost: host)
-        ).contains { $0.bundleURL?.standardizedFileURL == helper.standardizedFileURL }
-        if running {
+        if isRunning(helper) {
             DistributedNotificationCenter.default().postNotificationName(
-                Notification.Name(ClipboardUpdaterLayout.checkNowNotification(forHost: host)),
+                Notification.Name(ClipboardUpdaterLayout.checkNowNotification(forHost: hostIdentifier)),
                 object: nil,
                 userInfo: nil,
                 deliverImmediately: true
