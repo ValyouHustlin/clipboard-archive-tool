@@ -130,8 +130,20 @@ fetch_sparkle_tools() {
       || { rm -f "$archive.part"; die "Sparkle $SPARKLE_VERSION tools download does not match its pinned checksum"; }
     mv "$archive.part" "$archive"
   fi
+  # Unpack beside the old copy and swap, so an override directory never
+  # loses anything but the bin/ this script itself unpacked there.
+  local fresh
+  fresh="$(/usr/bin/mktemp -d "$TOOLS/.bin.XXXXXX")"
+  /usr/bin/tar -xf "$archive" -C "$fresh" bin
+  if [ -n "${CLIPBOARD_ARCHIVE_SPARKLE_TOOLS:-}" ] && [ -d "$TOOLS/bin" ] \
+     && [ ! -f "$TOOLS/bin/.from-clipboard-archive-release" ]; then
+    rm -rf "$fresh"
+    die "$TOOLS/bin exists and was not unpacked by release.sh; point CLIPBOARD_ARCHIVE_SPARKLE_TOOLS at an empty directory"
+  fi
   rm -rf "$TOOLS/bin"
-  /usr/bin/tar -xf "$archive" -C "$TOOLS" bin
+  mv "$fresh/bin" "$TOOLS/bin"
+  rmdir "$fresh"
+  : > "$TOOLS/bin/.from-clipboard-archive-release"
 }
 
 if $FETCH_TOOLS_ONLY; then
@@ -223,7 +235,7 @@ if [ -n "$FEED_URL" ]; then
       signer_public="$("$TOOLS/bin/generate_keys" -p --account "$ED_KEY_ACCOUNT" 2>/dev/null)" || signer_public=""
       signer_public="$(printf '%s' "$signer_public" | /usr/bin/tail -1 | /usr/bin/tr -d ' \n\r\t')"
     fi
-    [ -n "$signer_public" ] || refuse "could not read the update signing key (--ed-key-file, or Sparkle's login-keychain item)"
+    [ -n "$signer_public" ] || refuse "could not read the update signing key (--ed-key-file, or Sparkle login-keychain account '$ED_KEY_ACCOUNT')"
     [ "$signer_public" = "$ED_PUBLIC_KEY" ] || refuse "the update signing key does not match '$ED_PUBLIC_KEY_FILE'.
   Copies built with that public key would refuse every update this key signs."
     echo "updates: signing key matches the public key built in"

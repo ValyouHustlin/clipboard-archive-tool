@@ -100,8 +100,10 @@ Create it once, on the Mac that makes releases:
 `generate_keys` stores the private key in the login keychain and prints the
 public key. Save the public key, alone on one line, as
 `release/update-signing-public-key.txt`. Export a backup of the private key
-with `generate_keys --account clipboard-archive -x <file>` and keep it in the password manager, not in
-this repository. (`--fetch-sparkle-tools` downloads Sparkle's
+with `generate_keys --account clipboard-archive -x <file>` and keep that one backup in the release Mac's secrets store
+(`Keys/.secrets/clipboard-archive/`, owner-only), never in this repository.
+`release.sh` signs with the keychain account (`--ed-key-account`, default
+`clipboard-archive`) or with `--ed-key-file`. (`--fetch-sparkle-tools` downloads Sparkle's
 tools, pinned by version and checksum, into `.build/sparkle-tools/2.10.0`.)
 
 ## Hosting the feed

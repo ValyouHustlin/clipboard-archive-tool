@@ -74,6 +74,8 @@ run "a version with no CHANGELOG entry refuses" 3 "has no '## 9.9.9 build 1 - <d
 run "a plain-http feed refuses" 3 "must be https://" -- --feed-url http://updates.example.invalid/appcast.xml --preflight-only
 run "a file: feed refuses" 3 "must be https://" -- --feed-url file:///tmp/appcast.xml --preflight-only
 run "a feed without the public key file refuses" 3 "needs the update signing public key" \
+  -- --feed-url https://updates.example.invalid/appcast.xml --ed-public-key-file "$T/missing.pub" --preflight-only
+run "the committed public key is a valid key" 0 "updates: feed https://updates.example.invalid/appcast.xml.*preflight ok" \
   -- --feed-url https://updates.example.invalid/appcast.xml --preflight-only
 printf 'not-a-key\n' > "$T/bad.pub"
 run "a malformed public key refuses" 3 "is not a base64 Ed25519 public key" \
@@ -131,6 +133,11 @@ if [ -f "$cached" ]; then
   (cd "$SRC" && CLIPBOARD_ARCHIVE_SPARKLE_TOOLS="$T/tools" ./scripts/release.sh --fetch-sparkle-tools >/dev/null)
   [ "$(shasum -a 256 "$T/tools/Sparkle-2.10.0.tar.xz" | cut -d' ' -f1)" = "c2bf58aa8387266ac179357b1415d6f2635f044da8be41042af32425dae6da0c" ] \
     && pass "a changed cached archive is fetched again and re-verified" || failt "a changed cached archive was kept"
+  mkdir -p "$T/foreign/bin"; echo keep > "$T/foreign/bin/mine"
+  cp "$cached" "$T/foreign/"
+  set +e; out="$(cd "$SRC" && CLIPBOARD_ARCHIVE_SPARKLE_TOOLS="$T/foreign" ./scripts/release.sh --fetch-sparkle-tools 2>&1)"; rc=$?; set -e
+  [ "$rc" -ne 0 ] && [ -f "$T/foreign/bin/mine" ] \
+    && pass "an override directory's own bin/ is left alone (rc $rc)" || failt "an override directory's bin/ was replaced"
 else
   echo "SKIP  cached Sparkle tools (run ./scripts/release.sh --fetch-sparkle-tools once to enable)"
 fi
