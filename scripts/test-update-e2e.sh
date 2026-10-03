@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end update test: build N and N+1 from a clean checkout, publish them
-# to a file:// feed in scratch, install N the way a person would (copy it out
+# to a feed directory in scratch (served on 127.0.0.1 only), install N the way a person would (copy it out
 # of the disk image), let N's updater move it to N+1, then show that a
 # tampered update and a tampered feed are both refused.
 #
@@ -25,11 +25,14 @@ TEST_ID="app.clipboardarchive.e2etest"
 APP_NAME="Clipboard Archive.app"
 HELPER_REL="Contents/Helpers/Clipboard Archive Updater.app/Contents/MacOS/ClipboardArchiveUpdater"
 
+SERVER_PID=""
 cleanup() {
+  [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
   for mount in "$S"/mnt-*; do
     [ -d "$mount" ] && /usr/bin/hdiutil detach -quiet "$mount" 2>/dev/null || true
   done
   # Sparkle's state for the TEST identifier only, by exact name.
+  /usr/bin/defaults delete "$TEST_ID.updates" >/dev/null 2>&1 || true
   /usr/bin/defaults delete "$TEST_ID.updater" >/dev/null 2>&1 || true
   rm -rf "$HOME/Library/Caches/$TEST_ID" "$HOME/Library/Caches/$TEST_ID.updater" \
          "$HOME/Library/HTTPStorages/$TEST_ID.updater" "$HOME/Library/HTTPStorages/$TEST_ID.updater.binarycookies"
@@ -74,11 +77,20 @@ git -C "$S/src" -c user.name="update test" -c user.email="update-test@example.in
 
 FEED="$S/feed"
 mkdir -p "$FEED" "$S/tmp"
+# Sparkle's downloader refuses file: URLs, so the feed directory is served
+# over HTTP on the loopback interface only, for the length of this test.
+/usr/bin/python3 -u -m http.server 0 --bind 127.0.0.1 --directory "$FEED" > "$S/http.log" 2>&1 &
+SERVER_PID=$!
+for _ in $(seq 1 50); do grep -q "port" "$S/http.log" && break; sleep 0.1; done
+PORT="$(sed -n 's/.*port \([0-9][0-9]*\).*/\1/p' "$S/http.log" | head -1)"
+[ -n "$PORT" ] || { echo "the loopback feed server did not start" >&2; exit 1; }
+FEED_URL="http://127.0.0.1:$PORT"
+echo "feed: $FEED_URL (directory $FEED)"
 release() {
   local build="$1"; shift
   (cd "$S/src" && TMPDIR="$S/tmp" CLIPBOARD_ARCHIVE_BUNDLE_ID="$TEST_ID" ./scripts/release.sh \
     --version "$BASE_VERSION" --build "$build" --out "$S/out/$build" \
-    --feed-url "file://$FEED/appcast.xml" --download-url-prefix "file://$FEED" \
+    --feed-url "$FEED_URL/appcast.xml" --download-url-prefix "$FEED_URL" \
     --ed-public-key-file "$S/keys/public.txt" --ed-key-file "$S/keys/private.txt" "$@")
 }
 
@@ -145,7 +157,7 @@ cp "$FEED/ClipboardArchive-$BASE_VERSION-build$N2.dmg" "$S/n2.dmg.good"
 printf 'x' >> "$FEED/ClipboardArchive-$BASE_VERSION-build$N2.dmg"
 B="$S/Applications-tampered-update"
 install_n "$B"
-/usr/bin/defaults delete "$TEST_ID.updater" >/dev/null 2>&1 || true
+/usr/bin/defaults delete "$TEST_ID.updates" >/dev/null 2>&1 || true
 rm -rf "$HOME/Library/Caches/$TEST_ID.updater"
 set +e
 "$B/$APP_NAME/$HELPER_REL" --unattended > "$S/update3.out" 2>&1
@@ -166,7 +178,7 @@ open(path, "w").write(text.replace("Synthetic N+1 release", "Edited N+1 release"
 PY
 C="$S/Applications-tampered-feed"
 install_n "$C"
-/usr/bin/defaults delete "$TEST_ID.updater" >/dev/null 2>&1 || true
+/usr/bin/defaults delete "$TEST_ID.updates" >/dev/null 2>&1 || true
 rm -rf "$HOME/Library/Caches/$TEST_ID.updater"
 set +e
 "$C/$APP_NAME/$HELPER_REL" --unattended > "$S/update4.out" 2>&1

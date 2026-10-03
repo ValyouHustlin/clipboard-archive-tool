@@ -38,7 +38,7 @@ usage: scripts/release.sh [options]
                            --notary-profile (or CLIPBOARD_ARCHIVE_NOTARY_PROFILE),
                            a profile saved with `xcrun notarytool store-credentials`
   --feed-url URL           build the updater in, pointed at this appcast
-                           (https, or file:// for a local test)
+                           (https; http://127.0.0.1 or localhost only for a local test)
   --ed-public-key-file F   the update signing public key (base64); default:
                            release/update-signing-public-key.txt
   --ed-key-file F          private key file used to sign the update and the
@@ -147,8 +147,8 @@ fi
 ED_PUBLIC_KEY=""
 if [ -n "$FEED_URL" ]; then
   case "$FEED_URL" in
-    https://*|file:///*) ;;
-    *) refuse "--feed-url must be https:// (or file:/// for a local test): $FEED_URL" ;;
+    https://?*|http://127.0.0.1[:/]*|http://localhost[:/]*) ;;
+    *) refuse "--feed-url must be https:// (or http://127.0.0.1 / localhost for a local test): $FEED_URL" ;;
   esac
   [ -f "$ED_PUBLIC_KEY_FILE" ] || refuse "--feed-url needs the update signing public key; '$ED_PUBLIC_KEY_FILE' does not exist.
   Create the key once with Sparkle's generate_keys (it stays in the login keychain) and save
@@ -220,6 +220,8 @@ cat > "$HELPER/Contents/Info.plist" <<PLIST
   <key>LSUIElement</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
   <key>ClipboardArchiveHostBundleIdentifier</key><string>$BUNDLE_ID</string>
+  <!-- Plain HTTP only to this Mac, for the local update test. -->
+  <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict>
 </plist>
 PLIST
@@ -230,7 +232,7 @@ INFO="$APP/Contents/Info.plist"
 pb() { /usr/libexec/PlistBuddy -c "$1" "$INFO" >/dev/null; }
 # Always: an update request never describes the machine it comes from.
 pb "Add :SUEnableSystemProfiling bool false"
-pb "Add :SUDefaultsDomain string $BUNDLE_ID.updater"
+pb "Add :SUDefaultsDomain string $BUNDLE_ID.updates"
 if [ -n "$FEED_URL" ]; then
   pb "Add :SUFeedURL string $FEED_URL"
   pb "Add :SUPublicEDKey string $ED_PUBLIC_KEY"

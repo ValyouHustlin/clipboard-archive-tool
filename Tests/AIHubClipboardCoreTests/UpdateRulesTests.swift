@@ -32,11 +32,15 @@ struct UpdateRulesTests {
     }
 
     @Test
-    func testFileFeedIsAllowedForLocalTesting() {
-        let result = ClipboardUpdateConfiguration.evaluate(
-            infoDictionary: Self.info(feed: "file:///tmp/feed/appcast.xml")
-        )
-        #expect(result == .ready(feedURL: URL(fileURLWithPath: "/tmp/feed/appcast.xml")))
+    func testLoopbackHTTPFeedIsAllowedForLocalTesting() {
+        // Sparkle's downloader refuses file: URLs, so the end-to-end test
+        // serves its feed from this machine only. Nothing else may be http.
+        for feed in ["http://127.0.0.1:8123/appcast.xml", "http://localhost:8123/appcast.xml"] {
+            #expect(
+                ClipboardUpdateConfiguration.evaluate(infoDictionary: Self.info(feed: feed))
+                    == .ready(feedURL: URL(string: feed)!)
+            )
+        }
     }
 
     @Test
@@ -52,7 +56,11 @@ struct UpdateRulesTests {
 
     @Test
     func testPlainHTTPAndOtherSchemesAreRefused() {
-        for feed in ["http://example.invalid/appcast.xml", "ftp://example.invalid/a.xml", "appcast.xml"] {
+        for feed in [
+            "http://example.invalid/appcast.xml", "ftp://example.invalid/a.xml", "appcast.xml",
+            "file:///tmp/feed/appcast.xml", "http://127.0.0.1.example.invalid/appcast.xml",
+            "http://10.0.0.5/appcast.xml",
+        ] {
             #expect(
                 ClipboardUpdateConfiguration.evaluate(infoDictionary: Self.info(feed: feed))
                     == .refused(.insecureFeed)
@@ -131,7 +139,13 @@ struct UpdateRulesTests {
             ClipboardUpdaterLayout.helperBundleIdentifier(forHost: "app.clipboardarchive.e2etest")
                 == "app.clipboardarchive.e2etest.updater"
         )
-        #expect(ClipboardUpdaterLayout.updaterDefaultsDomain(forHost: "app.clipboardarchive") != "app.clipboardarchive")
+        // Not the app's own preferences, and not the helper's own identifier
+        // either: a process cannot open its own identifier as a suite.
+        #expect(ClipboardUpdaterLayout.updaterDefaultsDomain(forHost: "app.clipboardarchive") == "app.clipboardarchive.updates")
+        #expect(
+            ClipboardUpdaterLayout.updaterDefaultsDomain(forHost: "app.clipboardarchive")
+                != ClipboardUpdaterLayout.helperBundleIdentifier(forHost: "app.clipboardarchive")
+        )
         #expect(
             ClipboardUpdaterLayout.checkNowNotification(forHost: "app.clipboardarchive")
                 != ClipboardUpdaterLayout.checkNowNotification(forHost: "app.clipboardarchive.e2etest")

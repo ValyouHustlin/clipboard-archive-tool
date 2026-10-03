@@ -34,7 +34,7 @@ public enum ClipboardUpdateConfiguration {
         public var sentence: String {
             switch self {
             case .ready(let url):
-                return "Updates come from \(url.isFileURL ? "a local test feed" : url.host ?? "the update feed")."
+                return "Updates come from \(url.scheme == "http" ? "a test feed on this Mac" : url.host ?? "the update feed")."
             case .notConfigured(.noFeed):
                 return "This copy was built without an update feed, so it never checks for updates."
             case .notConfigured(.noKey):
@@ -66,11 +66,10 @@ public enum ClipboardUpdateConfiguration {
             return .notConfigured(.noKey)
         }
 
-        // HTTPS for anything published; file: only so the update path can be
-        // driven end to end on one machine without a server.
-        guard let url = URL(string: feedString),
-              let scheme = url.scheme?.lowercased(),
-              scheme == "https" || scheme == "file" else {
+        // HTTPS for anything published. Plain HTTP only to this machine's
+        // loopback, so the update path can be driven end to end without a
+        // server anywhere (Sparkle's downloader refuses file: URLs).
+        guard let url = URL(string: feedString), isAcceptableFeed(url) else {
             return .refused(.insecureFeed)
         }
         guard let key = Data(base64Encoded: keyString), key.count == 32 else {
@@ -83,6 +82,17 @@ public enum ClipboardUpdateConfiguration {
             return .refused(.unsignedFeed)
         }
         return .ready(feedURL: url)
+    }
+
+    private static func isAcceptableFeed(_ url: URL) -> Bool {
+        switch url.scheme?.lowercased() {
+        case "https":
+            return url.host?.isEmpty == false
+        case "http":
+            return ["127.0.0.1", "localhost"].contains(url.host?.lowercased() ?? "")
+        default:
+            return false
+        }
     }
 
     private static func isTrue(_ value: Any?) -> Bool {
@@ -111,7 +121,7 @@ public enum ClipboardUpdaterLayout {
     /// Where the updater keeps its own settings (last check, skipped version):
     /// apart from the app's preferences.
     public static func updaterDefaultsDomain(forHost host: String) -> String {
-        helperBundleIdentifier(forHost: host)
+        host + ".updates"
     }
     /// Posted by the app, observed by its running helper: "check now".
     public static func checkNowNotification(forHost host: String) -> String {

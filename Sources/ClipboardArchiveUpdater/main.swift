@@ -204,7 +204,11 @@ final class UnattendedDelegate: PrivacyDelegate {
             .signatureError, .validationError, .notValidUpdateError, .downgradeError,
         ].map { Int($0.rawValue) }.reduce(into: Set<Int>()) { $0.insert($1) }
         let refused = error.domain == SUSparkleErrorDomain && refusals.contains(error.code)
-        print("\(refused ? "refused" : "failed"): \(error.localizedDescription) (\(error.domain) \(error.code))")
+        var reason = "\(error.localizedDescription) (\(error.domain) \(error.code))"
+        if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError {
+            reason += "; \(underlying.localizedDescription) (\(underlying.domain) \(underlying.code))"
+        }
+        print("\(refused ? "refused" : "failed"): \(reason)")
         exit(refused ? ClipboardUpdaterExit.refused.rawValue : ClipboardUpdaterExit.failed.rawValue)
     }
 }
