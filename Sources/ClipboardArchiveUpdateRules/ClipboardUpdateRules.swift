@@ -104,9 +104,9 @@ public enum ClipboardUpdateConfiguration {
         }
     }
 
-    /// A real number that is zero. Absent, a string or a Boolean is not:
-    /// the library reads only numbers and treats anything else as its
-    /// 20-day default.
+    /// A real number that is zero. Absent, a string or a Boolean is not.
+    /// The library would read a string such as "0" as zero too; this rule
+    /// is stricter on purpose, so only the shape release.sh writes passes.
     private static func isNumericZero(_ value: Any?) -> Bool {
         guard let number = value as? NSNumber, !(value is String),
               CFGetTypeID(number) != CFBooleanGetTypeID() else {

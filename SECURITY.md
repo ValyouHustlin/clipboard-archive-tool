@@ -110,7 +110,10 @@ One documented exception, for key rotation: once the installed copy is
 Developer ID signed, an update disk image that fails its Ed25519 check is
 still accepted if it carries a valid Developer ID signature from the same
 Apple team. That trusts the Apple signing identity instead of the update
-key; it does not apply to today's ad hoc copies.
+key for the update file only; it does not apply to today's ad hoc copies.
+The feed must still verify against the key built into the installed copy,
+so a key rotation still needs the old private key to sign the feed that
+announces it. Keep the backup.
 
 The private update key is the root of that trust. Losing it means installed
 copies can no longer be updated automatically; leaking it means someone else
