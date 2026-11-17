@@ -129,7 +129,8 @@ clipboard-archive search "example" --since 2026-01-01 --json
 clipboard-archive export --out ~/Desktop/clips.ndjson --since 2026-09-01
 ```
 
-Every command takes `--json`, and exits with a number that means one thing:
+Most commands take `--json` ([docs/CLI.md](docs/CLI.md) lists which), and
+every command exits with a number that means one thing:
 
 | Code | Meaning |
 | --- | --- |
@@ -349,7 +350,7 @@ Codes are `app_start`, `app_stop`, `heartbeat`, `second_instance_refused`,
 `index_missing_detected`, `index_corrupt_detected`, `index_upsert_failed`,
 `index_rebuild_started`, `index_rebuild_finished`, `index_rebuild_failed`,
 `retention_pruned`, `expiry_swept`, `pointer_published`,
-`pointer_publish_failed`, and `cli_command`.
+`pointer_publish_failed`, `updater_launch_failed`, and `cli_command`.
 
 `heartbeat` is the reason the log exists. Every 30 minutes (the first beat a
 minute after launch) the app records how many polls it ran and how many clips
@@ -389,7 +390,8 @@ Clipboard Archive is intentionally transparent and controllable:
   files use owner-only permissions (`0600`).
 - Delete/redact removes inline content, large body files, and derived SQLite
   search rows. Timeline metadata remains with a deletion marker.
-- Prune can periodically redact older content and rebuild local search.
+- Prune can periodically redact older content and remove it from local
+  search. Pinned clips are kept unless you pass `--include-pinned`.
 - Pause and exclusion controls are available in the menu bar UI.
 - Long-term storage can be switched off from the menu or Settings. Recent-only
   modes automatically prune older content while keeping the app useful.

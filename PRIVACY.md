@@ -8,9 +8,9 @@ Clipboard Archive is local-first.
   app process that reads the clipboard makes no network request at all.
 - Updates (disk image releases built with an update feed only) are done by a
   separate helper app that has no clipboard code. It sends an HTTPS request
-  for the update feed and for the update file, with the app name and
-  version in the user agent, and nothing else: no system profile, no clips,
-  no identifier. See [docs/UPDATES.md](docs/UPDATES.md).
+  for the update feed and for the update file, with the app name, the app
+  version and the Sparkle version in the user agent, and nothing else: no
+  system profile, no clips, no identifier. See [docs/UPDATES.md](docs/UPDATES.md).
 - After install, normal capture/search/archive operation works without an
   internet connection.
 - Password managers and credential-like content are blocked by default.
@@ -26,10 +26,12 @@ Clipboard Archive is local-first.
   index. Non-content timeline metadata remains so the archive can show that an
   item existed without retaining the copied text.
 - Periodic pruning is available through the CLI. Pruning redacts older archive
-  content, removes older body files, records deletion markers, and rebuilds the
-  local SQLite search index.
+  content, removes older body files, records deletion markers, and removes the
+  matching rows from the local SQLite search index. Pinned clips are kept
+  unless you pass `--include-pinned`.
 - Storage mode can be set to remember 10 items, remember 50 items, or keep a
-  full archive. Recent-only modes automatically prune older content.
+  full archive. Recent-only modes automatically prune older content; pinned
+  clips are kept outside the limit.
 - Capture can be turned off from the Settings window. When it is off, new
   clipboard changes are not written to durable history.
 - Per-app privacy rules extend the exclusion list with three modes. `block`
@@ -77,8 +79,11 @@ Clipboard Archive is local-first.
   - `CLIPBOARD_ARCHIVE_ARCHIVE_ROOT`
   - `CLIPBOARD_ARCHIVE_INDEX_PATH`
 
-`CLIPBOARD_ARCHIVE_APPLICATION_SUPPORT_ROOT` exists for isolated development
-profiles and changes the settings and instance-lock root.
+`CLIPBOARD_ARCHIVE_APPLICATION_SUPPORT_ROOT` exists only for isolated
+development runs. Besides the settings and instance-lock root, it moves
+preferences into a file, reads the clock from a file, and binds the app to a
+private named pasteboard, so an app started with it captures nothing from the
+real clipboard. Never set it in a LaunchAgent.
 
 Known limits:
 
@@ -89,7 +94,8 @@ Known limits:
   Accessibility inspection.
 - Unsigned local builds may require macOS Gatekeeper approval on first launch.
 - Accepted clipboard content and the derived SQLite index are plaintext local
-  files. CryptoKit is used for hashing, not archive encryption.
+  files. CryptoKit hashes clipboard contents and encrypts the backups you
+  create; the archive itself is not encrypted at rest.
 - Owner-only file permissions reduce accidental disclosure but do not protect
   against processes running as the same macOS user.
 - Deletion and pruning affect this app's live archive and derived search index,

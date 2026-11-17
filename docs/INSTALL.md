@@ -10,8 +10,9 @@ shasum -a 256 -c ClipboardArchive-<version>-build<n>.dmg.sha256
 ```
 
 Until releases are Developer ID signed and notarized, macOS will not open a
-downloaded copy with a double-click: right-click the app, choose **Open**,
-then confirm once.
+downloaded copy with a double-click. On macOS 15 or later, try to open it
+once, then choose **Open Anyway** in System Settings › Privacy & Security. On
+macOS 13 and 14, right-click the app, choose **Open**, then confirm once.
 
 A disk image release built with an update feed updates itself; see
 [UPDATES.md](UPDATES.md). It does not install the `clipboard-archive`
@@ -148,8 +149,10 @@ Current controls:
 - Local storage details, Storage & Health dashboard, encrypted backup and
   restore.
 - About: app version, archive format, event schema, and search index schema
-  versions, plus the GitHub Releases page URL. Updates are manual; the app
-  never checks the internet.
+  versions, plus the GitHub Releases page URL. A copy built with an update
+  feed is updated by its separate update helper (see [UPDATES.md](UPDATES.md));
+  any other copy is updated by hand. The app that reads the clipboard never
+  makes a network request either way.
 
 Excluded apps use bundle identifiers, not display names from the Applications
 folder. Examples:

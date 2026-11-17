@@ -211,7 +211,8 @@ scopes as presentation after filtering. The menu's five quick-copy items
 remain a short recent view, and the quick picker serves keyboard-first
 recall from a warm in-memory cache invalidated on every archive mutation.
 
-The CLI's archive search scans NDJSON plus contained body files. The separate
+The CLI's search reads the derived index with the History window's matcher;
+`search --scan` reads the NDJSON and contained body files directly. The
 SQLite FTS index is derived data and stores searchable content in plaintext.
 Each accepted capture upserts one row in a short SQLite transaction, executed
 in this process through the SQLite C API, so clipboard text never appears in

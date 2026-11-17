@@ -1,49 +1,72 @@
 # Next Session Handoff
 
-Updated: 2026-09-15, local 0.3.0 build 7 release.
+Updated: 2026-11-17, after a full read of the repository.
 
 ## Where things stand
 
-The seven September hardening changes are integrated through `2e1df3d`: shared store resolution, operational heartbeats, crash recovery, capture during tracking modes, native SQLite calls, background history loading, and the expanded CLI contract. The release package is `releases/ClipboardArchive-0.3.0-macos-arm64`, with standalone CLI identity embedded in its executable and the generated command reference included.
+- The newest CHANGELOG entry is 0.4.0 build 10 (disk image release and the
+  separate update helper). It has been built but not installed or published.
+- The copy in daily use is 0.3.0 build 9, ad hoc signed, at
+  `/Applications/Clipboard Archive.app`. It has no update feed.
+- The public GitHub repository stops at 0.2.0. Everything after it (the 0.3.0
+  hardening, the 0.4.0 release path and the 2026-11-17 fixes) exists only in
+  the private mirror.
+- The 2026-11-17 fixes are source changes with tests. None of them is in an
+  installed build yet, so the daily copy still has the bugs they fix: a timed
+  pause that never ends, a Settings save that ends private mode, and an
+  expiry that does not delete restricted clips are the three that matter most.
 
-The local release is authorized to replace the existing `dist/ClipboardArchive.app` and `~/.local/bin/clipboard-archive`, then restart the existing launch job. It preserves the launch plist and all capture, retention and privacy settings. The app's normal upgrade onboarding may advance `lastSeenAppVersion` to `0.3.0`.
+## Checks
 
-The dated install receipt is the authority for installed version, PID, timestamps, rollback and checks; do not infer current runtime state from this document. Evidence: `/Users/legacy/Development/AI/reports/clipboard-archive/2026-09-15/hardening/evidence/release/RELEASE-RECEIPT.md`. The parent lane owns independent certification, live heartbeat observations and archive postflight.
+`swift test` is the gate, run on a Mac. Nothing runs it automatically: the
+workflow file needs a macOS runner and no runner is set up for it. The release
+scripts (`validate-release.sh`, `check-local-only.sh`, `test-release.sh`,
+`test-install-rollback.sh`, `test-update-e2e.sh`) are run by hand before a
+release.
 
-### Release decisions and assumptions
+## Open decisions
 
-- CLI identity is embedded at link time, with no runtime environment or neighboring-app fallback; unpackaged development binaries retain the development label.
-- Package validation relocates the CLI alone and uses scratch roots for every command.
-- App and CLI rollback copies are retained before the live process is stopped; no launch/login configuration is changed.
-- Certification and long-running capture evidence remain separate from this release's build and install checks.
+1. Publish: push to GitHub and cut a 0.4.0 release, or keep the repository
+   private from here on. Several docs describe an install path (the
+   `curl` installer, the pinned `v0.2.0` example) that only works once a
+   matching GitHub Release exists.
+2. Where the update feed is hosted. Until that is decided no copy can update
+   itself, and `docs/UPDATES.md` describes a path nobody can use yet.
+3. One install location. The disk image installs
+   `/Applications/Clipboard Archive.app`; the release folder's `install.sh`
+   installs `~/Applications/ClipboardArchive.app` under the same bundle id and
+   rewrites the shared LaunchAgent. Running `install.sh` on a Mac that has the
+   disk image copy leaves two apps and points login at the second.
+4. Developer ID signing and notarization, for installs that open with a
+   double-click.
+5. LICENSE is MIT with copyright "Clipboard Archive contributors". Whether to
+   keep that line and that license is still unanswered.
+6. Where CI runs: a Mac runner, or the release scripts by hand as today.
 
-## Outstanding (small, deliberate)
+## Known gaps, not yet fixed
 
-1. Manual QA that this lane could not automate (needs a real session):
-   real global-hotkey registration + conflict surfacing, the interactive
-   shortcut recorder, direct paste with Accessibility trust, SMAppService
-   launch-at-login enable/approve flows from an installed .app.
-2. Bulk-sheet PNG snapshots render text without control chrome
-   (never-presented-sheet limitation) — behavior is receipt-proven.
-3. Old-build redaction orphans rich bodies (forward-compat gap) — visible
-   via `health` `orphanedRichBodyFiles`.
-4. Open-source download gates from the production-readiness review still
-   stand: Developer ID signing/notarization + a published GitHub Release
-   are needed for one-click nontechnical installs.
-5. Open question for Aaron: LICENSE is MIT with copyright "Clipboard
-   Archive contributors" (original to the 2026-05-15 public release) — he
-   asked how it got MIT-licensed and has not yet said whether to change
-   the copyright line/license.
-6. Saint NAS mirror has two stale merged branches (slice3-archive-search,
-   slice5-bulk-privacy) and an unsynced main; cleanup needs Aaron-run:
-   `git push saint main && git push saint --delete slice3-archive-search slice5-bulk-privacy`.
-7. `dist/AIHubClipboard.app` is an old pre-rename bundle predating this
-   lane — left in place, flagged for Aaron.
+- Archive rewrites (bulk delete, expiry, restore, retention) read a day file
+  and replace it with no lock against the capture appender. A capture landing
+  in that window is lost. Needs one write lock shared by the writer and every
+  rewrite.
+- In a "keep latest N" mode every capture runs a full archive scan on the
+  main thread once N is reached, and the cost grows with history.
+- The Settings window still saves its own copy of retention and app rules. A
+  retention change made from the menu while it is open is overwritten by Save.
+- The secret detector blocks some ordinary text (`sort_key=relevance1`) and
+  misses some credentials (`github_pat_`, AWS `ASIA` keys, long hex tokens).
+- Manual checks that need a real session: global hotkey registration and
+  conflicts, the shortcut recorder, direct paste with Accessibility trust,
+  launch at login from an installed app.
+- Old builds that redact a rich clip leave its body file behind; `health`
+  counts these as `orphanedRichBodyFiles`.
 
 ## Ground rules that still apply
 
-Do not read clipboard contents from the real archive or indexes for development or tests. All dev/testing uses isolated `/tmp` roots via
-`CLIPBOARD_ARCHIVE_*` env vars and synthetic fixtures. Do not stop or
-replace the live app, install login items, or start live capture without
-explicit approval. `check-local-only.sh` is the network-abstinence gate —
-keep it green.
+Do not read clipboard contents from the real archive or indexes for
+development or tests. All development and testing uses isolated `/tmp` roots
+through the four `CLIPBOARD_ARCHIVE_*` path variables
+([ISOLATED_TESTING.md](ISOLATED_TESTING.md)) and synthetic fixtures. Do not
+stop or replace the live app, install login items, or start live capture
+without explicit approval. `check-local-only.sh` is the network-abstinence
+gate; keep it green.

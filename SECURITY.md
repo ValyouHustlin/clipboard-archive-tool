@@ -9,8 +9,8 @@ managed enterprise distribution without additional controls.
 - It does not encrypt clipboard archive files at rest.
 - It does not claim password-manager blocking is perfect.
 - It does not notarize release builds until a Developer ID certificate
-  exists; `scripts/release.sh --sign developer-id --notarize` is the path,
-  and it refuses while the certificate is missing.
+  exists; `scripts/release.sh --sign developer-id --notarize --notary-profile NAME`
+  is the path, and it refuses while the certificate is missing.
 - It does not protect copied content from malware, another process running as
   the same user, unlocked laptop access, Time Machine, APFS snapshots, or other
   backups that already captured the files.
@@ -27,7 +27,8 @@ searchability and durable machine-readable history. Treat the archive as
 sensitive data. Anyone or anything with read access to your user account may be
 able to read it.
 
-CryptoKit is linked for hashing clipboard contents, not for archive encryption.
+CryptoKit hashes clipboard contents and encrypts the backups you create; the
+archive itself is not encrypted at rest.
 Processes running as the same macOS user can still read those files.
 
 Archive-relative body paths are rejected if they are absolute, contain
@@ -66,8 +67,9 @@ clipboard-archive prune --until 2026-01-01
 ```
 
 Pruning redacts matching archive content, removes large body files, records
-deletion markers, and rebuilds the local SQLite search index. It does not erase
-external backups or snapshots that already captured the files.
+deletion markers, and removes the matching rows from the local SQLite search
+index. Pinned clips are kept unless you pass `--include-pinned`. It does not
+erase external backups or snapshots that already captured the files.
 
 ## Signing
 
@@ -77,7 +79,8 @@ signing provides local code-signing structure but no Apple Team ID and no
 notarization.
 
 For wider distribution, use a Developer ID certificate, hardened runtime, and
-Apple notarization: `scripts/release.sh --sign developer-id --notarize`
+Apple notarization:
+`scripts/release.sh --sign developer-id --notarize --notary-profile NAME`
 (see [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md)).
 
 ## Updates

@@ -18,8 +18,8 @@ without adding any network behavior to the installed app.
 From the development Mac:
 
 ```bash
-CLIPBOARD_ARCHIVE_VERSION=0.2.0 CLIPBOARD_ARCHIVE_BUILD=2 ./scripts/package-release.sh
-./scripts/validate-release.sh releases/ClipboardArchive-0.2.0-macos-arm64
+./scripts/package-release.sh   # version and build come from the newest CHANGELOG entry
+./scripts/validate-release.sh releases/ClipboardArchive-<version>-macos-arm64
 ```
 
 Create a GitHub Release tag such as:

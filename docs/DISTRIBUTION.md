@@ -60,8 +60,9 @@ Try it without building:
 
 Today's releases are **ad hoc** signed. That binds the bundle's contents to
 the signature, but it has no Apple Team ID: Gatekeeper on another Mac will
-not open a downloaded copy without a right-click override, and nothing proves
-who built it.
+not open a downloaded copy without an override (Open Anyway in System
+Settings › Privacy & Security on macOS 15 or later, right-click and Open on
+macOS 13 and 14), and nothing proves who built it.
 
 The Developer ID path is built and waits for a certificate:
 
