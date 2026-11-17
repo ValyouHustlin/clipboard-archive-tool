@@ -170,14 +170,10 @@ See [docs/INSTALL.md](docs/INSTALL.md).
 
 ## Project Direction
 
-Clipboard Archive is being maintained as Aaron's polished daily-use utility and
+Clipboard Archive is being maintained as its author's polished daily-use utility and
 an open-source download for anyone who finds that workflow useful. There is no
 current plan to turn it into a paid clipboard product, add cloud accounts, or
 compete on App Store growth.
-
-The prior market analysis remains available as historical context in
-[docs/market-positioning-and-business-analysis.md](docs/market-positioning-and-business-analysis.md);
-it is not the current product roadmap.
 
 For a short restart guide for the next agent session, see
 [docs/NEXT_SESSION_HANDOFF.md](docs/NEXT_SESSION_HANDOFF.md).

@@ -11,3 +11,4 @@ scripts/install-login-agent.sh
 *.xcworkspace/xcuserdata/
 .DS_Store
 CLAUDE.md
+docs/internal/

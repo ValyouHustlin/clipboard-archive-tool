@@ -134,12 +134,8 @@ whose path has gone, and falls back to the default. `clipboard-archive
 stores` prints the resolved paths, the source of each, the pointer's status,
 and any unused index file left at the default location.
 
-Aaron's current LaunchAgent pins those two values to:
-
-```text
-/Users/legacy/Development/AI-Hub-Archive/clipboard-history
-/Users/legacy/Development/AI/data/clipboard-history/indexes/clipboard-search.sqlite
-```
+A LaunchAgent can pin those two values to folders outside Application
+Support; the author's does.
 
 The Application Support override isolates settings, the instance lock, and the
 `UserDefaults` suite for development fixtures; release LaunchAgents normally
@@ -341,8 +337,8 @@ changing their capture or retention behavior.
 ## Permission Gates
 
 Starting live capture, installing or changing login behavior, replacing the
-running app, or changing Aaron's source-retention policy requires explicit
-approval and the AI Hub archive workflow.
+running app, or changing the owner's retention policy requires the owner's
+explicit approval.
 
 Safe package-level development uses:
 

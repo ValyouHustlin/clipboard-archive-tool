@@ -2,8 +2,8 @@
 # form "## <version> build <number> - <date>".
 #
 # Build numbers were once hard-coded in four release tools at once, and a
-# tool that pointed at a release that had moved either aborted in Aaron's
-# hands or measured nothing and called it done. Every tool now sources this
+# tool that pointed at a release that had moved either aborted mid-release
+# or measured nothing and called it done. Every tool now sources this
 # file instead of carrying its own literal.
 
 # Prints "<version> <build>" for the newest numbered entry, or nothing.

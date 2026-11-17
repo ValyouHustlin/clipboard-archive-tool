@@ -171,5 +171,5 @@ contracts; changes to a contract require a lead decision recorded here.
   the platform ships no scrypt/Argon2 without third-party deps and HKDF
   alone is not a password KDF; CryptoKit HKDF-SHA256 then derives the
   domain-separated subkeys. Both primitives are platform-vetted.
-- The live installed app (PID 10609 at lane start) is never stopped,
+- The live installed app is never stopped,
   replaced, or pointed at by development instances.

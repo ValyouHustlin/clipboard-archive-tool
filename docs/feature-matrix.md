@@ -2,7 +2,7 @@
 
 Living status document for the 2026-07 complete feature expansion. Updated at
 every integration checkpoint. Contracts: `docs/expansion-contracts.md`.
-Brief: `docs/feature-expansion-handoff-2026-07-30.md`.
+Brief: the 2026-07-30 feature expansion brief, kept outside the public tree.
 
 Legend: status = planned | in-progress | integrated | verified.
 "Verified" requires the exact receipts named in the Verification column.
