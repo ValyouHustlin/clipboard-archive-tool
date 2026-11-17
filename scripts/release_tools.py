@@ -123,7 +123,10 @@ LEAKS = [
     ("home directory", re.compile(r"/(?:Users|home)/[A-Za-z0-9._-]+")),
     ("email address", re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")),
     ("tailnet host", re.compile(r"[A-Za-z0-9-]+\.[A-Za-z0-9-]+\.ts\.net")),
-    ("private address", re.compile(r"\b(?:100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])|10|192\.168)\.\d{1,3}\.\d{1,3}\b")),
+    ("private address", re.compile(
+        r"\b(?:100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])|10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])|192\.168)"
+        r"\.\d{1,3}\.\d{1,3}\b"
+    )),
 ]
 # Mach-O text from Apple's toolchains carries these; they name no person.
 ALLOWED = [

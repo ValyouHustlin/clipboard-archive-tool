@@ -18,6 +18,11 @@ BIN="$ROOT/.build/debug/clipboard-archive"
 
 WORK="$(mktemp -d /tmp/clipboard-backup-roundtrip.XXXXXX)"
 trap 'rm -rf "$WORK"' EXIT
+# Everything the CLI writes besides the archive goes into the scratch root
+# too. Without these, a restore here replaced the real "last restore
+# verified" receipt and every call logged a row in the real operational log.
+export CLIPBOARD_ARCHIVE_APPLICATION_SUPPORT_ROOT="$WORK/support"
+export CLIPBOARD_ARCHIVE_LAUNCH_AGENT_PLIST="$WORK/agent.plist"
 SRC="$WORK/source-archive"
 DST="$WORK/restored-archive"
 DST_WRONG="$WORK/wrongpass-archive"

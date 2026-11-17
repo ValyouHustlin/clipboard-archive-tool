@@ -13,8 +13,24 @@ if /usr/bin/pgrep -x ClipboardArchive >/dev/null 2>&1 &&
   exit 2
 fi
 
+# The run deletes its root first, so it only ever uses a scratch directory.
+case "$ARCHIVE_ROOT" in
+  /tmp/*|/private/tmp/*) ;;
+  *)
+    echo "refusing to run outside /tmp: $ARCHIVE_ROOT" >&2
+    exit 2
+    ;;
+esac
+
 rm -rf "$ARCHIVE_ROOT"
 mkdir -p "$ARCHIVE_ROOT"
+# Every store the CLI resolves stays inside the scratch root. Each path is
+# resolved on its own, so an archive root alone sent these synthetic clips
+# into the real search index.
+export CLIPBOARD_ARCHIVE_ARCHIVE_ROOT="$ARCHIVE_ROOT"
+export CLIPBOARD_ARCHIVE_INDEX_PATH="$ARCHIVE_ROOT/index.sqlite"
+export CLIPBOARD_ARCHIVE_APPLICATION_SUPPORT_ROOT="$ARCHIVE_ROOT/support"
+export CLIPBOARD_ARCHIVE_LAUNCH_AGENT_PLIST="$ARCHIVE_ROOT/agent.plist"
 
 cd "$ROOT"
 /usr/bin/xcrun swift build --product clipboard-archive >/dev/null

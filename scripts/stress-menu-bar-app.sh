@@ -18,11 +18,22 @@ fi
 # which is why the running-app guard above exists. The support-root override
 # below isolates the STORES; CLIPBOARD_ARCHIVE_PASTEBOARD=general keeps the app
 # watching the board this script actually writes to.
-rm -rf "$ARCHIVE_ROOT"
+# The run deletes its root first, so it only ever uses a scratch directory.
+case "$ARCHIVE_ROOT" in
+  /tmp/*|/private/tmp/*) ;;
+  *)
+    echo "refusing to run outside /tmp: $ARCHIVE_ROOT" >&2
+    exit 2
+    ;;
+esac
+
+rm -rf "$ARCHIVE_ROOT" "$APP_SUPPORT_ROOT"
 mkdir -p "$ARCHIVE_ROOT"
 
 cd "$ROOT"
 CLIPBOARD_ARCHIVE_APP_OUTPUT="$APP_PATH" ./scripts/build-menu-bar-app.sh >/dev/null
+# The checks at the end run the debug CLI, which the app build does not make.
+/usr/bin/xcrun swift build --product clipboard-archive >/dev/null
 
 CLIPBOARD_ARCHIVE_ARCHIVE_ROOT="$ARCHIVE_ROOT" \
 CLIPBOARD_ARCHIVE_INDEX_PATH="$ARCHIVE_ROOT/index.sqlite" \
@@ -70,6 +81,11 @@ sleep 2
 rss_end="$(ps -o rss= -p "$APP_PID" | tr -d ' ')"
 fd_end="$(lsof -p "$APP_PID" 2>/dev/null | wc -l | tr -d ' ')"
 
+# The CLI checks read the stores the stress app wrote, not the real ones.
+export CLIPBOARD_ARCHIVE_ARCHIVE_ROOT="$ARCHIVE_ROOT"
+export CLIPBOARD_ARCHIVE_INDEX_PATH="$ARCHIVE_ROOT/index.sqlite"
+export CLIPBOARD_ARCHIVE_APPLICATION_SUPPORT_ROOT="$APP_SUPPORT_ROOT"
+export CLIPBOARD_ARCHIVE_LAUNCH_AGENT_PLIST="$ARCHIVE_ROOT/agent.plist"
 ./scripts/check-archive-integrity.sh "$ARCHIVE_ROOT" >/dev/null
 "$ROOT/.build/debug/clipboard-archive" search 'menu app stress ordinary phrase' --archive-root "$ARCHIVE_ROOT" --limit 1 | grep -q 'menu app stress ordinary phrase'
 "$ROOT/.build/debug/clipboard-archive" search 'menu-app-large-body-search-token-3000' --archive-root "$ARCHIVE_ROOT" --limit 1 | grep -q 'menu-app-large-body-search-token-3000'

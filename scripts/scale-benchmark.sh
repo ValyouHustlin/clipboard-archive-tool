@@ -18,6 +18,13 @@ esac
 
 rm -rf "$ARCHIVE_ROOT"
 mkdir -p "$ARCHIVE_ROOT"
+# Every store the CLI resolves stays inside the scratch root. Each path is
+# resolved on its own, so an archive root alone still left the search index
+# and the logs pointing at the real ones.
+export CLIPBOARD_ARCHIVE_ARCHIVE_ROOT="$ARCHIVE_ROOT"
+export CLIPBOARD_ARCHIVE_INDEX_PATH="$INDEX_PATH"
+export CLIPBOARD_ARCHIVE_APPLICATION_SUPPORT_ROOT="$ARCHIVE_ROOT/support"
+export CLIPBOARD_ARCHIVE_LAUNCH_AGENT_PLIST="$ARCHIVE_ROOT/agent.plist"
 cd "$ROOT"
 swift build --product clipboard-archive >/dev/null
 
@@ -78,7 +85,7 @@ mkdir -p "$(dirname "$INDEX_PATH")"
 end_index="$(date +%s)"
 
 start_search="$(date +%s)"
-"$ROOT/.build/debug/clipboard-archive" search 'benchmark-search-token-42' --archive-root "$ARCHIVE_ROOT" --limit 5 >/tmp/clipboard-archive-scale-search.out
+"$ROOT/.build/debug/clipboard-archive" search 'benchmark-search-token-42' --archive-root "$ARCHIVE_ROOT" --index-path "$INDEX_PATH" --limit 5 >/tmp/clipboard-archive-scale-search.out
 end_search="$(date +%s)"
 
 ./scripts/check-archive-integrity.sh "$ARCHIVE_ROOT" >/tmp/clipboard-archive-scale-integrity.out

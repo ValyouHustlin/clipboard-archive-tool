@@ -66,9 +66,21 @@ if [ -f "$PLIST" ]; then
   had_existing_plist=true
 fi
 
+had_existing_app=false
+if [ -d "$APP_TARGET" ]; then
+  had_existing_app=true
+fi
+old_app_moved=false
+
 rollback_update() {
   "$LAUNCHCTL_BIN" bootout "gui/$(/usr/bin/id -u)" "$PLIST" >/dev/null 2>&1 || true
-  rm -rf "$APP_STAGE" "$APP_TARGET" || true
+  rm -rf "$APP_STAGE" || true
+  # Remove the target only when it is the new copy. Until the old app has
+  # been moved aside the target is still the old app, and deleting it would
+  # leave nothing to restore.
+  if [ "$had_existing_app" = false ] || [ "$old_app_moved" = true ]; then
+    rm -rf "$APP_TARGET" || true
+  fi
   if [ -d "$APP_BACKUP" ]; then
     mv "$APP_BACKUP" "$APP_TARGET" || true
   fi
@@ -106,6 +118,7 @@ fi
 
 if [ -d "$APP_TARGET" ]; then
   mv "$APP_TARGET" "$APP_BACKUP"
+  old_app_moved=true
 fi
 mv "$APP_STAGE" "$APP_TARGET"
 
