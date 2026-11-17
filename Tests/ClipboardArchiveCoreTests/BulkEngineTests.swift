@@ -103,6 +103,27 @@ struct BulkEngineTests {
         #expect(try fixture.reader.recentItems(since: .distantPast, limit: 10).count == 1)
     }
 
+    /// A ranged delete removes the old copy of some content while a newer
+    /// copy lives in a day file outside the range. The content is still
+    /// live, so its tags and restricted mark stay.
+    @Test func testRangedDeleteKeepsAnnotationsOfContentStillLiveOutsideTheRange() throws {
+        let fixture = try makeFixture()
+        let content = "annotated content copied on two days"
+        let old = try seed(fixture, content: content, minutesAgo: 5 * 24 * 60)
+        try seed(fixture, content: content, minutesAgo: 1)
+        try fixture.annotations.setSensitivityOverride("restricted", forContentHash: old.contentHash)
+
+        let criteria = ClipboardBulkCriteria(until: Date().addingTimeInterval(-3 * 24 * 60 * 60))
+        let preview = try fixture.engine.preview(criteria)
+        let executed = try fixture.engine.execute(criteria)
+
+        #expect(executed.matchedEvents == 1)
+        #expect(preview.removedAnnotationHashes == 0)
+        #expect(executed.removedAnnotationHashes == 0)
+        #expect(fixture.annotations.annotation(for: old.contentHash)?.sensitivityOverride == "restricted")
+        #expect(try fixture.reader.recentItems(since: .distantPast, limit: 10).count == 1)
+    }
+
     @Test func testReclaimedBytesMatchesOnDiskByteDelta() throws {
         let fixture = try makeFixture(inlineLimit: 32)
         try seed(fixture, content: "inline bulk delta fixture with some padding text here", minutesAgo: 30)

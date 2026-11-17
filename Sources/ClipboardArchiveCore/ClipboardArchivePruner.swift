@@ -289,6 +289,32 @@ public struct ClipboardArchivePruner: Sendable {
             }
         }
 
+        // The day range bounds what may be pruned, not where a content
+        // hash's other copies live. Before any annotation is counted or
+        // swept as "last copy gone", look for live copies in the day files
+        // the range left out. Only annotated hashes matter, so an ordinary
+        // ranged delete reads nothing extra.
+        if restrictToDayRange != nil {
+            let undecided = annotatedHashes(
+                among: prunedContentHashes.subtracting(survivingLiveContentHashes)
+            )
+            if !undecided.isEmpty {
+                let scoped = Set(scopedFiles)
+                for eventFile in try reader.eventFiles() where !scoped.contains(eventFile) {
+                    for line in try String.readingClipboardText(contentsOf: eventFile)
+                        .split(separator: "\n", omittingEmptySubsequences: true) {
+                        guard let data = String(line).data(using: .utf8),
+                              let event = try? decoder.decode(StoredClipboardEvent.self, from: data),
+                              undecided.contains(event.contentHash),
+                              !suppression.isSuppressed(event) else {
+                            continue
+                        }
+                        survivingLiveContentHashes.insert(event.contentHash)
+                    }
+                }
+            }
+        }
+
         if dryRun {
             return ClipboardPruneCoreOutcome(
                 result: ClipboardPruneResult(
@@ -429,11 +455,20 @@ public struct ClipboardArchivePruner: Sendable {
     /// How many of these hashes carry an annotation record or a collection
     /// membership — the dry-run twin of `sweepAnnotationReferences`.
     private func referencedAnnotationCount(among hashes: Set<String>) -> Int {
+        annotatedHashes(among: hashes).count
+    }
+
+    /// The hashes that carry an annotation record or a collection
+    /// membership.
+    private func annotatedHashes(among hashes: Set<String>) -> Set<String> {
+        guard !hashes.isEmpty else {
+            return []
+        }
         let document = ClipboardAnnotationsStore(archiveRoot: archiveRoot).document()
         return hashes.filter { hash in
             document.annotations[hash] != nil
                 || document.collections.contains { $0.contentHashes.contains(hash) }
-        }.count
+        }
     }
 
     /// Annotation-reference sweep (contract 5): a content hash whose LAST
