@@ -4,17 +4,18 @@ Updated: 2026-11-17, after a full read of the repository.
 
 ## Where things stand
 
-- The newest CHANGELOG entry is 0.4.0 build 10 (disk image release and the
-  separate update helper). It has been built but not installed or published.
-- The copy in daily use is 0.3.0 build 9, ad hoc signed, at
-  `/Applications/Clipboard Archive.app`. It has no update feed.
+- The copy in daily use is 0.4.1 build 11 (2026-11-17), ad hoc signed, at
+  `/Applications/Clipboard Archive.app`, installed from the disk image that
+  `scripts/release.sh` builds. It has no update feed, so its update helper
+  stays dormant. The command-line tool was updated to the same version.
 - The public GitHub repository stops at 0.2.0. Everything after it (the 0.3.0
-  hardening, the 0.4.0 release path and the 2026-11-17 fixes) exists only in
-  the private mirror.
-- The 2026-11-17 fixes are source changes with tests. None of them is in an
-  installed build yet, so the daily copy still has the bugs they fix: a timed
-  pause that never ends, a Settings save that ends private mode, and an
-  expiry that does not delete restricted clips are the three that matter most.
+  hardening, the 0.4.0 release path and 0.4.1) exists only in the private
+  mirror.
+- 0.4.1 was checked three ways before it replaced 0.3.0 build 9: the test
+  suite, a sandboxed scratch run of the release binary with a moved clock
+  (a timed pause ends; the 0.3.0 binary stays paused in the same run), and one
+  click-through on the installed copy (private mode started from the menu
+  survives Save in an open Settings window).
 
 ## Checks
 
