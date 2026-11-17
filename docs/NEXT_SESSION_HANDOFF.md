@@ -4,18 +4,18 @@ Updated: 2026-11-17, after a full read of the repository.
 
 ## Where things stand
 
-- The copy in daily use is 0.4.3 build 13 (2026-11-17), ad hoc signed, at
+- The copy in daily use is 0.4.4 build 14 (2026-11-17), ad hoc signed, at
   `/Applications/Clipboard Archive.app`, installed with the published release
-  folder's `install.sh` over a disk-image install of 0.4.1. That copy has no
-  update helper inside it (only the disk image does), and no update feed
-  exists, so "Check for Updates…" says updates are not available. The
-  command-line tool there is 0.4.3 too.
-- The public GitHub repository is current with `main`, and 0.4.3 is the
-  published "latest" release. 0.4.2 fixed the installer; 0.4.3 lets a newer
-  copy take over from an older one and repair the login item.
-- The 0.4.3 install on the daily-use Mac was checked against its real data:
-  every earlier history file byte-identical, settings unchanged, the data
-  location carried over, one copy of the app, `verify` clean.
+  folder's `install.sh`. That copy has no update helper inside it (only the
+  disk image does), and no update feed exists, so "Check for Updates…" says
+  updates are not available. The command-line tool there is 0.4.4 too.
+- The public GitHub repository is current with `main`, and 0.4.4 is the
+  published "latest" release. 0.4.2 fixed the installer, 0.4.3 lets a newer
+  copy take over from an older one and repair the login item, and 0.4.4 adds
+  the archive write lock.
+- Each install on the daily-use Mac was checked against its real data: every
+  earlier history file byte-identical, settings unchanged, the data location
+  carried over, one copy of the app, `verify` clean.
 - 0.4.1 was checked three ways before it replaced 0.3.0 build 9: the test
   suite, a sandboxed scratch run of the release binary with a moved clock
   (a timed pause ends; the 0.3.0 binary stays paused in the same run), and one

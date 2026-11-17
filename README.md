@@ -94,7 +94,7 @@ replaces only the app bundle, CLI, and LaunchAgent definition.
 To pin a specific version:
 
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ValyouHustlin/clipboard-archive-tool/main/scripts/install-latest-github-release.sh)" -- ValyouHustlin/clipboard-archive-tool v0.4.3
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ValyouHustlin/clipboard-archive-tool/main/scripts/install-latest-github-release.sh)" -- ValyouHustlin/clipboard-archive-tool v0.4.4
 ```
 
 After install/update:
