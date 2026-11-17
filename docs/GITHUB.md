@@ -70,7 +70,7 @@ history/settings, and reloads the login item.
 Pinned version:
 
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ValyouHustlin/clipboard-archive-tool/main/scripts/install-latest-github-release.sh)" -- ValyouHustlin/clipboard-archive-tool v0.4.2
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ValyouHustlin/clipboard-archive-tool/main/scripts/install-latest-github-release.sh)" -- ValyouHustlin/clipboard-archive-tool v0.4.3
 ```
 
 The updater downloads the release zip, verifies `SHA256SUMS`, runs the bundled

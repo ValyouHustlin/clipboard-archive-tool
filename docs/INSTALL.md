@@ -90,10 +90,12 @@ starts the new app. It works over a copy installed from the disk image too.
 An update keeps your history, settings, pins and tags, and the data location.
 The installer does not write inside the archive or the settings file.
 
-If you installed 0.4.1 or earlier from a release folder and now use the disk
-image, run `./install.sh` from a release folder once (or the one-line
-installer in [GITHUB.md](GITHUB.md)): dragging the disk image alone leaves the
-older copy in `~/Applications`, and login would keep starting that one. Existing archive data remains
+If you installed 0.4.1 or earlier from a release folder and now drag the disk
+image to Applications, open the new copy once. From 0.4.3 it takes over from
+the older copy if that one is running, and rewrites the login item so login
+starts the new copy from then on; your history, settings and data location
+are untouched. The older copy stays in `~/Applications` until you delete it
+or run `./install.sh` once, which removes it. Existing archive data remains
 in place. If the new app does not remain running, the prior app and LaunchAgent
 are restored.
 

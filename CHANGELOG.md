@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.3 build 13 - 2026-11-17
+
+- Let a newer copy take over from an older one. After dragging the disk image
+  onto a Mac that still had an older copy in `~/Applications`, the older copy
+  (started at login) held the archive, so the new copy quit the moment it was
+  opened and nothing said why. A newer installed copy now asks the older one
+  to quit and takes over. An older copy never displaces a newer one, and a
+  copy run from the disk image or a download folder never displaces anything.
+- Point the login item at the copy in use. When the login item still names an
+  older or missing copy, the running copy rewrites it to name itself and
+  keeps everything else in it, including the data location. Login then starts
+  the copy you are actually using. The older copy is left on disk; remove it
+  when convenient, or run `install.sh` once, which removes it.
+- Both are recorded in the operational log as `older_copy_replaced` and
+  `login_item_repaired`.
+
 ## 0.4.2 build 12 - 2026-11-17
 
 - Install one copy of the app, where the disk image puts it. `install.sh`

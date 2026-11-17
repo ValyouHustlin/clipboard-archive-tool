@@ -95,6 +95,13 @@ public struct ClipboardOperationalLog: Sendable {
         /// The bundled update helper could not be started. Capture is not
         /// affected; updates simply do not run until the next launch.
         case updaterLaunchFailed = "updater_launch_failed"
+        /// A newer copy was opened while an older copy of the app held the
+        /// single-instance lock; the older one was asked to quit and this
+        /// one took over. `count` is the older copy's pid.
+        case olderCopyReplaced = "older_copy_replaced"
+        /// The login item named an older or missing copy of the app and now
+        /// names this one.
+        case loginItemRepaired = "login_item_repaired"
         /// One row per CLI invocation: `verb` names the command and
         /// `count` carries its exit code (0 on success).
         case cliCommand = "cli_command"
@@ -105,7 +112,8 @@ public struct ClipboardOperationalLog: Sendable {
             switch self {
             case .appStart, .appStop, .heartbeat:
                 return .app
-            case .secondInstanceRefused, .pointerPublished, .pointerPublishFailed, .updaterLaunchFailed:
+            case .secondInstanceRefused, .pointerPublished, .pointerPublishFailed, .updaterLaunchFailed,
+                 .olderCopyReplaced, .loginItemRepaired:
                 return .launch
             case .settingsFallback, .settingsLastGoodUsed:
                 return .settings

@@ -94,7 +94,7 @@ replaces only the app bundle, CLI, and LaunchAgent definition.
 To pin a specific version:
 
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ValyouHustlin/clipboard-archive-tool/main/scripts/install-latest-github-release.sh)" -- ValyouHustlin/clipboard-archive-tool v0.4.2
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/ValyouHustlin/clipboard-archive-tool/main/scripts/install-latest-github-release.sh)" -- ValyouHustlin/clipboard-archive-tool v0.4.3
 ```
 
 After install/update:
@@ -346,7 +346,8 @@ Codes are `app_start`, `app_stop`, `heartbeat`, `second_instance_refused`,
 `index_missing_detected`, `index_corrupt_detected`, `index_upsert_failed`,
 `index_rebuild_started`, `index_rebuild_finished`, `index_rebuild_failed`,
 `retention_pruned`, `expiry_swept`, `pointer_published`,
-`pointer_publish_failed`, `updater_launch_failed`, and `cli_command`.
+`pointer_publish_failed`, `updater_launch_failed`, `older_copy_replaced`,
+`login_item_repaired`, and `cli_command`.
 
 `heartbeat` is the reason the log exists. Every 30 minutes (the first beat a
 minute after launch) the app records how many polls it ran and how many clips

@@ -9,8 +9,9 @@ Updated: 2026-11-17, after a full read of the repository.
   `scripts/release.sh` builds. It has no update feed, so its update helper
   stays dormant. The command-line tool there is 0.4.1 too.
 - The public GitHub repository is current with `main`. The published
-  "latest" release is 0.4.2 build 12: the same app as 0.4.1 with a fixed
-  installer. The daily-use copy was deliberately left at 0.4.1.
+  "latest" release is 0.4.3 build 13. 0.4.2 fixed the installer; 0.4.3 lets a
+  newer copy take over from an older one and repair the login item. The
+  daily-use copy was deliberately left at 0.4.1.
 - 0.4.1 was checked three ways before it replaced 0.3.0 build 9: the test
   suite, a sandboxed scratch run of the release binary with a moved clock
   (a timed pause ends; the 0.3.0 binary stays paused in the same run), and one
@@ -32,10 +33,18 @@ scratch home and never look at the real `/Applications`), then
 History, settings, pins and tags, and the data location. The installer never
 writes inside the archive or the settings file; it carries the data location
 over from the login item it replaces. The app keeps every older settings key
-and reads archives and search indexes back to 0.1.2. Two things are not
-covered: a user who drags the disk image over a 0.1.x folder install ends up
-with two copies until they run `install.sh` once, and nothing tests a
+and reads archives and search indexes back to 0.1.2. A newer copy dragged in
+from the disk image beside an older folder install takes over from it and
+points the login item at itself (`ClipboardInstallRepair`, carried out in
+`InstallRepairRunner`); it leaves the older copy on disk. Nothing tests a
 downgrade.
+
+The takeover and login-item repair are covered by unit tests on the decisions.
+The end-to-end check is by hand: an isolated run of an older app bundle, then
+the new one on the same scratch root with `CLIPBOARD_ARCHIVE_LAUNCH_AGENT_PLIST`
+naming a scratch login item. Run it with the four path variables and without
+`run-isolated-app.py`: that sandbox blocks the quit request one app sends the
+other, so the takeover falls back to a signal there.
 
 ## Open decisions
 

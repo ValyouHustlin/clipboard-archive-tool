@@ -3433,14 +3433,28 @@ final class ClipboardMenuBarApp: NSObject,
 }
 
 let instanceLock = AppInstanceLock()
-guard instanceLock.acquire() else {
-    // A refused second instance is normally invisible: the process simply
-    // exits. Recorded with the holder's pid (0 when the lock file cannot be
-    // read) so "it would not start" has an answer.
+if !instanceLock.acquire() {
     let holderPID = (try? String(contentsOf: storeResolution.lockURL, encoding: .utf8))
         .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? 0
-    operationalLog.record(.secondInstanceRefused, count: holderPID)
-    exit(0)
+    // An older copy of this app, usually one started at login from the
+    // folder an earlier installer used, gives way to a newer installed copy
+    // the user just opened. Anything else is a second instance.
+    if InstallRepairRunner.takeOver(fromPID: holderPID), instanceLock.acquire() {
+        operationalLog.record(.olderCopyReplaced, count: holderPID)
+    } else {
+        // A refused second instance is normally invisible: the process
+        // simply exits. Recorded with the holder's pid (0 when the lock
+        // file cannot be read) so "it would not start" has an answer.
+        operationalLog.record(.secondInstanceRefused, count: holderPID)
+        exit(0)
+    }
+}
+
+// Login keeps starting whatever the login item names. When that is an older
+// or missing copy and this one is installed, name this one, so the next
+// login starts the copy the user is actually running.
+if InstallRepairRunner.repairLoginItemIfNeeded() != nil {
+    operationalLog.record(.loginItemRepaired)
 }
 
 // This process is the one that holds the stores open, so it publishes where
