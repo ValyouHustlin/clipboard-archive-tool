@@ -155,7 +155,7 @@ checks the box — never from the picker at paste time. Red conflict label,
 
 ## Test plan
 
-Unit (new files under Tests/AIHubClipboardCoreTests/): shortcut setting
+Unit (new files under Tests/ClipboardArchiveCoreTests/): shortcut setting
 (defaults, carbon flags exact values ⌥⌘=2304 ⌃⇧=0x1200, isValid, unknown
 modifier drop, displayString table); settings migration fixtures (current
 shape → disabled defaults; future unknown action id loads; round-trip);

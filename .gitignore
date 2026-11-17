@@ -10,3 +10,4 @@ scripts/install-login-agent.sh
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
 .DS_Store
+CLAUDE.md

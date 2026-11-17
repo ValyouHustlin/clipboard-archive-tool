@@ -80,7 +80,7 @@ modal result flow.
 `clipboard-archive` exposes local maintenance and retrieval commands.
 
 `clipboard-archive-checks` is a synthetic compatibility-check executable.
-`Tests/AIHubClipboardCoreTests` is a Swift Testing suite covering the
+`Tests/ClipboardArchiveCoreTests` is a Swift Testing suite covering the
 load-bearing privacy, path-containment, settings-migration, health, manifest,
 redaction, and derived-index behaviors.
 
