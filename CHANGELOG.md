@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.2 build 12 - 2026-11-17
+
+- Install one copy of the app, where the disk image puts it. `install.sh`
+  wrote `~/Applications/ClipboardArchive.app` while the disk image installs
+  `/Applications/Clipboard Archive.app`. Both use one login item and one
+  archive, so using both left two apps and started the wrong one at login.
+  The installer now installs `/Applications/Clipboard Archive.app` (the same
+  name in `~/Applications` when `/Applications` cannot be written), stops the
+  running copy wherever it runs from, removes any other copy once the new one
+  is running, and puts every copy back if the new one does not start.
+  `uninstall.sh` removes every copy.
+- Keep the data location across an update. The location chosen at install
+  time lived only in the login item, which every update rewrites. An update
+  now carries it over, so history kept in a folder you chose stays where it
+  is; a location given at update time still wins.
+- Check that an update loses nothing. `scripts/test-upgrade-keeps-data.sh`
+  installs over what 0.1.2 and later releases leave on disk and reads the
+  history, the settings and the search index back.
+- The app is the same as 0.4.1.
+
 ## 0.4.1 build 11 - 2026-11-17
 
 - End a timed pause on time. "Pause for 15 minutes", "1 hour" and "until

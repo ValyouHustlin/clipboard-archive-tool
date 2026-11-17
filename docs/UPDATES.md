@@ -150,8 +150,9 @@ The installer replaces `/Applications/Clipboard Archive.app` (the same copy
 the disk image installs) and `~/.local/bin/clipboard-archive`, removes a copy
 an older installer left in `~/Applications`, keeps the archive, the index and
 the settings, and puts the previous app and LaunchAgent back if the new app
-does not stay running. Releases through 0.4.1 carry the older installer,
-which installs a second copy in `~/Applications`.
+does not stay running. It also carries the data location over from the login
+item it replaces. Releases through 0.4.1 carry the older installer, which
+installs a second copy in `~/Applications`.
 
 The GitHub Terminal helper also still works; review it before running it:
 

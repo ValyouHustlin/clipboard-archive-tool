@@ -30,9 +30,11 @@ APP_TARGET="$APP_DIR/$APP_NAME"
 APP_STAGE="$APP_DIR/.$APP_NAME.install-$$"
 APP_BACKUP="$APP_DIR/.$APP_NAME.backup-$$"
 BIN_DIR="${CLIPBOARD_ARCHIVE_BIN_DIR:-$HOME/.local/bin}"
-# Set only when the caller asks for a data location. Otherwise the app keeps
-# whatever it resolves on its own: the location it last published, or the
-# default under Application Support.
+# A data location given here wins. Without one, the location the existing
+# login item pins is carried over (read below, once PLIST is known), so an
+# update never moves anyone's history. With neither, the app resolves its
+# own: the location it last published, or the default under Application
+# Support.
 ARCHIVE_ROOT="${CLIPBOARD_ARCHIVE_ARCHIVE_ROOT:-}"
 INDEX_PATH="${CLIPBOARD_ARCHIVE_INDEX_PATH:-}"
 PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
@@ -40,6 +42,20 @@ PLIST_BACKUP="$HOME/Library/LaunchAgents/.${LABEL}.plist.backup-$$"
 LOG_DIR="$HOME/Library/Logs/ClipboardArchive"
 LAUNCHCTL_BIN="${CLIPBOARD_ARCHIVE_LAUNCHCTL_BIN:-/bin/launchctl}"
 PGREP_BIN="${CLIPBOARD_ARCHIVE_PGREP_BIN:-/usr/bin/pgrep}"
+
+# Every release through 0.4.1 wrote the data location into the login item and
+# nowhere else that survives a reinstall. Rewriting the login item without it
+# would start the app on the default location and the history would look lost.
+existing_pin() {
+  [ -f "$PLIST" ] || return 0
+  /usr/bin/plutil -extract "EnvironmentVariables.$1" raw -o - "$PLIST" 2>/dev/null || true
+}
+if [ -z "$ARCHIVE_ROOT" ]; then
+  ARCHIVE_ROOT="$(existing_pin CLIPBOARD_ARCHIVE_ARCHIVE_ROOT)"
+fi
+if [ -z "$INDEX_PATH" ]; then
+  INDEX_PATH="$(existing_pin CLIPBOARD_ARCHIVE_INDEX_PATH)"
+fi
 
 usage() {
   cat <<'USAGE'
@@ -52,9 +68,13 @@ app in either folder is removed after the new one starts.
 Environment overrides:
   CLIPBOARD_ARCHIVE_APP_DIR       Folder to install into
   CLIPBOARD_ARCHIVE_BIN_DIR       Default: ~/.local/bin
-  CLIPBOARD_ARCHIVE_ARCHIVE_ROOT  Where clipboard history is kept. Default: unchanged
-                                  (first install: ~/Library/Application Support/ClipboardArchive)
-  CLIPBOARD_ARCHIVE_INDEX_PATH    The search index file. Default: unchanged
+  CLIPBOARD_ARCHIVE_ARCHIVE_ROOT  Where clipboard history is kept. Default: where it
+                                  already is (first install: ~/Library/Application
+                                  Support/ClipboardArchive)
+  CLIPBOARD_ARCHIVE_INDEX_PATH    The search index file. Default: where it already is
+
+An update keeps your history, settings, pins and tags, and the data location
+of the copy it replaces.
 
 Examples:
   ./install.sh

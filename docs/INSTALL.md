@@ -72,8 +72,8 @@ CLIPBOARD_ARCHIVE_INDEX_PATH="$HOME/Documents/Clipboard Archive/clipboard-search
 ./install.sh
 ```
 
-The location is written into the LaunchAgent and the app remembers it. A
-later `./install.sh` without these variables leaves the data where it is.
+The location is written into the LaunchAgent. A later `./install.sh` without
+these variables carries it over, so the data stays where it is.
 
 ## Update
 
@@ -85,7 +85,15 @@ Install a newer release folder the same way:
 
 The installer stops the running app wherever it runs from, replaces the app
 bundle, removes any other copy, updates the CLI, rewrites the LaunchAgent, and
-starts the new app. It works over a copy installed from the disk image too. Existing archive data remains
+starts the new app. It works over a copy installed from the disk image too.
+
+An update keeps your history, settings, pins and tags, and the data location.
+The installer does not write inside the archive or the settings file.
+
+If you installed 0.4.1 or earlier from a release folder and now use the disk
+image, run `./install.sh` from a release folder once (or the one-line
+installer in [GITHUB.md](GITHUB.md)): dragging the disk image alone leaves the
+older copy in `~/Applications`, and login would keep starting that one. Existing archive data remains
 in place. If the new app does not remain running, the prior app and LaunchAgent
 are restored.
 

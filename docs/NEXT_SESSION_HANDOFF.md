@@ -7,10 +7,10 @@ Updated: 2026-11-17, after a full read of the repository.
 - The copy in daily use is 0.4.1 build 11 (2026-11-17), ad hoc signed, at
   `/Applications/Clipboard Archive.app`, installed from the disk image that
   `scripts/release.sh` builds. It has no update feed, so its update helper
-  stays dormant. The command-line tool was updated to the same version.
-- The public GitHub repository is current with `main`, and 0.4.1 is the
-  published "latest" release there (2026-11-17), with the disk image, its
-  checksum and the folder package attached.
+  stays dormant. The command-line tool there is 0.4.1 too.
+- The public GitHub repository is current with `main`. The published
+  "latest" release is 0.4.2 build 12: the same app as 0.4.1 with a fixed
+  installer. The daily-use copy was deliberately left at 0.4.1.
 - 0.4.1 was checked three ways before it replaced 0.3.0 build 9: the test
   suite, a sandboxed scratch run of the release binary with a moved clock
   (a timed pause ends; the 0.3.0 binary stays paused in the same run), and one
@@ -20,19 +20,22 @@ Updated: 2026-11-17, after a full read of the repository.
 ## Checks
 
 `swift test` is the gate, run on a Mac. Nothing runs it automatically: the
-workflow file needs a macOS runner and no runner is set up for it. The release
-scripts (`validate-release.sh`, `check-local-only.sh`, `test-release.sh`,
-`test-install-rollback.sh`, `test-update-e2e.sh`) are run by hand before a
-release.
+workflow file needs a macOS runner and no runner is set up for it. Before a
+release, also run by hand: `test-install-locations.sh` and
+`test-upgrade-keeps-data.sh` (neither needs a release folder; both stay in a
+scratch home and never look at the real `/Applications`), then
+`validate-release.sh`, `check-local-only.sh`, `test-release.sh`,
+`test-install-rollback.sh` and `test-update-e2e.sh`.
 
-## Not yet released
+## What an update must keep
 
-- The release-folder installer now installs `/Applications/Clipboard
-  Archive.app`, the same copy as the disk image, removes any other copy, and
-  pins a data location only when asked (`scripts/test-install-locations.sh`).
-  The published 0.4.1 folder package still carries the old installer, which
-  adds a second copy in `~/Applications`; the fix reaches users with the next
-  release. Add it to that release's CHANGELOG entry.
+History, settings, pins and tags, and the data location. The installer never
+writes inside the archive or the settings file; it carries the data location
+over from the login item it replaces. The app keeps every older settings key
+and reads archives and search indexes back to 0.1.2. Two things are not
+covered: a user who drags the disk image over a 0.1.x folder install ends up
+with two copies until they run `install.sh` once, and nothing tests a
+downgrade.
 
 ## Open decisions
 

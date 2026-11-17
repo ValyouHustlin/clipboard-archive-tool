@@ -45,6 +45,9 @@ jobs:
       - name: Test install locations
         run: ./scripts/test-install-locations.sh
 
+      - name: Test that an update keeps history, settings and data location
+        run: ./scripts/test-upgrade-keeps-data.sh
+
       - name: Test failed-update rollback
         run: ./scripts/test-install-rollback.sh "$RELEASE_DIR"
 
