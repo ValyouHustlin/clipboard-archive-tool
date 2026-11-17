@@ -59,12 +59,6 @@ final class GlobalHotKeyManager {
         UnregisterEventHotKey(hotKeyRef)
     }
 
-    func unregisterAll() {
-        for id in Array(hotKeyRefs.keys) {
-            unregister(id: id)
-        }
-    }
-
     private func installEventHandlerIfNeeded() {
         guard eventHandlerRef == nil else {
             return

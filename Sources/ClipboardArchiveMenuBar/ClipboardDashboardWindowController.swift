@@ -35,6 +35,9 @@ final class ClipboardDashboardWindowController: NSWindowController {
     /// Cleanup preview validity: Delete stays disabled until a preview ran
     /// for the CURRENT popup selection; changing it invalidates.
     private var previewedCleanupCutoffIndex: Int?
+    /// The exact criteria the preview counted. Delete reuses them, so a
+    /// window left open cannot delete more than the confirmation said.
+    private var previewedCleanupCriteria: ClipboardBulkCriteria?
     private var lastCleanupPreview: ClipboardBulkResult?
     private var lastHealth: ClipboardArchiveHealth?
     private var lastBlockedExplanations: [String] = []
@@ -541,6 +544,7 @@ final class ClipboardDashboardWindowController: NSWindowController {
     @objc private func cleanupCriteriaChanged() {
         // Any edit invalidates the preview (truthful-preview contract).
         previewedCleanupCutoffIndex = nil
+        previewedCleanupCriteria = nil
         lastCleanupPreview = nil
         cleanupDeleteButton.isEnabled = false
         cleanupResultLabel.stringValue = "Criteria changed — preview again before deleting."
@@ -569,6 +573,7 @@ final class ClipboardDashboardWindowController: NSWindowController {
                     }
                     self.lastCleanupPreview = preview
                     self.previewedCleanupCutoffIndex = selectedIndex
+                    self.previewedCleanupCriteria = criteria
                     var text = "Would delete \(preview.matchedEvents) clip\(preview.matchedEvents == 1 ? "" : "s"), reclaiming \(Self.bytes(preview.reclaimedBytes))."
                     if preview.exemptedPinnedEvents > 0 {
                         text += " \(preview.exemptedPinnedEvents) pinned clip\(preview.exemptedPinnedEvents == 1 ? "" : "s") will be kept."
@@ -602,7 +607,7 @@ final class ClipboardDashboardWindowController: NSWindowController {
         workInFlight = true
         cleanupDeleteButton.isEnabled = false
         cleanupResultLabel.stringValue = "Deleting…"
-        let criteria = ClipboardBulkCriteria(until: cleanupCutoff())
+        let criteria = previewedCleanupCriteria ?? ClipboardBulkCriteria(until: cleanupCutoff())
         let engine = ClipboardBulkEngine(archiveRoot: archiveRoot, indexURL: resolvedIndexURL)
         workQueue.async { @Sendable [weak self] in
             let result = try? engine.execute(criteria)
@@ -613,6 +618,7 @@ final class ClipboardDashboardWindowController: NSWindowController {
                     }
                     self.workInFlight = false
                     self.previewedCleanupCutoffIndex = nil
+                    self.previewedCleanupCriteria = nil
                     self.lastCleanupPreview = nil
                     if let result {
                         self.cleanupResultLabel.stringValue = "Deleted \(result.matchedEvents) clip\(result.matchedEvents == 1 ? "" : "s"), reclaimed \(Self.bytes(result.reclaimedBytes))."

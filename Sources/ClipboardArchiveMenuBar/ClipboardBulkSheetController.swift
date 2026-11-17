@@ -49,7 +49,11 @@ final class ClipboardBulkSheetController: NSObject {
         ("Any type", nil),
         ("Text", "text"),
         ("Links", "url"),
-        ("Code", "code")
+        ("Code", "code"),
+        ("Images", "image"),
+        ("Files", "file-reference"),
+        ("Rich text", "rich-text"),
+        ("Colors", "color")
     ]
     private static let sensitivityChoices: [(title: String, value: ClipboardBulkCriteria.Sensitivity?)] = [
         ("Any sensitivity", nil),

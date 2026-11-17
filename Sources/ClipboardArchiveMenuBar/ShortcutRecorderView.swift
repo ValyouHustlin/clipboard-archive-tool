@@ -119,6 +119,13 @@ final class ShortcutRecorderView: NSButton {
         }
     }
 
+    /// Stops recording without taking a shortcut. The Settings window calls
+    /// this when it hides: hiding is not closing, so nothing else would end
+    /// the recording, and the monitor would keep swallowing keys.
+    func cancelRecording() {
+        endRecording()
+    }
+
     private func endRecording() {
         guard isRecording else {
             return
@@ -138,6 +145,12 @@ final class ShortcutRecorderView: NSButton {
 
     /// Returns true to swallow the event while recording.
     private func handleRecordingEvent(_ event: NSEvent) -> Bool {
+        // Only keys typed into this window. The monitor sees every window
+        // in the app, and a key meant for History or the quick picker is
+        // not a shortcut being recorded.
+        guard event.window === window else {
+            return false
+        }
         switch event.type {
         case .flagsChanged:
             refreshTitle(liveModifiers: modifierNames(from: event.modifierFlags))

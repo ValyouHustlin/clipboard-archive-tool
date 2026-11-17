@@ -1104,6 +1104,7 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
     }
 
     @objc private func cancel() {
+        shortcutRecorder.cancelRecording()
         window?.orderOut(nil)
     }
 
@@ -1112,6 +1113,14 @@ final class ClipboardSettingsWindowController: NSWindowController, NSTableViewDa
     }
 
     @objc private func save() {
+        shortcutRecorder.cancelRecording()
+        // A bundle id typed but not yet added is still a rule the user
+        // asked for. Saving without it would report "Saved" and block
+        // nothing.
+        if !excludedBundleField.stringValue
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            addExcludedBundle()
+        }
         let poll = max(0.1, min(5.0, pollIntervalField.doubleValue))
         let mode = selectedRetentionMode()
         let limit = mode.retainedItemLimit ?? ClipboardSettings.clampRecentItemLimit(recentLimitField.integerValue)

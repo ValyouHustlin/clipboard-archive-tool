@@ -94,9 +94,14 @@ final class RichThumbnailProvider {
         image.lockFocus()
         fill.setFill()
         NSRect(origin: .zero, size: size).fill()
-        let luminance = 0.299 * fill.redComponent
-            + 0.587 * fill.greenComponent
-            + 0.114 * fill.blueComponent
+        // Reading red, green and blue from a colour outside an RGB space
+        // raises an exception, and the fallback fill for an unreadable hex
+        // value is a grey-space colour.
+        let rgb = fill.usingColorSpace(.sRGB)
+            ?? NSColor(srgbRed: 0.5, green: 0.5, blue: 0.5, alpha: 1)
+        let luminance = 0.299 * rgb.redComponent
+            + 0.587 * rgb.greenComponent
+            + 0.114 * rgb.blueComponent
         let textColor: NSColor = luminance > 0.6 ? .black : .white
         let caption = "\(hex) · \(colorSpace)" as NSString
         let attributes: [NSAttributedString.Key: Any] = [

@@ -1713,6 +1713,9 @@ final class ClipboardPanelController: NSWindowController,
             keyEquivalent: ""
         )
         clearItem.target = self
+        // Menus enable every item with a target by default, which would
+        // ignore the state set below.
+        menu.autoenablesItems = false
         clearItem.isEnabled = hashes.contains {
             restrictedHashes.contains($0) || expiringHashes.contains($0)
         }
