@@ -47,86 +47,94 @@ public struct ClipboardArchiveRedactor: Sendable {
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
 
         for eventFile in try reader.eventFiles() {
-            let originalLines = try String.readingClipboardText(contentsOf: eventFile)
-                .split(separator: "\n", omittingEmptySubsequences: false)
-                .map(String.init)
             var changed = false
             var deletedBodyFile: String?
             var skippedUnsafeBodyPath = false
             var redactedContentHash: String?
-            var rewrittenLines: [String] = []
 
-            for line in originalLines {
-                guard !line.isEmpty,
-                      let data = line.data(using: .utf8),
-                      var event = try? decoder.decode(StoredClipboardEvent.self, from: data),
-                      event.id == eventID else {
-                    if !line.isEmpty {
-                        rewrittenLines.append(line)
-                    }
-                    continue
-                }
+            // Read, rebuild and replace under the archive write lock: a
+            // capture appended to this file in between would be lost.
+            try ClipboardArchiveWriteLock.withLock(archiveRoot: archiveRoot) {
+                let originalLines = try String.readingClipboardText(contentsOf: eventFile)
+                    .split(separator: "\n", omittingEmptySubsequences: false)
+                    .map(String.init)
+                var rewrittenLines: [String] = []
 
-                // Content identity, captured pre-tombstone, for the
-                // last-occurrence annotation cleanup below.
-                redactedContentHash = event.contentHash
-
-                if let rawContentPath = event.rawContentPath {
-                    if let bodyURL = try? ClipboardArchivePath.containedURL(
-                        relativePath: rawContentPath,
-                        archiveRoot: archiveRoot
-                    ) {
-                        if FileManager.default.fileExists(atPath: bodyURL.path) {
-                            try FileManager.default.removeItem(at: bodyURL)
+                for line in originalLines {
+                    guard !line.isEmpty,
+                          let data = line.data(using: .utf8),
+                          var event = try? decoder.decode(StoredClipboardEvent.self, from: data),
+                          event.id == eventID else {
+                        if !line.isEmpty {
+                            rewrittenLines.append(line)
                         }
-                        deletedBodyFile = rawContentPath
-                    } else {
-                        skippedUnsafeBodyPath = true
+                        continue
                     }
-                }
 
-                // Rich body deletion (Slice 6): the image/RTF/file-list
-                // body is content too — same containment rules, same
-                // unsafe-path reporting as the plain body above.
-                if let richBodyPath = event.richContent?.bodyPath {
-                    if let bodyURL = try? ClipboardArchivePath.containedURL(
-                        relativePath: richBodyPath,
-                        archiveRoot: archiveRoot
-                    ) {
-                        if FileManager.default.fileExists(atPath: bodyURL.path) {
-                            try FileManager.default.removeItem(at: bodyURL)
+                    // Content identity, captured pre-tombstone, for the
+                    // last-occurrence annotation cleanup below.
+                    redactedContentHash = event.contentHash
+
+                    if let rawContentPath = event.rawContentPath {
+                        if let bodyURL = try? ClipboardArchivePath.containedURL(
+                            relativePath: rawContentPath,
+                            archiveRoot: archiveRoot
+                        ) {
+                            if FileManager.default.fileExists(atPath: bodyURL.path) {
+                                try FileManager.default.removeItem(at: bodyURL)
+                            }
+                            deletedBodyFile = rawContentPath
+                        } else {
+                            skippedUnsafeBodyPath = true
                         }
-                        if deletedBodyFile == nil {
-                            deletedBodyFile = richBodyPath
-                        }
-                    } else {
-                        skippedUnsafeBodyPath = true
                     }
+
+                    // Rich body deletion (Slice 6): the image/RTF/file-list
+                    // body is content too — same containment rules, same
+                    // unsafe-path reporting as the plain body above.
+                    if let richBodyPath = event.richContent?.bodyPath {
+                        if let bodyURL = try? ClipboardArchivePath.containedURL(
+                            relativePath: richBodyPath,
+                            archiveRoot: archiveRoot
+                        ) {
+                            if FileManager.default.fileExists(atPath: bodyURL.path) {
+                                try FileManager.default.removeItem(at: bodyURL)
+                            }
+                            if deletedBodyFile == nil {
+                                deletedBodyFile = richBodyPath
+                            }
+                        } else {
+                            skippedUnsafeBodyPath = true
+                        }
+                    }
+
+                    event.contentPreview = "[deleted]"
+                    event.contentInline = nil
+                    event.rawContentPath = nil
+                    event.richContent = nil
+                    event.privacyLabel = .doNotIndex
+                    event.allowedUse = [.doNotIndex]
+                    event.sensitivityFlags = Array(Set(event.sensitivityFlags + ["manually-deleted", reason])).sorted()
+
+                    let redactedData = try encoder.encode(event)
+                    guard let redactedLine = String(data: redactedData, encoding: .utf8) else {
+                        throw ClipboardArchiveError.encodingFailed
+                    }
+                    rewrittenLines.append(redactedLine)
+                    changed = true
                 }
 
-                event.contentPreview = "[deleted]"
-                event.contentInline = nil
-                event.rawContentPath = nil
-                event.richContent = nil
-                event.privacyLabel = .doNotIndex
-                event.allowedUse = [.doNotIndex]
-                event.sensitivityFlags = Array(Set(event.sensitivityFlags + ["manually-deleted", reason])).sorted()
-
-                let redactedData = try encoder.encode(event)
-                guard let redactedLine = String(data: redactedData, encoding: .utf8) else {
-                    throw ClipboardArchiveError.encodingFailed
+                if changed {
+                    let payload = rewrittenLines.joined(separator: "\n") + "\n"
+                    let tempURL = eventFile.deletingLastPathComponent()
+                        .appendingPathComponent(".\(eventFile.lastPathComponent).tmp-\(UUID().uuidString)")
+                    try payload.writeClipboardAtomically(to: tempURL)
+                    _ = try FileManager.default.replaceItemAt(eventFile, withItemAt: tempURL)
+                    try ClipboardPrivateFileSystem.secureFile(eventFile)
                 }
-                rewrittenLines.append(redactedLine)
-                changed = true
             }
 
             if changed {
-                let payload = rewrittenLines.joined(separator: "\n") + "\n"
-                let tempURL = eventFile.deletingLastPathComponent()
-                    .appendingPathComponent(".\(eventFile.lastPathComponent).tmp-\(UUID().uuidString)")
-                try payload.writeClipboardAtomically(to: tempURL)
-                _ = try FileManager.default.replaceItemAt(eventFile, withItemAt: tempURL)
-                try ClipboardPrivateFileSystem.secureFile(eventFile)
                 try ClipboardDeletionLedger(archiveRoot: archiveRoot).recordDeletion(eventID: eventID, reason: reason)
                 let deletedFromIndex = try ClipboardDerivedIndex(archiveRoot: archiveRoot, indexURL: indexURL)
                     .delete(eventID: eventID)

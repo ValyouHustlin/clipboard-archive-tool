@@ -62,10 +62,13 @@ other, so the takeover falls back to a signal there.
 
 ## Known gaps, not yet fixed
 
-- Archive rewrites (bulk delete, expiry, restore, retention) read a day file
-  and replace it with no lock against the capture appender. A capture landing
-  in that window is lost. Needs one write lock shared by the writer and every
-  rewrite.
+- The deletion ledger is appended without the archive write lock and without
+  the day files' torn-row repair. A crash mid-append, or the app and the
+  command-line tool appending at once, can cost a ledger row; a later merge
+  restore would then bring that deleted clip's body back.
+- A restore into an empty archive copies the backup's day files over whatever
+  is there. A clip captured into a new day file in the moments before that
+  copy is replaced by the backup's file for the same day.
 - In a "keep latest N" mode every capture runs a full archive scan on the
   main thread once N is reached, and the cost grows with history.
 - The Settings window still saves its own copy of retention and app rules. A

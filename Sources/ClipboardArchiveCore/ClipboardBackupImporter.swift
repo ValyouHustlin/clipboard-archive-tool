@@ -824,6 +824,10 @@ public struct ClipboardBackupImporter: Sendable {
         var indexedCount: Int?
         var indexRebuildFailed = false
         var appliedSettings = false
+        // Held from the first day-file merge until the commit is done or
+        // rolled back. A capture that landed in a merged day file after its
+        // pre-image was taken would otherwise be erased by a rollback.
+        var dayFileLock: ClipboardArchiveWriteLock.Handle?
 
         do {
             // Step 1: journal.
@@ -886,7 +890,8 @@ public struct ClipboardBackupImporter: Sendable {
 
             // Step 5: event day files, atomic replace each, with a
             // just-in-time pre-image refresh so lines captured since the
-            // preview survive a rollback.
+            // preview survive a rollback. From here on capture waits.
+            dayFileLock = ClipboardArchiveWriteLock.acquire(archiveRoot: archiveRoot)
             if work.verbatimCopyAll {
                 for entry in prepared.manifest.entries where entry.kind == "events" {
                     try copyStagedFile(entry.path, stagingURL: stagingURL, preImagesURL: preImagesURL)
@@ -938,12 +943,15 @@ public struct ClipboardBackupImporter: Sendable {
 
             journal.status = "done"
             try writeJournal(journal, stagingURL: stagingURL)
+            dayFileLock?.release()
         } catch let crash as ClipboardBackupSimulatedCrash {
             // Test-only: behave like a hard kill — leave staging + journal
             // exactly as they are for stale-staging recovery to find.
+            dayFileLock?.release()
             throw crash
         } catch {
             try? Self.rollback(journal: journal, stagingURL: stagingURL, archiveRoot: archiveRoot)
+            dayFileLock?.release()
             try? fileManager.removeItem(at: stagingURL)
             throw error
         }

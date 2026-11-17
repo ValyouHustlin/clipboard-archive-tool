@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.4 build 14 - 2026-11-17
+
+- Never lose a clip copied during a delete, a cleanup or a restore. Deleting,
+  pruning, the expiry sweep, the "keep latest" limit and a restore each read
+  a day's file, build a new copy and replace the old one. A clip captured
+  between that read and that replace was written to the old file only and was
+  gone once it was replaced. The capture and every such rewrite now take one
+  lock on the archive folder, held for one day's file at a time, so a copy
+  waits a moment instead of being lost. It holds between the app and the
+  command-line tool as well. A restore holds it from its first merge until it
+  finishes or rolls back.
+
 ## 0.4.3 build 13 - 2026-11-17
 
 - Let a newer copy take over from an older one. After dragging the disk image

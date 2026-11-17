@@ -200,8 +200,9 @@ public struct ClipboardArchivePruner: Sendable {
     ///    disposable index (benign); the reverse order could leave deleted
     ///    content searchable indefinitely.
     /// 3. REWRITE — re-read each affected day file and tombstone matching
-    ///    ids (re-reading tolerates lines appended by live capture between
-    ///    the scan and the rewrite).
+    ///    ids, one file at a time under the archive write lock (re-reading
+    ///    picks up lines captured since the scan; the lock keeps a capture
+    ///    from landing between the re-read and the replace).
     /// 4. LEDGER + annotation-reference sweep.
     func pruneCore(
         dryRun: Bool,
@@ -343,35 +344,39 @@ public struct ClipboardArchivePruner: Sendable {
         // 3. REWRITE affected day files only.
         var changedFiles = 0
         for (eventFile, idsToPrune) in prunedIDsByFile.sorted(by: { $0.key.path < $1.key.path }) {
-            let originalLines = try String.readingClipboardText(contentsOf: eventFile)
-                .split(separator: "\n", omittingEmptySubsequences: true)
-                .map(String.init)
-            var changed = false
-            var rewrittenLines: [String] = []
+            // Read, rebuild and replace under the archive write lock: a
+            // capture appended to this file in between would be lost.
+            try ClipboardArchiveWriteLock.withLock(archiveRoot: archiveRoot) {
+                let originalLines = try String.readingClipboardText(contentsOf: eventFile)
+                    .split(separator: "\n", omittingEmptySubsequences: true)
+                    .map(String.init)
+                var changed = false
+                var rewrittenLines: [String] = []
 
-            for line in originalLines {
-                guard let data = line.data(using: .utf8),
-                      let event = try? decoder.decode(StoredClipboardEvent.self, from: data),
-                      idsToPrune.contains(event.id) else {
-                    rewrittenLines.append(line)
-                    continue
+                for line in originalLines {
+                    guard let data = line.data(using: .utf8),
+                          let event = try? decoder.decode(StoredClipboardEvent.self, from: data),
+                          idsToPrune.contains(event.id) else {
+                        rewrittenLines.append(line)
+                        continue
+                    }
+                    let redactedData = try encoder.encode(Self.tombstoned(event, reason: reason))
+                    guard let redactedLine = String(data: redactedData, encoding: .utf8) else {
+                        throw ClipboardArchiveError.encodingFailed
+                    }
+                    rewrittenLines.append(redactedLine)
+                    changed = true
                 }
-                let redactedData = try encoder.encode(Self.tombstoned(event, reason: reason))
-                guard let redactedLine = String(data: redactedData, encoding: .utf8) else {
-                    throw ClipboardArchiveError.encodingFailed
-                }
-                rewrittenLines.append(redactedLine)
-                changed = true
-            }
 
-            if changed {
-                let payload = rewrittenLines.joined(separator: "\n") + "\n"
-                let tempURL = eventFile.deletingLastPathComponent()
-                    .appendingPathComponent(".\(eventFile.lastPathComponent).tmp-\(UUID().uuidString)")
-                try payload.writeClipboardAtomically(to: tempURL)
-                _ = try FileManager.default.replaceItemAt(eventFile, withItemAt: tempURL)
-                try ClipboardPrivateFileSystem.secureFile(eventFile)
-                changedFiles += 1
+                if changed {
+                    let payload = rewrittenLines.joined(separator: "\n") + "\n"
+                    let tempURL = eventFile.deletingLastPathComponent()
+                        .appendingPathComponent(".\(eventFile.lastPathComponent).tmp-\(UUID().uuidString)")
+                    try payload.writeClipboardAtomically(to: tempURL)
+                    _ = try FileManager.default.replaceItemAt(eventFile, withItemAt: tempURL)
+                    try ClipboardPrivateFileSystem.secureFile(eventFile)
+                    changedFiles += 1
+                }
             }
         }
 
@@ -631,59 +636,63 @@ public struct ClipboardArchivePruner: Sendable {
             .delete(eventIDs: overflowIDs)
 
         for (eventFile, idsToPrune) in overflowIDsByFile.sorted(by: { $0.key.path < $1.key.path }) {
-            let originalLines = try String.readingClipboardText(contentsOf: eventFile)
-                .split(separator: "\n", omittingEmptySubsequences: true)
-                .map(String.init)
-            var changed = false
-            var rewrittenLines: [String] = []
+            // Read, rebuild and replace under the archive write lock: a
+            // capture appended to this file in between would be lost.
+            try ClipboardArchiveWriteLock.withLock(archiveRoot: archiveRoot) {
+                let originalLines = try String.readingClipboardText(contentsOf: eventFile)
+                    .split(separator: "\n", omittingEmptySubsequences: true)
+                    .map(String.init)
+                var changed = false
+                var rewrittenLines: [String] = []
 
-            for line in originalLines {
-                guard let data = line.data(using: .utf8),
-                      var event = try? decoder.decode(StoredClipboardEvent.self, from: data),
-                      idsToPrune.contains(event.id) else {
-                    rewrittenLines.append(line)
-                    continue
-                }
-
-                // Plain-text body plus the rich body (Slice 6).
-                for bodyPath in [event.rawContentPath, event.richContent?.bodyPath] {
-                    guard let bodyPath,
-                          let bodyURL = try? ClipboardArchivePath.containedURL(
-                              relativePath: bodyPath,
-                              archiveRoot: archiveRoot
-                          ) else {
+                for line in originalLines {
+                    guard let data = line.data(using: .utf8),
+                          var event = try? decoder.decode(StoredClipboardEvent.self, from: data),
+                          idsToPrune.contains(event.id) else {
+                        rewrittenLines.append(line)
                         continue
                     }
-                    if FileManager.default.fileExists(atPath: bodyURL.path) {
-                        try FileManager.default.removeItem(at: bodyURL)
-                        deletedBodyFiles += 1
+
+                    // Plain-text body plus the rich body (Slice 6).
+                    for bodyPath in [event.rawContentPath, event.richContent?.bodyPath] {
+                        guard let bodyPath,
+                              let bodyURL = try? ClipboardArchivePath.containedURL(
+                                  relativePath: bodyPath,
+                                  archiveRoot: archiveRoot
+                              ) else {
+                            continue
+                        }
+                        if FileManager.default.fileExists(atPath: bodyURL.path) {
+                            try FileManager.default.removeItem(at: bodyURL)
+                            deletedBodyFiles += 1
+                        }
                     }
+
+                    event.contentPreview = "[pruned]"
+                    event.contentInline = nil
+                    event.rawContentPath = nil
+                    event.richContent = nil
+                    event.privacyLabel = .doNotIndex
+                    event.allowedUse = [.doNotIndex]
+                    event.sensitivityFlags = Array(Set(event.sensitivityFlags + ["manually-pruned", reason])).sorted()
+
+                    let redactedData = try encoder.encode(event)
+                    guard let redactedLine = String(data: redactedData, encoding: .utf8) else {
+                        throw ClipboardArchiveError.encodingFailed
+                    }
+                    rewrittenLines.append(redactedLine)
+                    changed = true
                 }
 
-                event.contentPreview = "[pruned]"
-                event.contentInline = nil
-                event.rawContentPath = nil
-                event.richContent = nil
-                event.privacyLabel = .doNotIndex
-                event.allowedUse = [.doNotIndex]
-                event.sensitivityFlags = Array(Set(event.sensitivityFlags + ["manually-pruned", reason])).sorted()
-
-                let redactedData = try encoder.encode(event)
-                guard let redactedLine = String(data: redactedData, encoding: .utf8) else {
-                    throw ClipboardArchiveError.encodingFailed
+                if changed {
+                    let payload = rewrittenLines.joined(separator: "\n") + "\n"
+                    let tempURL = eventFile.deletingLastPathComponent()
+                        .appendingPathComponent(".\(eventFile.lastPathComponent).tmp-\(UUID().uuidString)")
+                    try payload.writeClipboardAtomically(to: tempURL)
+                    _ = try FileManager.default.replaceItemAt(eventFile, withItemAt: tempURL)
+                    try ClipboardPrivateFileSystem.secureFile(eventFile)
+                    changedFiles += 1
                 }
-                rewrittenLines.append(redactedLine)
-                changed = true
-            }
-
-            if changed {
-                let payload = rewrittenLines.joined(separator: "\n") + "\n"
-                let tempURL = eventFile.deletingLastPathComponent()
-                    .appendingPathComponent(".\(eventFile.lastPathComponent).tmp-\(UUID().uuidString)")
-                try payload.writeClipboardAtomically(to: tempURL)
-                _ = try FileManager.default.replaceItemAt(eventFile, withItemAt: tempURL)
-                try ClipboardPrivateFileSystem.secureFile(eventFile)
-                changedFiles += 1
             }
         }
 

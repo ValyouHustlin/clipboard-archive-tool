@@ -352,7 +352,14 @@ public struct ClipboardArchiveWriter: Sendable {
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         var data = try encoder.encode(value)
         data.append(0x0A)
+        // Under the archive write lock, so a day-file rewrite can never read
+        // the file, miss this row, and replace the file without it.
+        try ClipboardArchiveWriteLock.withLock(archiveRoot: archiveRoot) {
+            try appendEncodedLine(data, to: url)
+        }
+    }
 
+    private func appendEncodedLine(_ data: Data, to url: URL) throws {
         // O_NOFOLLOW + a regular-file re-check: a symlink planted at a day
         // file path can never redirect an append (the log appender's rule).
         let descriptor = open(url.path, O_RDWR | O_APPEND | O_CREAT | O_NOFOLLOW, 0o600)
@@ -394,9 +401,9 @@ public struct ClipboardArchiveWriter: Sendable {
     }
 
     /// Writes every byte or leaves the file at `boundary`. `O_APPEND` keeps
-    /// each write atomic against other appenders; the truncate assumes this
-    /// process is the only writer mid-row, which the single-instance lock
-    /// guarantees for the app and its CLI.
+    /// each write atomic against other appenders; the truncate assumes no
+    /// other writer is mid-row, which the archive write lock held by the
+    /// caller guarantees for the app and its CLI.
     private func writeAll(_ data: Data, to descriptor: Int32, truncatingBackTo boundary: off_t) throws {
         var budget = appendFault.map { $0.bytesBeforeFailure } ?? Int.max
         let failureErrno = appendFault?.errnoValue ?? EIO
