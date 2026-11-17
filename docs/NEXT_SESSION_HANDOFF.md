@@ -25,20 +25,24 @@ scripts (`validate-release.sh`, `check-local-only.sh`, `test-release.sh`,
 `test-install-rollback.sh`, `test-update-e2e.sh`) are run by hand before a
 release.
 
+## Not yet released
+
+- The release-folder installer now installs `/Applications/Clipboard
+  Archive.app`, the same copy as the disk image, removes any other copy, and
+  pins a data location only when asked (`scripts/test-install-locations.sh`).
+  The published 0.4.1 folder package still carries the old installer, which
+  adds a second copy in `~/Applications`; the fix reaches users with the next
+  release. Add it to that release's CHANGELOG entry.
+
 ## Open decisions
 
 1. Where the update feed is hosted. Until that is decided no copy can update
    itself, and `docs/UPDATES.md` describes a path nobody can use yet.
-2. One install location. The disk image installs
-   `/Applications/Clipboard Archive.app`; the release folder's `install.sh`
-   installs `~/Applications/ClipboardArchive.app` under the same bundle id and
-   rewrites the shared LaunchAgent. Running `install.sh` on a Mac that has the
-   disk image copy leaves two apps and points login at the second.
-3. Developer ID signing and notarization, for installs that open with a
+2. Developer ID signing and notarization, for installs that open with a
    double-click.
-4. LICENSE is MIT with copyright "Clipboard Archive contributors". Whether to
+3. LICENSE is MIT with copyright "Clipboard Archive contributors". Whether to
    keep that line and that license is still unanswered.
-5. Where CI runs: a Mac runner, or the release scripts by hand as today.
+4. Where CI runs: a Mac runner, or the release scripts by hand as today.
 
 ## Known gaps, not yet fixed
 

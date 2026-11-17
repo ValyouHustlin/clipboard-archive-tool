@@ -106,7 +106,7 @@ After install/update:
 Default per-user install locations:
 
 ```text
-~/Applications/ClipboardArchive.app
+/Applications/Clipboard Archive.app
 ~/.local/bin/clipboard-archive
 ~/Library/LaunchAgents/app.clipboardarchive.plist
 ~/Library/Application Support/ClipboardArchive/Archive/clipboard-history

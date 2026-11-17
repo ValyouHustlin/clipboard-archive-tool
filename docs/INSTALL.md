@@ -45,15 +45,24 @@ and restores the previous app and LaunchAgent definition on failure. Checksums
 detect corruption or mismatched files, not publisher identity; public builds
 still require Developer ID signing and notarization.
 
-The default install is per-user:
+The app goes where the disk image puts it, so there is one copy whichever
+way you install:
 
 ```text
-~/Applications/ClipboardArchive.app
+/Applications/Clipboard Archive.app
 ~/.local/bin/clipboard-archive
 ~/Library/LaunchAgents/app.clipboardarchive.plist
 ~/Library/Application Support/ClipboardArchive/Archive/clipboard-history
 ~/Library/Application Support/ClipboardArchive/Indexes/clipboard-search.sqlite
 ```
+
+When your account cannot write to `/Applications`, the app goes to
+`~/Applications/Clipboard Archive.app` instead. A copy left in either folder
+by an earlier install (including `~/Applications/ClipboardArchive.app`, where
+the installer put it through 0.4.1) is removed once the new copy is running.
+If such a copy is somewhere your account cannot remove it, the installer stops
+before changing anything and says so. `CLIPBOARD_ARCHIVE_APP_DIR` installs
+into another folder.
 
 ## Custom Data Location
 
@@ -63,6 +72,9 @@ CLIPBOARD_ARCHIVE_INDEX_PATH="$HOME/Documents/Clipboard Archive/clipboard-search
 ./install.sh
 ```
 
+The location is written into the LaunchAgent and the app remembers it. A
+later `./install.sh` without these variables leaves the data where it is.
+
 ## Update
 
 Install a newer release folder the same way:
@@ -71,8 +83,9 @@ Install a newer release folder the same way:
 ./install.sh
 ```
 
-The installer stops the running app, replaces the app bundle, updates the CLI,
-rewrites the LaunchAgent, and starts the new app. Existing archive data remains
+The installer stops the running app wherever it runs from, replaces the app
+bundle, removes any other copy, updates the CLI, rewrites the LaunchAgent, and
+starts the new app. It works over a copy installed from the disk image too. Existing archive data remains
 in place. If the new app does not remain running, the prior app and LaunchAgent
 are restored.
 

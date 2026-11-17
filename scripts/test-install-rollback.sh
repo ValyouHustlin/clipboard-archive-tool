@@ -18,12 +18,15 @@ TEST_HOME="$TEST_ROOT/home"
 APP_DIR="$TEST_HOME/Applications"
 BIN_DIR="$TEST_HOME/.local/bin"
 PLIST_DIR="$TEST_HOME/Library/LaunchAgents"
-APP_TARGET="$APP_DIR/ClipboardArchive.app"
+APP_TARGET="$APP_DIR/Clipboard Archive.app"
 PLIST="$PLIST_DIR/app.clipboardarchive.plist"
 FAKE_LAUNCHCTL="$TEST_ROOT/fake-launchctl"
 INSTALL_LOG="$TEST_ROOT/install.log"
 
-/bin/mkdir -p "$APP_TARGET" "$PLIST_DIR"
+# The installer looks for other copies of the app. It is pointed at a scratch
+# stand-in below so this test can never see, move or remove a real copy in
+# /Applications.
+/bin/mkdir -p "$APP_TARGET" "$PLIST_DIR" "$TEST_ROOT/system-applications"
 /usr/bin/printf '%s\n' 'synthetic previous app' > "$APP_TARGET/previous-sentinel.txt"
 /usr/bin/printf '%s\n' 'synthetic previous launch agent' > "$PLIST"
 /usr/bin/printf '%s\n' \
@@ -35,6 +38,7 @@ INSTALL_LOG="$TEST_ROOT/install.log"
 set +e
 HOME="$TEST_HOME" \
 CLIPBOARD_ARCHIVE_APP_DIR="$APP_DIR" \
+CLIPBOARD_ARCHIVE_SYSTEM_APP_DIR="$TEST_ROOT/system-applications" \
 CLIPBOARD_ARCHIVE_BIN_DIR="$BIN_DIR" \
 CLIPBOARD_ARCHIVE_ARCHIVE_ROOT="$TEST_HOME/archive" \
 CLIPBOARD_ARCHIVE_INDEX_PATH="$TEST_HOME/indexes/search.sqlite" \
