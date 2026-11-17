@@ -287,6 +287,13 @@ final class ClipboardMenuBarApp: NSObject,
             // persists the version immediately, so quitting with the
             // window open never causes a second showing.
             showWhatsNew(activate: true)
+        } else if settings.lastSeenAppVersion != ClipboardVersionInfo.currentAppVersion(),
+                  !ClipboardVersionInfo.currentAppVersion().isEmpty,
+                  settingsAreTrusted {
+            // Nothing new to show for this update: record the version
+            // quietly, so the stored value still says what last ran.
+            settings.lastSeenAppVersion = ClipboardVersionInfo.currentAppVersion()
+            try? settingsStore.save(settings)
         }
     }
 
@@ -764,12 +771,30 @@ final class ClipboardMenuBarApp: NSObject,
     }
 
     @objc private func rebuildIndex() {
-        do {
-            let count = try ClipboardDerivedIndex(archiveRoot: archiveRoot, indexURL: resolvedIndexURL).rebuild()
-            lastStatus = "Indexed \(count) items"
-            rebuildMenu()
-        } catch {
-            showError("Index rebuild failed: \(error)")
+        // Off the main thread: a rebuild of a large archive froze the menu
+        // and stopped the capture poll for as long as it ran. Through the
+        // app's own index, so the rebuild is logged like any other.
+        lastStatus = "Rebuilding search index…"
+        rebuildMenu()
+        let index = derivedIndex
+        DispatchQueue.global(qos: .userInitiated).async { @Sendable [weak self] in
+            let count = try? index.rebuild()
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else {
+                        return
+                    }
+                    if let count {
+                        self.lastStatus = "Indexed \(count) items"
+                        self.markQuickPickerCacheDirty()
+                        self.rebuildMenu()
+                    } else {
+                        self.lastStatus = "Index rebuild failed"
+                        self.rebuildMenu()
+                        self.showError("Index rebuild failed. Run clipboard-archive doctor for details.")
+                    }
+                }
+            }
         }
     }
 

@@ -478,7 +478,15 @@ case "redact":
     }
 
 case "prune":
-    guard let before = options.until ?? options.since ?? options.positional.first.flatMap(CLIOptions.parseDate) else {
+    // prune deletes what was captured BEFORE a date. `--since` reads as
+    // the opposite, and used to be taken as that cutoff anyway.
+    guard options.since == nil else {
+        throw CLIOutcomeError(
+            exit: .usage,
+            message: "prune removes content captured before a date: use --until DATE (--since is not a prune option)"
+        )
+    }
+    guard let before = options.until ?? options.positional.first.flatMap(CLIOptions.parseDate) else {
         throw CLIError.missingValue("prune cutoff date; use --until YYYY-MM-DD")
     }
     try CLIOutcome.requireArchive(options)

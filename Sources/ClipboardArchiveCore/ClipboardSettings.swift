@@ -311,11 +311,17 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
         archiveEnabled = try container.decodeIfPresent(Bool.self, forKey: .archiveEnabled) ?? true
         let decodedLimit = try container.decodeIfPresent(Int.self, forKey: .recentItemLimit) ?? 50
         recentItemLimit = Self.clampRecentItemLimit(decodedLimit)
-        historyWindow = try container.decodeIfPresent(
+        // A value this build does not know (written by a newer build, or by
+        // hand) must not fail the whole decode: that reset every setting to
+        // its default, which switches capture off. The window falls back to
+        // its default, and an unknown retention mode falls back to the mode
+        // that prunes nothing while capture is on.
+        historyWindow = (try? container.decodeIfPresent(
             ClipboardHistoryWindow.self,
             forKey: .historyWindow
-        ) ?? .sevenDays
-        retentionMode = try container.decodeIfPresent(ClipboardRetentionMode.self, forKey: .retentionMode) ?? (archiveEnabled ? .unlimited : .recent50)
+        )) ?? .sevenDays
+        retentionMode = (try? container.decodeIfPresent(ClipboardRetentionMode.self, forKey: .retentionMode))
+            ?? (archiveEnabled ? .unlimited : .recent50)
         hasCompletedOnboarding = try container.decodeIfPresent(Bool.self, forKey: .hasCompletedOnboarding) ?? true
         // A malformed entry (wrong value type, future schema hiccup) must
         // drop only that entry — never fail the whole settings decode, which

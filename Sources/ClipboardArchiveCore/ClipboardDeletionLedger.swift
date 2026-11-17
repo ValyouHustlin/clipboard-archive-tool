@@ -78,13 +78,40 @@ public struct ClipboardDeletionLedger: Sendable {
         var data = try encoder.encode(event)
         data.append(0x0A)
 
-        if FileManager.default.fileExists(atPath: url.path) {
-            let handle = try FileHandle(forWritingTo: url)
-            try handle.seekToEnd()
-            try handle.write(contentsOf: data)
-            try handle.close()
-        } else {
-            try data.writeClipboardAtomically(to: url)
+        // One writer at a time, and O_APPEND, so the app and the
+        // command-line tool cannot overwrite each other's row. A lost row
+        // matters: a merge restore reads this ledger to decide which clips
+        // were deleted here and must not come back.
+        try ClipboardArchiveWriteLock.withLock(archiveRoot: archiveRoot) {
+            let descriptor = open(url.path, O_RDWR | O_APPEND | O_CREAT | O_NOFOLLOW, 0o600)
+            guard descriptor >= 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            defer { close(descriptor) }
+            var payload = Data()
+            // A row cut short by a crash has no terminator. Close it first,
+            // or this row would be glued onto it and both would be unreadable.
+            var info = stat()
+            if fstat(descriptor, &info) == 0, info.st_size > 0 {
+                var lastByte: UInt8 = 0x0A
+                if pread(descriptor, &lastByte, 1, info.st_size - 1) == 1, lastByte != 0x0A {
+                    payload.append(0x0A)
+                }
+            }
+            payload.append(data)
+            try payload.withUnsafeBytes { buffer in
+                var offset = 0
+                while offset < buffer.count {
+                    let written = write(descriptor, buffer.baseAddress!.advanced(by: offset), buffer.count - offset)
+                    if written < 0 && errno == EINTR {
+                        continue
+                    }
+                    guard written > 0 else {
+                        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                    }
+                    offset += written
+                }
+            }
         }
         try ClipboardPrivateFileSystem.secureFile(url)
         ClipboardDeletionLedgerCache.shared.invalidate(ledgerRoot: ledgerRootKey())

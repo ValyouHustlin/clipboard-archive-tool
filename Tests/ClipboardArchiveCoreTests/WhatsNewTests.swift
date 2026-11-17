@@ -80,7 +80,17 @@ struct WhatsNewTests {
         // Not when versions are equal (development builds included).
         (true, "development", "development", false),
         // Never for an empty current version (nothing to stamp).
-        (true, "", "", false)
+        (true, "", "", false),
+        // The window describes features up to 0.3.0. Someone already on
+        // that version or later has seen it; a later update shows nothing.
+        (true, "0.3.0", "0.4.5", false),
+        (true, "0.4.4", "0.4.5", false),
+        (true, "0.10.0", "0.11.0", false),
+        // Someone coming from before it sees it once.
+        (true, "0.2.0", "0.4.5", true),
+        (true, "0.1.2", "0.4.5", true),
+        // A development build's stamp is not a version: show once.
+        (true, "development", "0.4.5", true)
     ])
     func testShouldShowTable(
         _ row: (hasCompletedOnboarding: Bool, lastSeen: String, current: String, expected: Bool)

@@ -16,6 +16,10 @@ public enum ClipboardWhatsNew {
     ///   existing users see it exactly once after upgrading; after the
     ///   presenter persists the current version, the decision stays false
     ///   until the version changes again.
+    /// - Only when the window has something this user has not seen. Its
+    ///   content describes the features up to `highlightsVersion`; someone
+    ///   already on that version or later has seen it, and showing the same
+    ///   list after every later update told them nothing new.
     public static func shouldShow(
         hasCompletedOnboarding: Bool,
         lastSeenVersion: String,
@@ -24,6 +28,27 @@ public enum ClipboardWhatsNew {
         guard hasCompletedOnboarding, !currentVersion.isEmpty else {
             return false
         }
-        return lastSeenVersion != currentVersion
+        guard lastSeenVersion != currentVersion else {
+            return false
+        }
+        guard let seen = numericVersion(lastSeenVersion),
+              let highlights = numericVersion(highlightsVersion) else {
+            // Never shown, or a version that is not a number (a development
+            // build): show it once.
+            return true
+        }
+        return seen.lexicographicallyPrecedes(highlights)
+    }
+
+    /// The newest version whose features the window describes. Raise it
+    /// when the window's content is rewritten for a later release.
+    public static let highlightsVersion = "0.3.0"
+
+    private static func numericVersion(_ version: String) -> [Int]? {
+        let parts = version.split(separator: ".").map { Int($0) }
+        guard !parts.isEmpty, !parts.contains(nil) else {
+            return nil
+        }
+        return parts.compactMap { $0 }
     }
 }

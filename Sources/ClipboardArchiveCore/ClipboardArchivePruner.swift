@@ -532,8 +532,15 @@ public struct ClipboardArchivePruner: Sendable {
         var contentHash: String
     }
 
-    /// Scans every event file once and returns the live events with the
-    /// index of the day file that holds each one.
+    /// Returns the live events with the day file that holds each one.
+    ///
+    /// A "keep latest N" archive is mostly day files in which every line has
+    /// already been pruned, and those lines are kept for the timeline. This
+    /// runs after every capture once the limit is reached, so reading and
+    /// decoding all of them each time made every copy cost a scan of the
+    /// whole history. A day file found to hold nothing live is remembered
+    /// with its size and modification time and skipped until it changes; a
+    /// restore or an import rewrites the file, which changes both.
     private func liveEventReferences() throws -> [LiveEventReference] {
         let reader = ClipboardArchiveReader(archiveRoot: archiveRoot)
         let suppression = try ClipboardSuppression(archiveRoot: archiveRoot).snapshot()
@@ -542,13 +549,21 @@ public struct ClipboardArchivePruner: Sendable {
         var live: [LiveEventReference] = []
 
         for eventFile in try reader.eventFiles() {
+            // Taken before the read: a file that changes during the read
+            // has a different signature next time and is read again.
+            let signature = SpentDayFiles.signature(of: eventFile)
+            if let signature, SpentDayFiles.shared.isSpent(eventFile, signature: signature) {
+                continue
+            }
             let lines = try String.readingClipboardText(contentsOf: eventFile).split(separator: "\n", omittingEmptySubsequences: true)
+            var liveInFile = 0
             for line in lines {
                 guard let data = String(line).data(using: .utf8),
                       let event = try? decoder.decode(StoredClipboardEvent.self, from: data),
                       !suppression.isSuppressed(event) else {
                     continue
                 }
+                liveInFile += 1
                 live.append(LiveEventReference(
                     id: event.id,
                     capturedAt: event.capturedAt,
@@ -556,8 +571,44 @@ public struct ClipboardArchivePruner: Sendable {
                     contentHash: event.contentHash
                 ))
             }
+            if liveInFile == 0, let signature {
+                SpentDayFiles.shared.markSpent(eventFile, signature: signature)
+            }
         }
         return live
+    }
+
+    /// Day files known to hold no live event, for this process.
+    private final class SpentDayFiles: @unchecked Sendable {
+        struct Signature: Equatable {
+            var size: Int64
+            var modified: Date
+        }
+
+        static let shared = SpentDayFiles()
+        private let lock = NSLock()
+        private var signatures: [String: Signature] = [:]
+
+        static func signature(of url: URL) -> Signature? {
+            guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+                  let size = (attributes[.size] as? NSNumber)?.int64Value,
+                  let modified = attributes[.modificationDate] as? Date else {
+                return nil
+            }
+            return Signature(size: size, modified: modified)
+        }
+
+        func isSpent(_ url: URL, signature: Signature) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return signatures[url.path] == signature
+        }
+
+        func markSpent(_ url: URL, signature: Signature) {
+            lock.lock()
+            signatures[url.path] = signature
+            lock.unlock()
+        }
     }
 
     /// Incremental retention enforcement (expansion contract 9).
