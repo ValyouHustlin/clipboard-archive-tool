@@ -13,6 +13,7 @@ enum ExportCommand {
     /// restricted, by label or by hand, and clips that have been deleted,
     /// never go in the file.
     static func run(_ options: CLIOptions) throws -> ClipboardCLIExit {
+        try CLIOutcome.rejectDryRun(options)
         guard let outPath = options.outPath else {
             throw CLIOutcomeError(exit: .usage, message: "export needs --out PATH")
         }

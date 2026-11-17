@@ -118,7 +118,7 @@ public enum ClipboardCLIVerbs {
         ClipboardCLIOption("--until DATE", "Upper bound, ISO 8601 or YYYY-MM-DD."),
         ClipboardCLIOption("--app NAME", "Only clips copied from this application."),
         ClipboardCLIOption("--bundle-id ID", "Only clips copied from this bundle identifier."),
-        ClipboardCLIOption("--type TYPE", "Only clips of this content type (text, url, code, image, file-list)."),
+        ClipboardCLIOption("--type TYPE", "Only clips of this content type (text, url, code, image, file-reference, rich-text, color)."),
         ClipboardCLIOption("--limit N", "Stop after this many results.")
     ]
 
@@ -144,7 +144,7 @@ public enum ClipboardCLIVerbs {
         ),
         ClipboardCLIVerb(
             name: "status",
-            summary: "Answer whether capture is alive right now, in one fast read.",
+            summary: "Answer whether capture is alive right now, and re-check the archive against the index.",
             usage: "clipboard-archive status [--json]",
             discussion: """
             Reads the lock file's holder to decide whether the app is running \
@@ -165,7 +165,7 @@ public enum ClipboardCLIVerbs {
             summary: "Check the archive and the index against each other and report every problem found.",
             usage: "clipboard-archive verify [--json]",
             discussion: """
-            The slow, complete counterpart to `status`: every health metric, \
+            The detailed counterpart to `status`: every health metric, \
             an integrity check of the index database, and a membership \
             comparison between the events the archive holds and the rows the \
             index holds, in both directions. Exits 4 when anything is wrong.

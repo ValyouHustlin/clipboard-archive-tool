@@ -123,7 +123,7 @@ from the same table the help is, so the three cannot disagree.
 The four worth knowing:
 
 ```bash
-clipboard-archive status    # is capture alive right now, in one fast read
+clipboard-archive status    # is capture alive right now, and are the stores intact
 clipboard-archive doctor    # stores, status and verify in plain English
 clipboard-archive search "example" --since 2026-01-01 --json
 clipboard-archive export --out ~/Desktop/clips.ndjson --since 2026-09-01

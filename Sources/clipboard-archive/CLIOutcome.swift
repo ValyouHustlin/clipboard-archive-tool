@@ -69,6 +69,18 @@ enum CLIOutcome {
         }
     }
 
+    /// Refuses `--dry-run` on a verb that has no dry run. The flag used to
+    /// be accepted and ignored there, so a command the caller believed was
+    /// a rehearsal deleted or wrote for real.
+    static func rejectDryRun(_ options: CLIOptions) throws {
+        guard !options.dryRun else {
+            throw CLIOutcomeError(
+                exit: .usage,
+                message: "\(options.command) has no dry run; --dry-run works with prune, bulk and backup restore"
+            )
+        }
+    }
+
     static func requireIndex(_ options: CLIOptions) throws {
         guard FileManager.default.fileExists(atPath: options.indexPath.path) else {
             throw CLIOutcomeError(

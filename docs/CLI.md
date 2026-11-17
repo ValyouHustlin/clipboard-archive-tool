@@ -60,7 +60,7 @@ clipboard-archive stores [--json]
 
 ### status
 
-Answer whether capture is alive right now, in one fast read.
+Answer whether capture is alive right now, and re-check the archive against the index.
 
 ```
 clipboard-archive status [--json]
@@ -88,7 +88,7 @@ Check the archive and the index against each other and report every problem foun
 clipboard-archive verify [--json]
 ```
 
-The slow, complete counterpart to `status`: every health metric, an integrity check of the index database, and a membership comparison between the events the archive holds and the rows the index holds, in both directions. Exits 4 when anything is wrong.
+The detailed counterpart to `status`: every health metric, an integrity check of the index database, and a membership comparison between the events the archive holds and the rows the index holds, in both directions. Exits 4 when anything is wrong.
 
 - `--json` — Print the result as one JSON object carrying a `schema` number.
 
@@ -116,7 +116,7 @@ clipboard-archive search QUERY [--scan] [--json] [filters]
 - `--until DATE` — Upper bound, ISO 8601 or YYYY-MM-DD.
 - `--app NAME` — Only clips copied from this application.
 - `--bundle-id ID` — Only clips copied from this bundle identifier.
-- `--type TYPE` — Only clips of this content type (text, url, code, image, file-list).
+- `--type TYPE` — Only clips of this content type (text, url, code, image, file-reference, rich-text, color).
 - `--limit N` — Stop after this many results.
 - `--scan` — Read the raw day files instead of the index: slower, but it works with no index at all.
 - `--json` — Print the result as one JSON object carrying a `schema` number.
@@ -145,7 +145,7 @@ The file holds real clipboard content, so it is written with owner-only permissi
 - `--until DATE` — Upper bound, ISO 8601 or YYYY-MM-DD.
 - `--app NAME` — Only clips copied from this application.
 - `--bundle-id ID` — Only clips copied from this bundle identifier.
-- `--type TYPE` — Only clips of this content type (text, url, code, image, file-list).
+- `--type TYPE` — Only clips of this content type (text, url, code, image, file-reference, rich-text, color).
 - `--limit N` — Stop after this many results.
 - `--out PATH` — Required. The file to write. Standard output is refused: this content is not for a terminal or a pipe.
 - `--format FORMAT` — ndjson (default) or json.

@@ -429,9 +429,15 @@ case "monitor":
         archiveRoot: options.archiveRoot,
         inlineContentLimitBytes: options.inlineLimitBytes
     )
+    // The same app exclusions and per-app rules the app applies. Without
+    // them this command stored and indexed clips the user had excluded.
+    let monitorSettings = ClipboardSettingsStore(
+        settingsURL: options.storeResolution.settingsURL
+    ).loadReporting(readOnly: true).settings
     let monitor = PasteboardMonitor(
         pasteboard: .general,
         ingestor: ClipboardIngestor(
+            filter: ClipboardPrivacyFilter(settings: monitorSettings),
             archiveWriter: writer,
             derivedIndex: ClipboardDerivedIndex(
                 archiveRoot: options.archiveRoot,
@@ -459,6 +465,7 @@ case "redact":
     guard let id = options.positional.first else {
         throw CLIError.missingValue("clipboard event id")
     }
+    try CLIOutcome.rejectDryRun(options)
     try CLIOutcome.requireArchive(options)
     let result = try ClipboardArchiveRedactor(archiveRoot: options.archiveRoot, indexURL: options.indexPath).redact(eventID: id)
     print("redacted \(result.eventID)")
@@ -526,6 +533,7 @@ case "bulk":
     }
 
 case "sweep-expired":
+    try CLIOutcome.rejectDryRun(options)
     try CLIOutcome.requireArchive(options)
     let sweeper = ClipboardExpirySweeper(archiveRoot: options.archiveRoot, indexURL: options.indexPath)
     let nextDue = sweeper.nextDue()
@@ -757,6 +765,15 @@ default:
         message = failure.message
     case let failure as CLIError:
         outcome = .usage
+        message = failure.description
+    case let failure as BackupCLIError:
+        // A missing subcommand or file argument is a usage error (exit 2),
+        // like every other malformed command line.
+        if case .usage = failure {
+            outcome = .usage
+        } else {
+            outcome = .runtime
+        }
         message = failure.description
     default:
         outcome = .runtime
