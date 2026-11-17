@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.4.1 build 11 - 2026-11-17
+
+- End a timed pause on time. "Pause for 15 minutes", "1 hour" and "until
+  tomorrow" paused until capture was resumed by hand, and stayed paused across
+  a relaunch. A pause that ran out while the app was closed is cleared at
+  launch.
+- Keep private mode through a Settings save. Saving Settings ended private
+  mode or a timed pause started from the menu while the window was open, and
+  dropped an app excluded from the menu in that time.
+- Delete restricted clips when they expire. The expiry sweep found no copies
+  of restricted content, deleted nothing, and dropped the expiry and the
+  restricted mark.
+- Keep tags, collections and the restricted mark when a cleanup by date
+  removes an old copy of content that still has a newer one.
+- Reload an open History window after a delete from the menu, which could
+  still copy the deleted text back.
+- Apply app exclusions and per-app rules in `clipboard-archive monitor`.
+- Refuse `--dry-run` on `redact`, `sweep-expired` and `export`, which accepted
+  it and then deleted or wrote for real. A malformed `backup` command exits 2.
+- Stop the shortcut recorder when Settings hides. It kept swallowing keys in
+  every other window.
+- Fix three crashes: a bulk delete with `--since` after `--until`, a NUL
+  character in a clip (which also failed every later index rebuild), and
+  `search --scan` on text whose length changes when lowercased.
+- Cap private mode read from the settings file at 7 days, like a pause.
+- Smaller fixes: the status icon follows Settings and Keep Full Archive, Save
+  keeps a bundle id typed but not yet added, the dashboard deletes exactly
+  what its preview counted, bulk cleanup can filter images, files, rich text
+  and colours, `--type` help lists the real type names, and `doctor`,
+  `export`, `stats` and `version` are no longer logged as `unknown`.
+- Keep the stress, benchmark and backup scripts inside their scratch roots.
+
 ## 0.4.0 build 10 - 2026-10-03
 
 - Ship as a disk image you drag to Applications. `scripts/release.sh` builds
