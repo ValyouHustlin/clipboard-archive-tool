@@ -86,6 +86,32 @@ struct ExpirySweeperTests {
         #expect(second.sweptContentHashes == 0)
     }
 
+    /// Restricted content is never in the search index, so the index has
+    /// no rows for it. The sweep must still find and delete every copy,
+    /// not read "no rows" as "nothing left" and drop the expiry.
+    @Test func testDueSweepDeletesRestrictedContentTheIndexDoesNotHold() throws {
+        let fixture = try makeFixture()
+        let content = "restricted expiring fixture token"
+        let first = try fixture.writer.archiveAllowedCapture(ClipboardCapture(
+            capturedAt: Date().addingTimeInterval(-600),
+            content: content,
+            sourceApp: ClipboardSourceApp(name: "Notes", bundleIdentifier: "com.apple.Notes")
+        ))
+        try fixture.writer.archiveAllowedCapture(ClipboardCapture(
+            capturedAt: Date().addingTimeInterval(-300),
+            content: content,
+            sourceApp: ClipboardSourceApp(name: "Safari", bundleIdentifier: "com.apple.Safari")
+        ))
+        try fixture.annotations.setSensitivityOverride("restricted", forContentHash: first.contentHash)
+        _ = try ClipboardDerivedIndex(archiveRoot: fixture.archiveRoot, indexURL: fixture.indexURL).rebuild()
+        try fixture.annotations.setExpiry(Date().addingTimeInterval(-60), forContentHash: first.contentHash)
+
+        let result = try fixture.sweeper.sweepIfDue()
+        #expect(result.deletedEvents == 2)
+        #expect(try fixture.reader.recentItems(since: .distantPast, limit: 10).isEmpty)
+        #expect(fixture.annotations.annotation(for: first.contentHash) == nil)
+    }
+
     @Test func testSweepDeletesPinnedContentWithExpiredSensitiveReason() throws {
         let fixture = try makeFixture()
         let event = try fixture.writer.archiveAllowedCapture(ClipboardCapture(

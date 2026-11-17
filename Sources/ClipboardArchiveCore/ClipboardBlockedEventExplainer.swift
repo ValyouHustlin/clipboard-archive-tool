@@ -16,7 +16,10 @@ public enum ClipboardBlockedEventExplainer {
             return "App excluded in Settings (\(value))."
         }
         if let value = value(of: "source_app_name_denylist", in: reason) {
-            return "App name matches the password manager list (\"\(value)\")."
+            if ClipboardPrivacyFilter.defaultBlockedAppNameFragments.contains(value.lowercased()) {
+                return "App name matches the password manager list (\"\(value)\")."
+            }
+            return "App name excluded in Settings (\"\(value)\")."
         }
         if let value = value(of: "app_rule_block", in: reason) {
             return "Blocked by your app privacy rule for \(value)."
@@ -50,8 +53,10 @@ public enum ClipboardBlockedEventExplainer {
                 ? "password manager rule"
                 : "excluded app"
         }
-        if reason.hasPrefix("source_app_name_denylist") {
-            return "password manager rule"
+        if let value = value(of: "source_app_name_denylist", in: reason) {
+            return ClipboardPrivacyFilter.defaultBlockedAppNameFragments.contains(value.lowercased())
+                ? "password manager rule"
+                : "excluded app"
         }
         if reason.hasPrefix("app_rule_block") {
             return "app privacy rule"

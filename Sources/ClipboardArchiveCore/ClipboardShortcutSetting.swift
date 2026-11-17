@@ -25,7 +25,7 @@ public struct ClipboardShortcutSetting: Codable, Equatable, Sendable {
     public var enabled: Bool
     /// macOS virtual key code (kVK_* values; 9 = V).
     public var keyCode: Int
-    /// Sorted list drawn from `knownModifiers`.
+    /// Drawn from `knownModifiers`, kept in the order given.
     public var modifiers: [String]
 
     public init(enabled: Bool, keyCode: Int, modifiers: [String]) {

@@ -40,8 +40,7 @@ public struct ClipboardExpirySweeper: Sendable {
     }
 
     /// Sweeps every due expiry. Per due content hash: resolve live
-    /// occurrence ids (suppression-filtered index query with a reader-scan
-    /// fallback), bulk-execute those ids with `includePinned: true` (expiry
+    /// occurrence ids from the archive files, bulk-execute those ids with `includePinned: true` (expiry
     /// is the user's explicit instruction — stated when setting expiry on a
     /// pinned clip) and ledger reason `expired-sensitive`, then clear the
     /// annotation so the expiry never re-fires.
@@ -57,7 +56,12 @@ public struct ClipboardExpirySweeper: Sendable {
         var result = ClipboardExpirySweepResult()
 
         for entry in annotations.entriesWithExpiry() where entry.expiresAt <= now {
-            let occurrenceIDs = try resolver.liveOccurrenceIDs(contentHash: entry.contentHash)
+            // Read from the archive, not the index: the index never holds
+            // restricted content, and expiring that content is the point.
+            let occurrenceIDs = try resolver.liveOccurrenceIDs(
+                contentHash: entry.contentHash,
+                viaReaderScan: true
+            )
             if !occurrenceIDs.isEmpty {
                 let executed = try engine.execute(
                     ClipboardBulkCriteria(

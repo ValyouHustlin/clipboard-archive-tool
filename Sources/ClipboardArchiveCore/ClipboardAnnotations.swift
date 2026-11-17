@@ -4,8 +4,8 @@ import Foundation
 /// Content identity — `sha256:<hex>` — survives re-copies of the same text,
 /// so pins/tags/snippets follow the content, not one occurrence.
 ///
-/// `sensitivityOverride` and `expiresAt` are Slice 5 placeholders: they are
-/// round-tripped losslessly but never acted on in Slice 4.
+/// `sensitivityOverride` keeps the content out of the search index, and
+/// `expiresAt` is the time the expiry sweep deletes it.
 public struct ClipboardAnnotationRecord: Codable, Equatable, Sendable {
     public var pinned: Bool
     public var pinnedAt: Date?
@@ -639,11 +639,17 @@ public struct ClipboardOccurrenceResolver: Sendable {
         if !viaReaderScan, FileManager.default.fileExists(atPath: indexURL.path) {
             let index = ClipboardDerivedIndex(archiveRoot: archiveRoot, indexURL: indexURL)
             if let ids = try? index.occurrenceIDs(contentHash: contentHash) {
-                return ids.filter { !suppression.deletedIDs.contains($0) }
+                let live = ids.filter { !suppression.deletedIDs.contains($0) }
+                // Rows are proof the content is still live. No rows is not
+                // proof it is gone: restricted content is never indexed.
+                if !live.isEmpty {
+                    return live
+                }
             }
         }
 
-        // Index absent (or unreadable): one full reader scan.
+        // Index absent, unreadable, or silent about this content: one full
+        // reader scan.
         let reader = ClipboardArchiveReader(archiveRoot: archiveRoot)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601

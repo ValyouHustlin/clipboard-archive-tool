@@ -152,6 +152,7 @@ public struct ClipboardOperationalLog: Sendable {
         case health, stores, logs, backup, status, verify
         case writeManifest = "write-manifest"
         case help
+        case version, doctor, export, stats
         case unknown
 
         /// Maps a raw command word onto the closed set.

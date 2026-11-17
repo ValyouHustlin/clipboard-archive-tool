@@ -532,11 +532,9 @@ public struct ClipboardBackupEnumerator: Sendable {
 // MARK: - Streaming SHA-256
 
 enum ClipboardBackupHashing {
-    /// Streams a file through SHA-256 in chunk-sized reads, optionally
-    /// stopping after `limitBytes` (used so a day file that gained appended
-    /// lines mid-export still hashes to the recorded prefix). Never loads a
+    /// Streams a file through SHA-256 in chunk-sized reads. Never loads a
     /// whole body into memory.
-    static func sha256OfFile(at url: URL, limitBytes: Int64? = nil) throws -> (hash: String, bytes: Int64) {
+    static func sha256OfFile(at url: URL) throws -> (hash: String, bytes: Int64) {
         guard let handle = try? FileHandle(forReadingFrom: url) else {
             throw ClipboardBackupError.ioFailure("cannot open for reading: \(url.lastPathComponent)")
         }
@@ -544,14 +542,7 @@ enum ClipboardBackupHashing {
         var hasher = SHA256()
         var total: Int64 = 0
         while true {
-            var wanted = ClipboardBackupFormat.chunkSize
-            if let limitBytes {
-                let remaining = limitBytes - total
-                if remaining <= 0 {
-                    break
-                }
-                wanted = min(wanted, Int(remaining))
-            }
+            let wanted = ClipboardBackupFormat.chunkSize
             // FileHandle reads return autoreleased buffers; without a pool
             // per chunk the whole file accumulates in memory.
             let consumed = try autoreleasepool { () -> Int in
@@ -568,10 +559,6 @@ enum ClipboardBackupHashing {
         }
         let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
         return ("sha256:" + digest, total)
-    }
-
-    static func sha256(of data: Data) -> String {
-        "sha256:" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 }
 

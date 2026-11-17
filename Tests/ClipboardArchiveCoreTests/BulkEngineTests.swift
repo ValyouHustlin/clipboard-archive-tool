@@ -88,6 +88,21 @@ struct BulkEngineTests {
         #expect(preview.reason == executed.reason)
     }
 
+    /// `--since` later than `--until` used to trap while building the day
+    /// range. It matches nothing and deletes nothing.
+    @Test func testReversedDateRangeMatchesNothingInsteadOfTrapping() throws {
+        let fixture = try makeFixture()
+        try seed(fixture, content: "reversed range fixture", minutesAgo: 10)
+
+        let criteria = ClipboardBulkCriteria(
+            since: Date().addingTimeInterval(-60),
+            until: Date().addingTimeInterval(-3600)
+        )
+        #expect(try fixture.engine.preview(criteria).matchedEvents == 0)
+        #expect(try fixture.engine.execute(criteria).matchedEvents == 0)
+        #expect(try fixture.reader.recentItems(since: .distantPast, limit: 10).count == 1)
+    }
+
     @Test func testReclaimedBytesMatchesOnDiskByteDelta() throws {
         let fixture = try makeFixture(inlineLimit: 32)
         try seed(fixture, content: "inline bulk delta fixture with some padding text here", minutesAgo: 30)

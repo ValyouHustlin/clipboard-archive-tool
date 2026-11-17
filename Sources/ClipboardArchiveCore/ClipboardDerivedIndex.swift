@@ -1163,12 +1163,13 @@ public struct ClipboardDerivedIndex: Sendable {
         return lines == ["ok"] ? .ok : .damaged
     }
 
+    /// SQL text literal. A NUL is dropped: it would end the statement text
+    /// early, both for `sqlite3_exec` and for the sqlite3 shell that loads
+    /// a rebuild, and one such clip would fail every rebuild after it.
     private func escape(_ value: String) -> String {
-        value.replacingOccurrences(of: "'", with: "''")
-    }
-
-    private func escapeFTS(_ value: String) -> String {
-        "\"\(value.replacingOccurrences(of: "\"", with: "\"\""))\""
+        value
+            .replacingOccurrences(of: "\u{0}", with: "")
+            .replacingOccurrences(of: "'", with: "''")
     }
 
     private func iso(_ date: Date) -> String {

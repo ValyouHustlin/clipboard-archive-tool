@@ -164,7 +164,11 @@ public struct ClipboardBulkEngine: Sendable {
 
         let dayRange: ClosedRange<Date>?
         if criteria.since != nil || criteria.until != nil {
-            dayRange = (criteria.since ?? .distantPast)...(criteria.until ?? .distantFuture)
+            let lower = criteria.since ?? .distantPast
+            let upper = criteria.until ?? .distantFuture
+            // A reversed range matches nothing. Building it as written
+            // would trap, so scan no day at all.
+            dayRange = lower <= upper ? lower...upper : lower...lower
         } else {
             dayRange = nil
         }

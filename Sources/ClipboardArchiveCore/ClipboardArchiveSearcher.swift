@@ -128,13 +128,15 @@ public struct ClipboardArchiveSearcher: Sendable {
     }
 
     private func snippet(from text: String, query: String) -> String {
-        let lower = text.lowercased()
-        guard let range = lower.range(of: query) else {
+        // Find the match in the text itself. Lowercasing can change a
+        // string's length, so positions in a lowercased copy do not belong
+        // to the original and slicing with them can trap.
+        guard let range = text.range(of: query, options: [.caseInsensitive]) else {
             return String(text.prefix(240))
         }
 
-        let start = lower.index(range.lowerBound, offsetBy: -80, limitedBy: lower.startIndex) ?? lower.startIndex
-        let end = lower.index(range.upperBound, offsetBy: 160, limitedBy: lower.endIndex) ?? lower.endIndex
+        let start = text.index(range.lowerBound, offsetBy: -80, limitedBy: text.startIndex) ?? text.startIndex
+        let end = text.index(range.upperBound, offsetBy: 160, limitedBy: text.endIndex) ?? text.endIndex
         return String(text[start..<end])
             .replacingOccurrences(of: "\n", with: " ")
             .replacingOccurrences(of: "\t", with: " ")
