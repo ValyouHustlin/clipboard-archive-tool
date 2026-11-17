@@ -4,15 +4,16 @@ Updated: 2026-11-17, after a full read of the repository.
 
 ## Where things stand
 
-- The copy in daily use is 0.4.4 build 14 (2026-11-17), ad hoc signed, at
+- The copy in daily use is 0.4.5 build 15 (2026-11-17), ad hoc signed, at
   `/Applications/Clipboard Archive.app`, installed with the published release
   folder's `install.sh`. That copy has no update helper inside it (only the
   disk image does), and no update feed exists, so "Check for Updates…" says
-  updates are not available. The command-line tool there is 0.4.4 too.
-- The public GitHub repository is current with `main`, and 0.4.4 is the
+  updates are not available. The command-line tool there is 0.4.5 too.
+- The public GitHub repository is current with `main`, and 0.4.5 is the
   published "latest" release. 0.4.2 fixed the installer, 0.4.3 lets a newer
-  copy take over from an older one and repair the login item, and 0.4.4 adds
-  the archive write lock.
+  copy take over from an older one and repair the login item, 0.4.4 adds the
+  archive write lock, and 0.4.5 fixes the keep-latest slowdown, the settings
+  reset and the deletion ledger.
 - Each install on the daily-use Mac was checked against its real data: every
   earlier history file byte-identical, settings unchanged, the data location
   carried over, one copy of the app, `verify` clean.
@@ -24,13 +25,12 @@ Updated: 2026-11-17, after a full read of the repository.
 
 ## Checks
 
-`swift test` is the gate, run on a Mac. Nothing runs it automatically: the
-workflow file needs a macOS runner and no runner is set up for it. Before a
-release, also run by hand: `test-install-locations.sh` and
-`test-upgrade-keeps-data.sh` (neither needs a release folder; both stay in a
-scratch home and never look at the real `/Applications`), then
-`validate-release.sh`, `check-local-only.sh`, `test-release.sh`,
-`test-install-rollback.sh` and `test-update-e2e.sh`.
+`scripts/check-all.sh` is the gate, run on a Mac: build, unit tests, core
+checks, and the installer, upgrade and backup tests, all in scratch folders.
+`scripts/check-all.sh --release` adds packaging and the release-folder
+checks. Nothing runs it automatically: the workflow file needs a macOS runner
+and none is set up. `test-release.sh` and `test-update-e2e.sh` cover the disk
+image and the updater and are run by hand before a release that changes them.
 
 ## What an update must keep
 
@@ -62,19 +62,19 @@ other, so the takeover falls back to a signal there.
 
 ## Known gaps, not yet fixed
 
-- The deletion ledger is appended without the archive write lock and without
-  the day files' torn-row repair. A crash mid-append, or the app and the
-  command-line tool appending at once, can cost a ledger row; a later merge
-  restore would then bring that deleted clip's body back.
 - A restore into an empty archive copies the backup's day files over whatever
   is there. A clip captured into a new day file in the moments before that
   copy is replaced by the backup's file for the same day.
-- In a "keep latest N" mode every capture runs a full archive scan on the
-  main thread once N is reached, and the cost grows with history.
 - The Settings window still saves its own copy of retention and app rules. A
   retention change made from the menu while it is open is overwritten by Save.
-- The secret detector blocks some ordinary text (`sort_key=relevance1`) and
-  misses some credentials (`github_pat_`, AWS `ASIA` keys, long hex tokens).
+- The secret detector blocks some ordinary text (`sort_key=relevance1`,
+  "send the recovery code instructions") and lets long all-hex tokens through.
+  Both are judgment calls about what to block, not defects with one answer.
+- `health` and `doctor` count deleted clips as stored, because the count is
+  of timeline rows, which deleted clips keep.
+- The status menu is rebuilt, reading today's day file, on every capture
+  whether or not anyone opens it.
+- An annotation edit made while History is reloading discards that reload.
 - Manual checks that need a real session: global hotkey registration and
   conflicts, the shortcut recorder, direct paste with Accessibility trust,
   launch at login from an installed app.

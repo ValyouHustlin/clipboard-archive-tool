@@ -118,6 +118,7 @@ final class ClipboardMenuBarApp: NSObject,
     private var lastBlockedReason: String?
     /// 30-minute expiry enforcement timer (never the capture poll).
     private var expiryTimer: Timer?
+    private var expirySweepInFlight = false
     /// App Nap exemption, held for as long as this process is alive.
     ///
     /// A `LSUIElement` process with no visible window is exactly what App
@@ -665,10 +666,18 @@ final class ClipboardMenuBarApp: NSObject,
         guard let due = sweeper.nextDue(), due <= ClipboardRuntime.now else {
             return
         }
+        // One sweep at a time. Launch, the timer and opening History, the
+        // picker or the dashboard each ask for one, and two running at once
+        // would delete the same clips twice over.
+        guard !expirySweepInFlight else {
+            return
+        }
+        expirySweepInFlight = true
         DispatchQueue.global(qos: .utility).async { @Sendable [weak self] in
             let result = try? sweeper.sweepIfDue(now: ClipboardRuntime.now)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
+                    self?.expirySweepInFlight = false
                     guard let self, let result, result.sweptContentHashes > 0 else {
                         return
                     }

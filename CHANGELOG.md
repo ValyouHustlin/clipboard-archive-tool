@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.4.5 build 15 - 2026-11-17
+
+- Stop every copy from scanning the whole history in a "keep latest" mode.
+  Once the limit was reached, each capture read and decoded every day file,
+  including the ones where everything had already been pruned, on the main
+  thread. Day files with nothing left to prune are now skipped until they
+  change.
+- Keep the settings when one value is unfamiliar. A history window or
+  retention mode this build does not know (from a newer build, or a hand
+  edit) failed the whole settings file, which reset everything and switched
+  capture off. The other settings are now kept, and an unknown retention mode
+  falls back to the one that deletes nothing.
+- Keep the record of what was deleted. The deletion ledger is now written
+  under the archive lock and closes a row cut short by a crash, so a later
+  merge restore cannot bring a deleted clip back.
+- Catch more credentials: fine-grained GitHub tokens, temporary AWS keys, and
+  Slack app and refresh tokens.
+- Show What's New only when it is new. It appeared after every update with
+  the same list. It now appears once for someone coming from before the
+  version it describes.
+- `prune --since DATE` is refused. It was taken as the cutoff and deleted
+  everything captured before that date; `--until` is the option.
+- Rebuild Search Index no longer freezes the menu or stops capture while it
+  runs.
+- Faster deletes: a single delete opens the day the clip was captured on
+  first, a bulk delete removes search rows a few hundred at a time, and the
+  expiry sweep makes one pass for everything due and never runs twice at
+  once.
+- `status` says when a paused app is not running, since nothing would resume
+  it.
+
 ## 0.4.4 build 14 - 2026-11-17
 
 - Never lose a clip copied during a delete, a cleanup or a restore. Deleting,
