@@ -25,6 +25,7 @@ struct RichContentTests {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("clipboard-rich-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        TestScratch.remember(url)
         return url
     }
 
@@ -735,6 +736,7 @@ struct RichContentTests {
         // body write.
         let dayFile = root.appendingPathComponent("raw/2027/01/2027-01-15_clipboard-events.ndjson")
         try FileManager.default.createDirectory(at: dayFile, withIntermediateDirectories: true)
+        TestScratch.remember(dayFile)
 
         #expect(throws: (any Error).self) {
             _ = try ClipboardArchiveWriter(archiveRoot: root)

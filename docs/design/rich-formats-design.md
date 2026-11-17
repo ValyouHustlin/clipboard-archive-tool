@@ -1,5 +1,7 @@
 # Rich Clipboard Formats — Implementation Design
 
+> Historical design record for the 0.2.0 feature expansion (2026-07). It explains why things were built the way they were; it is not kept current. For current behaviour see [architecture.md](../architecture.md) and the CHANGELOG.
+
 Status: approved by lead 2026-07-30. Implements contracts 1/7/10 (feature
 matrix row 6). Verified baseline facts: `.other` lines RENDER under current
 builds (never skipped); `content(for:)` falls back to `contentPreview`; the

@@ -51,35 +51,57 @@ public struct ClipboardExpirySweeper: Sendable {
         }
 
         let annotations = ClipboardAnnotationsStore(archiveRoot: archiveRoot)
-        let resolver = ClipboardOccurrenceResolver(archiveRoot: archiveRoot, indexURL: indexURL)
         let engine = ClipboardBulkEngine(archiveRoot: archiveRoot, indexURL: indexURL)
         var result = ClipboardExpirySweepResult()
 
-        for entry in annotations.entriesWithExpiry() where entry.expiresAt <= now {
-            // Read from the archive, not the index: the index never holds
-            // restricted content, and expiring that content is the point.
-            let occurrenceIDs = try resolver.liveOccurrenceIDs(
-                contentHash: entry.contentHash,
-                viaReaderScan: true
+        let dueHashes = Set(annotations.entriesWithExpiry().filter { $0.expiresAt <= now }.map(\.contentHash))
+        guard !dueHashes.isEmpty else {
+            return result
+        }
+
+        // One pass over the archive for every due hash together, and one
+        // delete. Read from the archive, not the index: the index never
+        // holds restricted content, and expiring that content is the point.
+        let occurrenceIDs = try liveOccurrenceIDs(ofContentHashes: dueHashes)
+        if !occurrenceIDs.isEmpty {
+            let executed = try engine.execute(
+                ClipboardBulkCriteria(
+                    eventIDs: occurrenceIDs,
+                    includePinned: true
+                ),
+                reason: "expired-sensitive"
             )
-            if !occurrenceIDs.isEmpty {
-                let executed = try engine.execute(
-                    ClipboardBulkCriteria(
-                        eventIDs: Set(occurrenceIDs),
-                        includePinned: true
-                    ),
-                    reason: "expired-sensitive"
-                )
-                result.deletedEvents += executed.matchedEvents
-                result.reclaimedBytes += executed.reclaimedBytes
-            }
-            // The content is gone (or already was): drop the whole
-            // annotation record so pins/tags/expiry never dangle. Read-only
-            // newer-format stores throw; the sweep surfaces that instead of
-            // looping forever on the same due entry.
-            try annotations.removeContentReference(contentHash: entry.contentHash)
+            result.deletedEvents += executed.matchedEvents
+            result.reclaimedBytes += executed.reclaimedBytes
+        }
+        // The content is gone (or already was): drop the whole annotation
+        // record so pins/tags/expiry never dangle. Read-only newer-format
+        // stores throw; the sweep surfaces that instead of looping forever
+        // on the same due entry.
+        for contentHash in dueHashes.sorted() {
+            try annotations.removeContentReference(contentHash: contentHash)
             result.sweptContentHashes += 1
         }
         return result
+    }
+
+    private func liveOccurrenceIDs(ofContentHashes hashes: Set<String>) throws -> Set<String> {
+        let suppression = try ClipboardSuppression(archiveRoot: archiveRoot).snapshot()
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        var ids = Set<String>()
+        for fileURL in try ClipboardArchiveReader(archiveRoot: archiveRoot).eventFiles() {
+            for line in try String.readingClipboardText(contentsOf: fileURL)
+                .split(separator: "\n", omittingEmptySubsequences: true) {
+                guard let data = String(line).data(using: .utf8),
+                      let event = try? decoder.decode(StoredClipboardEvent.self, from: data),
+                      hashes.contains(event.contentHash),
+                      !suppression.isSuppressed(event) else {
+                    continue
+                }
+                ids.insert(event.id)
+            }
+        }
+        return ids
     }
 }

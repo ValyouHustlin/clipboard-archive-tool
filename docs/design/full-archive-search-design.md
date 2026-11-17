@@ -1,5 +1,7 @@
 # Full-Archive UI Search — Implementation Design
 
+> Historical design record for the 0.2.0 feature expansion (2026-07). It explains why things were built the way they were; it is not kept current. For current behaviour see [architecture.md](../architecture.md) and the CHANGELOG.
+
 Status: approved by lead 2026-07-30. Implements contract 3 (feature matrix
 row 2). RECONCILIATION NOTE: this design was drafted against the
 pre-Slice-1 tree. Slice 1 has since landed: `ClipboardSuppression` EXISTS

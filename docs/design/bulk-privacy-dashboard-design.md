@@ -1,5 +1,7 @@
 # Bulk Management, Privacy Upgrades, Storage Dashboard — Implementation Design
 
+> Historical design record for the 0.2.0 feature expansion (2026-07). It explains why things were built the way they were; it is not kept current. For current behaviour see [architecture.md](../architecture.md) and the CHANGELOG.
+
 Status: approved by lead 2026-07-30. Implements contracts 4/5/6/10 (feature
 matrix rows 5, 9, 10). Sequenced strictly AFTER the Slice 4 merge.
 

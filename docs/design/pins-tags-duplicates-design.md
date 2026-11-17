@@ -1,5 +1,7 @@
 # Pins, Tags, Collections, Snippets, Duplicates — Implementation Design
 
+> Historical design record for the 0.2.0 feature expansion (2026-07). It explains why things were built the way they were; it is not kept current. For current behaviour see [architecture.md](../architecture.md) and the CHANGELOG.
+
 Status: approved by lead 2026-07-30. Implements contracts 2/5/6 (feature
 matrix rows 3, 4, 8). Sequenced strictly AFTER the Slice 3 merge (same-file
 work in ClipboardPanelController). `contentHash` = `"sha256:<hex>"` is the

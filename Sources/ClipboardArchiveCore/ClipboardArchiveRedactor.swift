@@ -37,6 +37,29 @@ public struct ClipboardArchiveRedactor: Sendable {
         self.indexURL = indexURL
     }
 
+    /// The day files with the one this id was written to first. An id
+    /// carries its capture day (`clip_YYYYMMDDTHHMMSSZ_…`), so the usual
+    /// delete finds its clip in the first file it opens instead of reading
+    /// the archive from the oldest day forward. An id of any other shape
+    /// leaves the order as it was.
+    static func searchOrder(_ files: [URL], eventID: String) -> [URL] {
+        let parts = eventID.split(separator: "_")
+        guard parts.count >= 2 else {
+            return files
+        }
+        let stamp = parts[1].prefix(8)
+        guard stamp.count == 8, stamp.allSatisfy({ $0.isASCII && $0.isNumber }) else {
+            return files
+        }
+        let day = "\(stamp.prefix(4))-\(stamp.dropFirst(4).prefix(2))-\(stamp.dropFirst(6))"
+        guard let index = files.firstIndex(where: { $0.lastPathComponent.hasPrefix(day) }) else {
+            return files
+        }
+        var ordered = files
+        ordered.insert(ordered.remove(at: index), at: 0)
+        return ordered
+    }
+
     @discardableResult
     public func redact(eventID: String, reason: String = "manual-delete") throws -> ClipboardRedactionResult {
         let reader = ClipboardArchiveReader(archiveRoot: archiveRoot)
@@ -46,7 +69,7 @@ public struct ClipboardArchiveRedactor: Sendable {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
 
-        for eventFile in try reader.eventFiles() {
+        for eventFile in Self.searchOrder(try reader.eventFiles(), eventID: eventID) {
             var changed = false
             var deletedBodyFile: String?
             var skippedUnsafeBodyPath = false

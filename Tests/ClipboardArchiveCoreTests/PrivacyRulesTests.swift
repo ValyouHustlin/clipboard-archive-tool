@@ -12,6 +12,7 @@ struct PrivacyRulesTests {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("clipboard-privacy-rules-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        TestScratch.remember(url)
         return url
     }
 

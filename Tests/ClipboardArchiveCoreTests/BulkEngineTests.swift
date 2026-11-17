@@ -13,6 +13,7 @@ struct BulkEngineTests {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("clipboard-bulk-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        TestScratch.remember(url)
         return url
     }
 

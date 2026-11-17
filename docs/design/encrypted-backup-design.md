@@ -1,5 +1,7 @@
 # Encrypted Backup/Export + Restore/Import — Implementation Design
 
+> Historical design record for the 0.2.0 feature expansion (2026-07). It explains why things were built the way they were; it is not kept current. For current behaviour see [architecture.md](../architecture.md) and the CHANGELOG.
+
 Status: approved by lead 2026-07-30. Implements contracts 4/6/10 (feature
 matrix row 11). Everything user-initiated; nothing automatic. No new deps
 (`import CommonCrypto` is a platform system module); check-local-only.sh

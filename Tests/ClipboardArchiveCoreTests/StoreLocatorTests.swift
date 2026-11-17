@@ -14,6 +14,7 @@ struct StoreLocatorTests {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("clipboard-store-locator-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        TestScratch.remember(url)
         return url
     }
 
@@ -450,6 +451,7 @@ struct StoreLocatorTests {
         let archive = try temporaryDirectory()
         let legacyDirectory = support.appendingPathComponent("Indexes", isDirectory: true)
         try FileManager.default.createDirectory(at: legacyDirectory, withIntermediateDirectories: true)
+        TestScratch.remember(legacyDirectory)
         let legacy = legacyDirectory.appendingPathComponent("clipboard-search.sqlite")
 
         // A real index at the legacy path, built the way the app builds one.

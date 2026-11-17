@@ -1,5 +1,7 @@
 # Feature Expansion Matrix
 
+> Historical record of the 0.2.0 feature expansion (2026-07), kept for the reasoning behind it; it is not kept current. For current behaviour see [architecture.md](architecture.md) and the CHANGELOG.
+
 Living status document for the 2026-07 complete feature expansion. Updated at
 every integration checkpoint. Contracts: `docs/expansion-contracts.md`.
 Brief: the 2026-07-30 feature expansion brief, kept outside the public tree.

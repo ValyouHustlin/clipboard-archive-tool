@@ -1,5 +1,7 @@
 # Expansion Cross-Cutting Contracts
 
+> Historical record of the 0.2.0 feature expansion (2026-07), kept for the reasoning behind it; it is not kept current. For current behaviour see [architecture.md](architecture.md) and the CHANGELOG.
+
 Status: binding for the 2026-07 feature expansion. Established 2026-07-30
 against HEAD `43ab766`. Every slice implementation must conform to these
 contracts; changes to a contract require a lead decision recorded here.

@@ -132,6 +132,9 @@ public enum ClipboardStatusRules {
                 "Capture is on but paused\(duration), so nothing is being archived and "
                 + "the checks that would say so are disarmed."
             )
+            if !facts.appRunning {
+                warnings.append("The app is not running, so capture will not resume when the pause ends.")
+            }
         }
 
         switch facts.indexState {

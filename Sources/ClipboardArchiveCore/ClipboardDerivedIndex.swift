@@ -941,12 +941,21 @@ public struct ClipboardDerivedIndex: Sendable {
             }
 
             var sql = "PRAGMA busy_timeout=2000;\nBEGIN IMMEDIATE TRANSACTION;\n"
-            for eventID in eventIDs {
+            // The id column of the search table has no index, so every
+            // DELETE is a pass over the whole table. One statement per few
+            // hundred ids instead of one per id keeps a large cleanup from
+            // being that many passes, with the index locked throughout.
+            let chunkSize = 400
+            var start = 0
+            while start < eventIDs.count {
+                let chunk = eventIDs[start..<min(start + chunkSize, eventIDs.count)]
+                let list = chunk.map { "'\(escape($0))'" }.joined(separator: ",")
                 sql += """
-                DELETE FROM clipboard_fts WHERE id = '\(escape(eventID))';
-                DELETE FROM clipboard_meta WHERE id = '\(escape(eventID))';
+                DELETE FROM clipboard_fts WHERE id IN (\(list));
+                DELETE FROM clipboard_meta WHERE id IN (\(list));
 
                 """
+                start += chunkSize
             }
             sql += "COMMIT;\n"
             try runSQLite(input: sql)
