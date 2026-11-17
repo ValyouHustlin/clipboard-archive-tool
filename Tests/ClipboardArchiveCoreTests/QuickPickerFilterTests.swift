@@ -87,11 +87,11 @@ struct QuickPickerFilterTests {
     @Test
     func testUnknownContentTypeRawValueIsSearchable() {
         var event = SyntheticFixtures.currentEvent(
-            contentType: .other("image"),
-            id: "clip_synthetic_image"
+            contentType: .other("hologram"),
+            id: "clip_synthetic_hologram"
         )
-        event.contentPreview = "screenshot metadata"
-        let matches = ClipboardQuickPickerFilter.filter(events: [event], query: "image")
-        #expect(matches.map(\.id) == ["clip_synthetic_image"])
+        event.contentPreview = "projection metadata"
+        let matches = ClipboardQuickPickerFilter.filter(events: [event], query: "hologram")
+        #expect(matches.map(\.id) == ["clip_synthetic_hologram"])
     }
 }

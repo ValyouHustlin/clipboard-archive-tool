@@ -124,6 +124,9 @@ struct Gen6PauseTests {
     @Test func aPausedCaptureWithNoAppRunningStillWarns() {
         let verdict = ClipboardStatusRules.verdict(facts(suspended: true, appRunning: false))
         #expect(verdict.exit == .warnings)
+        // The warning has to be the pause itself, or a rule that forgot the
+        // pause would still pass on the "app is not running" warning.
+        #expect(verdict.warnings.contains { $0.contains("paused") })
     }
 
     @Test func anUnpausedHealthyMachineIsStillGreen() {

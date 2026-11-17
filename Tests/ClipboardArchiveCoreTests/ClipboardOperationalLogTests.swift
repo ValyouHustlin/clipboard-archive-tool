@@ -216,9 +216,11 @@ struct ClipboardOperationalLogTests {
                 [.posixPermissions: NSNumber(value: Int16(0o700))],
                 ofItemAtPath: raw.path
             )
+            // These are year folders. Without the execute bit they cannot
+            // be entered, and the scratch tree was left behind on every run.
             for name in (try? FileManager.default.contentsOfDirectory(atPath: raw.path)) ?? [] {
                 try? FileManager.default.setAttributes(
-                    [.posixPermissions: NSNumber(value: Int16(0o600))],
+                    [.posixPermissions: NSNumber(value: Int16(0o700))],
                     ofItemAtPath: raw.appendingPathComponent(name).path
                 )
             }

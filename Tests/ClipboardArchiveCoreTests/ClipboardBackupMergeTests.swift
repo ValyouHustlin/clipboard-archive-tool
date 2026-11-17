@@ -434,7 +434,10 @@ struct ClipboardBackupMergeTests {
         _ = try BackupTestSupport.seedEvent(template, content: "fault target local clip")
         let templateAnnotations = ClipboardAnnotationsStore(archiveRoot: template)
         try templateAnnotations.setTags(["local-only"], forContentHash: "sha256:faultlocal")
-        let templateSettingsURL = template.appendingPathComponent("../fault-template-settings.json").standardizedFileURL
+        // Outside the template, in a folder of its own: a fixed name in the
+        // shared temp folder collided between two runs and was never removed.
+        let templateSettingsURL = try BackupTestSupport.temporaryDirectory("fault-template-cfg")
+            .appendingPathComponent("settings.json")
         var targetSettings = ClipboardSettings()
         targetSettings.recentItemLimit = 11
         try ClipboardSettingsStore(settingsURL: templateSettingsURL).save(targetSettings)
