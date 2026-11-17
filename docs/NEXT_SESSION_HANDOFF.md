@@ -8,9 +8,10 @@ Updated: 2026-11-17, after a full read of the repository.
   `/Applications/Clipboard Archive.app`, installed from the disk image that
   `scripts/release.sh` builds. It has no update feed, so its update helper
   stays dormant. The command-line tool was updated to the same version.
-- The public GitHub repository stops at 0.2.0. Everything after it (the 0.3.0
-  hardening, the 0.4.0 release path and 0.4.1) exists only in the private
-  mirror.
+- The public GitHub repository is current with `main` as of 2026-11-17. A
+  0.4.1 release exists there as a draft with the disk image, its checksum and
+  the folder package attached; it is visible to the public only once someone
+  publishes it. The newest published release is still 0.1.2.
 - 0.4.1 was checked three ways before it replaced 0.3.0 build 9: the test
   suite, a sandboxed scratch run of the release binary with a moved clock
   (a timed pause ends; the 0.3.0 binary stays paused in the same run), and one
@@ -27,10 +28,9 @@ release.
 
 ## Open decisions
 
-1. Publish: push to GitHub and cut a 0.4.0 release, or keep the repository
-   private from here on. Several docs describe an install path (the
-   `curl` installer, the pinned `v0.2.0` example) that only works once a
-   matching GitHub Release exists.
+1. Publish the 0.4.1 draft release, or leave it a draft. The `curl`
+   installer and the pinned-version examples in the docs install the newest
+   published release, which is 0.1.2 until then.
 2. Where the update feed is hosted. Until that is decided no copy can update
    itself, and `docs/UPDATES.md` describes a path nobody can use yet.
 3. One install location. The disk image installs
