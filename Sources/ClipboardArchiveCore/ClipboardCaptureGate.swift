@@ -25,6 +25,13 @@ public enum ClipboardCaptureGate {
         case proceed
     }
 
+    /// Whether the app's pause flag is a pause only the user can end. A
+    /// timed pause raises the same flag, for the menu and the icon, but it
+    /// carries `pauseUntil` and has to end on its own when that time passes.
+    public static func isManualPause(pausedFlag: Bool, pauseUntil: Date?) -> Bool {
+        pausedFlag && pauseUntil == nil
+    }
+
     /// One poll decision. `wasGatedLastPoll` is whether the PREVIOUS poll
     /// returned a skip decision (the caller stores this); it drives the
     /// one-time exit resync.

@@ -271,7 +271,10 @@ struct PrivacyRulesTests {
             timeIntervalSince1970: (ClipboardRuntime.now.timeIntervalSince1970 + 3_600).rounded(.down)
         )
         settings.pauseUntil = pause
-        settings.privateModeUntil = Date(timeIntervalSince1970: 1_800_000_200)
+        // Private mode is bounded on load the same way, so it stays inside
+        // the cap too.
+        let privateUntil = pause.addingTimeInterval(1_800)
+        settings.privateModeUntil = privateUntil
         try store.save(settings)
 
         let loaded = store.load()
@@ -280,7 +283,7 @@ struct PrivacyRulesTests {
         // fix shipped with this slice: dates in the file previously reset
         // the whole settings decode).
         #expect(loaded.pauseUntil == pause)
-        #expect(loaded.privateModeUntil == Date(timeIntervalSince1970: 1_800_000_200))
+        #expect(loaded.privateModeUntil == privateUntil)
     }
 
     /// Downgrade fail-closed contract: a store-no-index save ALSO keeps the

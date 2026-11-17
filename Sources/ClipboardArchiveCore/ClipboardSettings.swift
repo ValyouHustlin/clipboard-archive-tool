@@ -341,7 +341,9 @@ public struct ClipboardSettings: Codable, Equatable, Sendable {
             forKey: .appPrivacyRules
         ) ?? [:]
         appPrivacyRules = Self.normalizedRuleKeys(tolerantRules.compactMapValues(\.value))
-        privateModeUntil = Self.flexibleDate(in: container, forKey: .privateModeUntil)
+        // Bounded like a pause, and for the same reason: an unbounded date
+        // in a damaged or hand-edited file would silence capture for good.
+        privateModeUntil = Self.clampPause(Self.flexibleDate(in: container, forKey: .privateModeUntil))
         showBlockedEventStatus = try container.decodeIfPresent(
             Bool.self,
             forKey: .showBlockedEventStatus

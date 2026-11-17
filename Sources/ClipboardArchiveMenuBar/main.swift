@@ -107,6 +107,12 @@ final class ClipboardMenuBarApp: NSObject,
     /// capture gate turns the first ungated poll into a resync-only pass so
     /// nothing copied during the gap is retro-captured (Slice 5 fix).
     private var captureGateWasActive = false
+    /// This app's own bundle id, so a build made under another id (the
+    /// update test does this) still leaves itself out as a source app.
+    private static let ownBundleIdentifier = Bundle.main.bundleIdentifier ?? "app.clipboardarchive"
+    /// Apps excluded from the menu while the Settings window was open. Its
+    /// copy of the rule list predates them, so a save adds them back.
+    private var exclusionsAddedWhileSettingsOpen: [String] = []
     /// The most recent blocked-event reason this run (menu status line,
     /// shown only when `showBlockedEventStatus` is on).
     private var lastBlockedReason: String?
@@ -205,6 +211,14 @@ final class ClipboardMenuBarApp: NSObject,
         case nil:
             break
         }
+        // A timed pause that ran out while the app was closed is over. The
+        // poll loop only clears a pause it watched expire, so clear it here.
+        if let until = settings.pauseUntil, until <= ClipboardRuntime.now {
+            settings.pauseUntil = nil
+            isPaused = false
+            userDefaults.set(false, forKey: "capturePaused")
+            if settingsAreTrusted { try? settingsStore.save(settings) }
+        }
         captureActivity = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiatedAllowingIdleSystemSleep],
             reason: "Clipboard capture"
@@ -288,7 +302,10 @@ final class ClipboardMenuBarApp: NSObject,
             now: ClipboardRuntime.now,
             privateModeUntil: settings.privateModeUntil,
             pauseUntil: settings.pauseUntil,
-            manuallyPaused: isPaused,
+            manuallyPaused: ClipboardCaptureGate.isManualPause(
+                pausedFlag: isPaused,
+                pauseUntil: settings.pauseUntil
+            ),
             wasGatedLastPoll: captureGateWasActive
         ) {
         case .skipPrivateMode:
@@ -327,6 +344,9 @@ final class ClipboardMenuBarApp: NSObject,
                 settings.pauseUntil = nil
                 if settingsAreTrusted { try? settingsStore.save(settings) }
                 isPaused = false
+                // The saved flag too, or the next launch reads a timed
+                // pause that already ended as a manual one.
+                userDefaults.set(false, forKey: "capturePaused")
                 lastStatus = "Capture resumed"
             }
             captureGateWasActive = false
@@ -347,13 +367,15 @@ final class ClipboardMenuBarApp: NSObject,
         // Rich classification (Slice 6) runs only AFTER every capture gate
         // above allowed reading the pasteboard, and only when the setting
         // is on; otherwise the original text-only read is unchanged.
-        guard let read = readCaptureFromPasteboard() else {
-            return
-        }
-
+        // Checked before the read: with the archive off there is nothing to
+        // do with the bytes, so do not load them (images included).
         guard settings.archiveEnabled else {
             lastStatus = "Archive off \(shortDate(ClipboardRuntime.now))"
             rebuildMenu()
+            return
+        }
+
+        guard let read = readCaptureFromPasteboard() else {
             return
         }
 
@@ -787,7 +809,10 @@ final class ClipboardMenuBarApp: NSObject,
                     guard let self else {
                         return false
                     }
-                    return self.settings.archiveEnabled && !self.isPaused
+                    return self.settings.archiveEnabled
+                        && !self.isPaused
+                        && !self.settings.isPrivateModeActive
+                        && !self.settings.isTemporarilyPaused
                 },
                 onArchiveMutation: { [weak self] mutation in
                     guard let self else {
@@ -798,6 +823,9 @@ final class ClipboardMenuBarApp: NSObject,
                     // contentInline (deleted content must never resurrect
                     // via copy-back), and pins/snippets may have changed.
                     self.markQuickPickerCacheDirty()
+                    // The menu's recent list and its restricted badges read
+                    // the same events and annotations.
+                    self.rebuildMenu()
                     if case .annotationsChanged(pinRemoved: true) = mutation {
                         // Unpinning shrinks the retention-exempt set, so
                         // the in-memory counted estimate could undercount
@@ -1067,13 +1095,32 @@ final class ClipboardMenuBarApp: NSObject,
             }
             settingsWindowController = controller
         }
+        exclusionsAddedWhileSettingsOpen.removeAll()
         settingsWindowController?.show(settings: settings, activate: activate)
         if let shortcutFailureMessage {
             settingsWindowController?.showShortcutRegistrationFailure(shortcutFailureMessage)
         }
     }
 
-    func clipboardSettingsWindow(_ controller: ClipboardSettingsWindowController, didSave settings: ClipboardSettings) {
+    func clipboardSettingsWindow(_ controller: ClipboardSettingsWindowController, didSave savedSettings: ClipboardSettings) {
+        // The window edits a copy taken when it opened. What it never shows
+        // keeps the value the app holds now, so a save cannot end private
+        // mode or a timed pause, or drop an app excluded from the menu
+        // while the window was open.
+        var settings = savedSettings
+        settings.privateModeUntil = self.settings.privateModeUntil
+        settings.pauseUntil = self.settings.pauseUntil
+        settings.historyGroupDuplicates = self.settings.historyGroupDuplicates
+        settings.lastSeenAppVersion = self.settings.lastSeenAppVersion
+        for bundle in exclusionsAddedWhileSettingsOpen
+        where !settings.excludedBundleIdentifiers.contains(bundle) {
+            settings.excludedBundleIdentifiers.append(bundle)
+        }
+        settings.excludedBundleIdentifiers.sort()
+        exclusionsAddedWhileSettingsOpen.removeAll()
+        if settings != savedSettings {
+            try? settingsStore.save(settings)
+        }
         let previousInterval = self.settings.pollIntervalSeconds
         if self.settings.retentionMode != settings.retentionMode {
             liveEventCountEstimate = nil
@@ -1094,6 +1141,7 @@ final class ClipboardMenuBarApp: NSObject,
         let failureBeforeSave = shortcutFailureMessage
         applyQuickPickerShortcut()
         lastStatus = settings.archiveEnabled ? "Settings saved" : "Archive tracking off"
+        configureStatusIcon()
         rebuildMenu()
         // The settings window hides itself right after save, so a
         // registration failure discovered here needs its own visible
@@ -2728,6 +2776,9 @@ final class ClipboardMenuBarApp: NSObject,
             settings.excludedBundleIdentifiers.append(bundle)
             settings.excludedBundleIdentifiers.sort()
         }
+        if settingsWindowController?.window?.isVisible == true {
+            exclusionsAddedWhileSettingsOpen.append(bundle)
+        }
         saveSettingsAndRefresh("Excluded \(source.name)")
     }
 
@@ -2896,6 +2947,7 @@ final class ClipboardMenuBarApp: NSObject,
         settings.hasCompletedOnboarding = true
         if settingsAreTrusted { try? settingsStore.save(settings) }
         markQuickPickerCacheDirty()
+        configureStatusIcon()
         rebuildMenu()
     }
 
@@ -3113,6 +3165,8 @@ final class ClipboardMenuBarApp: NSObject,
             try redactor.redact(eventID: id)
             lastStatus = "Deleted item \(shortDate(ClipboardRuntime.now))"
             markQuickPickerCacheDirty()
+            // An open History window still holds the deleted text inline.
+            panelController?.reloadFromExternalMutation()
             rebuildMenu()
         } catch {
             showError("Delete failed: \(error)")
@@ -3131,6 +3185,7 @@ final class ClipboardMenuBarApp: NSObject,
             try redactor.redact(eventID: event.id)
             lastStatus = "Deleted latest item \(shortDate(ClipboardRuntime.now))"
             markQuickPickerCacheDirty()
+            panelController?.reloadFromExternalMutation()
             rebuildMenu()
         } catch {
             showError("Delete failed: \(error)")
@@ -3182,7 +3237,7 @@ final class ClipboardMenuBarApp: NSObject,
     private func detectedSourceApp() -> ClipboardSourceApp {
         if ClipboardRuntime.isIsolated { return ClipboardSourceApp(name: "Scratch", bundleIdentifier: "test.clipboardarchive.scratch") }
         let app = NSWorkspace.shared.frontmostApplication
-        if let app, app.bundleIdentifier != "app.clipboardarchive" {
+        if let app, app.bundleIdentifier != Self.ownBundleIdentifier {
             let source = ClipboardSourceApp(
                 name: app.localizedName ?? "Unknown",
                 bundleIdentifier: app.bundleIdentifier
@@ -3194,7 +3249,7 @@ final class ClipboardMenuBarApp: NSObject,
     }
 
     private func updateLastNonSelfApp(_ app: NSRunningApplication?) {
-        guard let app, app.bundleIdentifier != "app.clipboardarchive" else {
+        guard let app, app.bundleIdentifier != Self.ownBundleIdentifier else {
             return
         }
         lastNonSelfApp = ClipboardSourceApp(
@@ -3375,9 +3430,6 @@ final class ClipboardMenuBarApp: NSObject,
         timer = poll
     }
 
-    private func formatBytes(_ bytes: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
-    }
 }
 
 let instanceLock = AppInstanceLock()

@@ -181,6 +181,30 @@ struct PrivateModeTests {
         ) == .resyncWithoutIngesting)
     }
 
+    /// The app raises its pause flag for a timed pause too (the menu and
+    /// the icon read it). That flag must not count as a manual pause, or
+    /// "Pause for 15 minutes" never ends.
+    @Test func testTimedPauseEndsOnItsOwnWhileTheAppPauseFlagIsUp() throws {
+        let now = Date()
+        let until = now.addingTimeInterval(900)
+        #expect(!ClipboardCaptureGate.isManualPause(pausedFlag: true, pauseUntil: until))
+        #expect(ClipboardCaptureGate.isManualPause(pausedFlag: true, pauseUntil: nil))
+        #expect(!ClipboardCaptureGate.isManualPause(pausedFlag: false, pauseUntil: nil))
+
+        // While it runs: paused.
+        #expect(ClipboardCaptureGate.decision(
+            now: now, privateModeUntil: nil, pauseUntil: until,
+            manuallyPaused: ClipboardCaptureGate.isManualPause(pausedFlag: true, pauseUntil: until),
+            wasGatedLastPoll: false
+        ) == .skipPaused)
+        // After it runs out, with the flag still up: one resync, not a skip.
+        #expect(ClipboardCaptureGate.decision(
+            now: until.addingTimeInterval(1), privateModeUntil: nil, pauseUntil: until,
+            manuallyPaused: ClipboardCaptureGate.isManualPause(pausedFlag: true, pauseUntil: until),
+            wasGatedLastPoll: true
+        ) == .resyncWithoutIngesting)
+    }
+
     @Test func testSettingsPrivateModeStateAndPersistence() throws {
         var settings = ClipboardSettings()
         #expect(!settings.isPrivateModeActive)

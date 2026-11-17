@@ -187,4 +187,28 @@ struct Gen6PauseClampTests {
         // Still a pause — the clamp bounds it, it does not cancel it.
         #expect(loaded.isTemporarilyPaused)
     }
+
+    /// Private mode silences capture exactly as a pause does, so a
+    /// far-future date in the file is bounded the same way.
+    @Test func aFarFuturePrivateModeInTheSettingsFileIsBoundedOnLoad() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipboard-gen6-private-clamp-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("settings.json")
+
+        let tenYears = ClipboardRuntime.now.addingTimeInterval(10 * 365 * 24 * 60 * 60)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        let document = """
+        {"archiveEnabled":true,"hasCompletedOnboarding":true,"settingsVersion":1,\
+        "privateModeUntil":"\(formatter.string(from: tenYears))"}
+        """
+        try Data(document.utf8).write(to: url)
+
+        let loaded = ClipboardSettingsStore(settingsURL: url).load()
+        let until = try #require(loaded.privateModeUntil)
+        #expect(until.timeIntervalSince(ClipboardRuntime.now) <= ClipboardSettings.maximumPauseInterval + 5)
+        #expect(loaded.isPrivateModeActive)
+    }
 }
