@@ -23,6 +23,29 @@ Updated: 2026-11-17, after a full read of the repository.
   click-through on the installed copy (private mode started from the menu
   survives Save in an open Settings window).
 
+## Finish line
+
+For the 2026-11-17 review ("find everything that's broken, inconsistent,
+inefficient, or no longer needed; fix what you're sure about and list the rest";
+then "make sure the updating part doesn't make it so people lose their
+stuff"). Written 2026-11-18. Each line names the check that shows it.
+
+1. Every defect fixed has a test, and the whole gate passes at `main`:
+   `scripts/check-all.sh --release` on a Mac ends "all checks passed".
+2. An update keeps history, settings and the data location:
+   `scripts/test-upgrade-keeps-data.sh` and `scripts/test-install-locations.sh`
+   end "ok" (both are in the gate).
+3. The public release is the code on `main`: the latest GitHub release is
+   v0.4.5, its tag is the commit its disk image was built from, and the
+   downloaded disk image's SHA-256 matches its `.sha256` file.
+4. The daily-use Mac runs that release and has lost nothing:
+   `clipboard-archive version` says 0.4.5 (15), `status` shows capture on with
+   a recent capture, and `verify` ends "no problems found".
+5. What was not fixed is listed for the owner with the reason: "Open
+   decisions" and "Known gaps" below.
+6. These docs say what is true now (this file, CHANGELOG, INSTALL, UPDATES).
+7. Nothing from the review is left running: no scratch app, timer or helper.
+
 ## Checks
 
 `scripts/check-all.sh` is the gate, run on a Mac: build, unit tests, core
