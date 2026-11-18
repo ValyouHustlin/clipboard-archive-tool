@@ -42,6 +42,9 @@ jobs:
       - name: Check local-only boundary
         run: ./scripts/check-local-only.sh "$RELEASE_DIR"
 
+      - name: Test the command lines the tool must refuse
+        run: ./scripts/test-cli-refusals.sh
+
       - name: Test install locations
         run: ./scripts/test-install-locations.sh
 

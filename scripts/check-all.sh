@@ -43,6 +43,8 @@ CLIPBOARD_ARCHIVE_ARCHIVE_ROOT="$SCRATCH/archive" \
 CLIPBOARD_ARCHIVE_INDEX_PATH="$SCRATCH/index/search.sqlite" \
 CLIPBOARD_ARCHIVE_LAUNCH_AGENT_PLIST="$SCRATCH/agent.plist" \
   /usr/bin/xcrun swift run --quiet clipboard-archive-checks
+step "command lines the tool must refuse"
+./scripts/test-cli-refusals.sh
 step "install locations"
 ./scripts/test-install-locations.sh
 step "an update keeps history, settings and data location"

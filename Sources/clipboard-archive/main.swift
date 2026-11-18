@@ -421,8 +421,11 @@ case "self-test":
         sourceApp: ClipboardSourceApp(name: "Safari", bundleIdentifier: "com.apple.Safari"),
         pasteboardTypes: ["public.utf8-plain-text"]
     )
+    // The archive it writes is only the proof that writing works; leaving it
+    // behind put one scratch folder in the temporary directory per run.
+    defer { try? FileManager.default.removeItem(at: root) }
     _ = try writer.archiveAllowedCapture(capture)
-    print("self-test ok: \(root.path)")
+    print("self-test ok")
 
 case "monitor":
     let writer = ClipboardArchiveWriter(

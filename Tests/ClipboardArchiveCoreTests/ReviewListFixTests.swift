@@ -73,6 +73,23 @@ struct ReviewListFixTests {
         #expect(!kept.contains { $0.id == restored.id })
     }
 
+    // MARK: Single delete
+
+    /// A delete opens the day its clip was captured on first, and falls
+    /// back to the original order for an id it cannot read a day from.
+    @Test func aDeleteLooksInTheClipsOwnDayFirst() {
+        let files = ["2026-11-15", "2026-11-16", "2026-11-17"].map {
+            URL(fileURLWithPath: "/tmp/archive/raw/2026/11/\($0)_clipboard-events.ndjson")
+        }
+        let ordered = ClipboardArchiveRedactor.searchOrder(files, eventID: "clip_20261117T080000Z_aaaaaaaaaaaa_bbbbbbbb")
+        #expect(ordered.first == files[2])
+        #expect(Set(ordered) == Set(files))
+        #expect(ordered.count == files.count)
+        #expect(ClipboardArchiveRedactor.searchOrder(files, eventID: "clip_synthetic_7") == files)
+        #expect(ClipboardArchiveRedactor.searchOrder(files, eventID: "clip_20250101T000000Z_a_b") == files)
+        #expect(ClipboardArchiveRedactor.searchOrder(files, eventID: "nonsense") == files)
+    }
+
     // MARK: Settings
 
     /// One value this build does not know used to fail the whole decode,

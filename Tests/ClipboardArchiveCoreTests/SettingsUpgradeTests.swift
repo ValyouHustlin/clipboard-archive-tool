@@ -111,6 +111,49 @@ struct SettingsUpgradeTests {
         #expect(saved["excludedAppNameFragments"] as? [String] == ["private notes"])
     }
 
+    /// A 0.4.x file, with every later choice set away from its default.
+    private static let everyLaterChoiceFrom044 = """
+    {"appPrivacyRules":{"com.example.crm":{"addedAt":"2026-10-01T00:00:00Z","mode":"store-no-index"}},\
+    "archiveEnabled":true,"captureRichContent":false,"excludedAppNameFragments":["private notes"],\
+    "excludedBundleIdentifiers":["com.example.bank","com.example.crm"],"hasCompletedOnboarding":true,\
+    "historyGroupDuplicates":true,"historyWindow":30,"lastSeenAppVersion":"0.4.4","pollIntervalSeconds":0.5,\
+    "quickPickerDirectPasteEnabled":true,"recentItemLimit":120,"retentionMode":"unlimited",\
+    "richImageMaxBytes":2097152,"settingsVersion":1,\
+    "shortcuts":{"quickPicker":{"enabled":true,"keyCode":9,"modifiers":["command","option"]}},\
+    "showBlockedEventStatus":false}
+    """
+
+    /// The save the app makes on its first launch after an update (it
+    /// records the version it last ran) keeps every later choice too: the
+    /// shortcut, the per-app rule, and each switch.
+    @Test func everyLaterChoiceSurvivesTheFirstLaunchSave() throws {
+        let (store, base) = try store(holding: Self.everyLaterChoiceFrom044)
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        let loaded = store.loadReporting()
+        #expect(loaded.fallback == nil)
+        var settings = loaded.settings
+        settings.lastSeenAppVersion = "0.4.5"
+        try store.save(settings)
+
+        let after = store.loadReporting()
+        #expect(after.fallback == nil)
+        var expected = loaded.settings
+        expected.lastSeenAppVersion = "0.4.5"
+        #expect(after.settings == expected)
+        #expect(after.settings.appPrivacyRules["com.example.crm"]?.isStoreNoIndex == true)
+        #expect(after.settings.quickPickerShortcut.enabled)
+        #expect(after.settings.quickPickerShortcut.keyCode == 9)
+        #expect(after.settings.quickPickerShortcut.modifiers == ["command", "option"])
+        #expect(after.settings.quickPickerDirectPasteEnabled)
+        #expect(after.settings.historyGroupDuplicates)
+        #expect(after.settings.historyWindow == .thirtyDays)
+        #expect(!after.settings.captureRichContent)
+        #expect(after.settings.richImageMaxBytes == 2_097_152)
+        #expect(!after.settings.showBlockedEventStatus)
+        #expect(after.settings.excludedBundleIdentifiers == ["com.example.bank", "com.example.crm"])
+    }
+
     /// The other direction matters as much: an update must never switch
     /// capture ON for someone who had it off, or widen what is kept.
     @Test func captureThatWasOffStaysOffAndKeepsItsLimit() throws {

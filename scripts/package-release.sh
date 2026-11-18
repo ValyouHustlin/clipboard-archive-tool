@@ -95,7 +95,9 @@ MANIFEST
   find . -type f -not -name SHA256SUMS -print0 | sort -z | xargs -0 shasum -a 256 > SHA256SUMS
 )
 
-tar -C "$RELEASE_ROOT" -czf "$ARCHIVE" "$NAME"
+# COPYFILE_DISABLE keeps macOS's "._" side files and extended attributes out
+# of an archive other people unpack.
+COPYFILE_DISABLE=1 tar -C "$RELEASE_ROOT" -czf "$ARCHIVE" "$NAME"
 ditto -c -k --keepParent "$STAGE" "$ZIP"
 
 echo "release_dir: $STAGE"

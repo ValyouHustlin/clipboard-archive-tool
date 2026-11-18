@@ -86,6 +86,8 @@ Install a newer release folder the same way:
 The installer stops the running app wherever it runs from, replaces the app
 bundle, removes any other copy, updates the CLI, rewrites the LaunchAgent, and
 starts the new app. It works over a copy installed from the disk image too.
+Existing archive data remains in place. If the new app does not remain
+running, the prior app and LaunchAgent are restored.
 
 An update keeps your history, settings, pins and tags, and the data location.
 The installer does not write inside the archive or the settings file.
@@ -95,9 +97,12 @@ image to Applications, open the new copy once. From 0.4.3 it takes over from
 the older copy if that one is running, and rewrites the login item so login
 starts the new copy from then on; your history, settings and data location
 are untouched. The older copy stays in `~/Applications` until you delete it
-or run `./install.sh` once, which removes it. Existing archive data remains
-in place. If the new app does not remain running, the prior app and LaunchAgent
-are restored.
+or run `./install.sh` once, which removes it. Dragging the disk image does
+not update the command-line tool in `~/.local/bin`; `./install.sh` does.
+
+macOS ties the Accessibility permission to the exact build while releases are
+ad hoc signed, so after any update you may need to approve the app again under
+Privacy & Security › Accessibility before direct paste works.
 
 Release-folder installs update by file handoff. The app does not check the
 internet for new versions; only a disk image release built with a feed has

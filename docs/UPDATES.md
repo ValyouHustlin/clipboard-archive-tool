@@ -1,7 +1,9 @@
 # Updates
 
-From 0.4.0, a copy of Clipboard Archive can update itself. Whether it does
-depends on how that copy was built:
+From 0.4.0, a copy of Clipboard Archive built with an update feed can update
+itself. No published release has a feed yet, so every published copy is
+updated by hand (the first row below). What a copy does depends on how it was
+built:
 
 | Built with | What happens |
 |---|---|

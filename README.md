@@ -60,8 +60,10 @@ subscription product. It has two jobs:
 - Storage modes: remember 10 items, remember 50 items, or keep a full archive.
 - Daily manifests and health reports.
 - Install/update scripts for copying releases to other Macs.
-- A drag-to-Applications disk image built by `scripts/release.sh`, which can
-  update itself through a separate helper app that never sees your clips.
+- A drag-to-Applications disk image built by `scripts/release.sh`. It carries
+  a separate update helper that never sees your clips; the helper only runs
+  in a copy built with an update feed, and no published release has one yet,
+  so today every copy is updated by hand.
 - No network sync, remote analytics or crash reporting. The app that reads
   the clipboard makes no network request; see [docs/UPDATES.md](docs/UPDATES.md).
 

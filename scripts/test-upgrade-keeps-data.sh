@@ -68,7 +68,23 @@ write_archive() { # archive root, as 0.1.2 lays it out
   /usr/bin/printf '%s\n' "$EVENT_LINE" > "$archive/raw/2027/01/2027-01-15_clipboard-events.ndjson"
   /usr/bin/printf '%s' 'Clipboard Archive local self-test note' \
     > "$archive/raw/2027/01/2027-01-15_large-items/$CLIP_ID.txt"
+  # What later releases add beside the clips: pins and tags, and the record
+  # of what was deleted.
+  /bin/mkdir -p "$archive/annotations" "$archive/deletion-ledger"
+  /bin/cat > "$archive/annotations/annotations.json" <<'JSON'
+{"annotations":{"sha256:fda6d439ff6a949835766599e123baae0d18e8794eaf314db842bec861206fe5":{"pinned":true,"pinnedAt":"2026-10-01T00:00:00Z","snippet":false,"tags":["keep","work"]}},"annotationsVersion":1,"collections":[],"updatedAt":"2026-10-01T00:00:00Z"}
+JSON
+  /usr/bin/printf '%s\n' '{"clipboardEventID":"clip_20260901T000000Z_aaaaaaaaaaaa_bbbbbbbb","deletedAt":"2026-09-02T00:00:00Z","eventType":"clipboard_event_deleted","reason":"manual-delete"}' \
+    > "$archive/deletion-ledger/2026-09-02_deletions.ndjson"
   /bin/chmod -R go-rwx "$archive"
+}
+
+write_modern_settings() { # home; a 0.4.x settings file with every later choice set away from its default
+  local support="$1/Library/Application Support/ClipboardArchive"
+  /bin/mkdir -p "$support"
+  /bin/cat > "$support/settings.json" <<'JSON'
+{"appPrivacyRules":{"com.example.crm":{"addedAt":"2026-10-01T00:00:00Z","mode":"store-no-index"}},"archiveEnabled":true,"captureRichContent":false,"excludedAppNameFragments":["private notes"],"excludedBundleIdentifiers":["com.example.bank","com.example.crm"],"hasCompletedOnboarding":true,"historyGroupDuplicates":true,"historyWindow":30,"lastSeenAppVersion":"0.4.4","pollIntervalSeconds":0.5,"quickPickerDirectPasteEnabled":true,"recentItemLimit":120,"retentionMode":"unlimited","richImageMaxBytes":2097152,"settingsVersion":1,"shortcuts":{"quickPicker":{"enabled":true,"keyCode":9,"modifiers":["command","option"]}},"showBlockedEventStatus":false}
+JSON
 }
 
 write_settings() { # home; the file 0.1.2 saves, with choices that differ from every default
@@ -175,7 +191,7 @@ json_field() { # json text, python expression over `d`
 check_carried_over() { # case name, expected archive root, digest before, paths digested...
   local name="$1" archive="$2" before="$3"; shift 3
   local home="$T/$name/home" stores status
-  check "history and settings files are byte-for-byte what they were" test "$(digest "$@")" = "$before"
+  check "history, pins, tags, deletion record and settings are byte-for-byte what they were" test "$(digest "$@")" = "$before"
   check "one copy of the app, in /Applications" test -x "$T/$name/system-applications/Clipboard Archive.app/Contents/MacOS/ClipboardArchive"
   refute "the copy in ~/Applications is gone" test -e "$home/Applications/ClipboardArchive.app"
 
@@ -193,6 +209,7 @@ check_carried_over() { # case name, expected archive root, digest before, paths 
   check "the search index is rebuilt from the history" cli "$name" repair-index
   indexed="$(cli "$name" search 'self-test note' 2>/dev/null || true)"
   check "the old clip is found by search" /usr/bin/grep -q "$CLIP_ID" <<<"$indexed"
+  check "the pinned clip is still pinned" /usr/bin/grep -q '^pinned_items: 1$' <<<"$(cli "$name" health 2>/dev/null || true)"
   status="$(cli "$name" status --json 2>/dev/null || true)"
   check "capture is still switched on" test "$(json_field "$status" 'd["capture_enabled"]')" = "True"
   warnings="$(json_field "$status" '" | ".join(d["warnings"])' 2>/dev/null || true)"
@@ -205,21 +222,21 @@ name=from-0.1.2-default; home="$T/$name/home"; /bin/mkdir -p "$home" "$T/$name/s
 archive="$home/Library/Application Support/ClipboardArchive/Archive/clipboard-history"
 index="$home/Library/Application Support/ClipboardArchive/Indexes/clipboard-search.sqlite"
 write_settings "$home"; write_archive "$archive"; write_old_install "$home" "$archive" "$index"
-before="$(digest "$archive/raw" "$home/Library/Application Support/ClipboardArchive/settings.json")"
+before="$(digest "$archive/raw" "$archive/annotations" "$archive/deletion-ledger" "$home/Library/Application Support/ClipboardArchive/settings.json")"
 check "the update installs" install_update "$name"
-check_carried_over "$name" "$archive" "$before" "$archive/raw" "$home/Library/Application Support/ClipboardArchive/settings.json"
+check_carried_over "$name" "$archive" "$before" "$archive/raw" "$archive/annotations" "$archive/deletion-ledger" "$home/Library/Application Support/ClipboardArchive/settings.json"
 
 echo "## from 0.1.2, history kept in a folder the user chose"
 name=from-0.1.2-custom; home="$T/$name/home"; /bin/mkdir -p "$home" "$T/$name/system-applications"
 archive="$home/Documents/My Clipboard/Archive"
 index="$home/Documents/My Clipboard/clipboard-search.sqlite"
 write_settings "$home"; write_archive "$archive"; write_old_install "$home" "$archive" "$index"
-before="$(digest "$archive/raw" "$home/Library/Application Support/ClipboardArchive/settings.json")"
+before="$(digest "$archive/raw" "$archive/annotations" "$archive/deletion-ledger" "$home/Library/Application Support/ClipboardArchive/settings.json")"
 check "the update installs, with no location given" install_update "$name"
 check "the login item still names the chosen folder" test "$(pin "$name" CLIPBOARD_ARCHIVE_ARCHIVE_ROOT)" = "$archive"
 check "the login item still names the chosen index" test "$(pin "$name" CLIPBOARD_ARCHIVE_INDEX_PATH)" = "$index"
 refute "nothing was started in the default location" test -e "$home/Library/Application Support/ClipboardArchive/Archive"
-check_carried_over "$name" "$archive" "$before" "$archive/raw" "$home/Library/Application Support/ClipboardArchive/settings.json"
+check_carried_over "$name" "$archive" "$before" "$archive/raw" "$archive/annotations" "$archive/deletion-ledger" "$home/Library/Application Support/ClipboardArchive/settings.json"
 
 echo "## a location given at update time wins over the old one"
 name=moved-on-purpose; home="$T/$name/home"; /bin/mkdir -p "$home" "$T/$name/system-applications"
@@ -228,10 +245,10 @@ archive="$home/Documents/New Place/Archive"
 index="$home/Documents/New Place/clipboard-search.sqlite"
 write_settings "$home"; write_archive "$old_archive"; write_archive "$archive"
 write_old_install "$home" "$old_archive" "$home/Documents/Old Place/clipboard-search.sqlite"
-before="$(digest "$archive/raw" "$home/Library/Application Support/ClipboardArchive/settings.json")"
+before="$(digest "$archive/raw" "$archive/annotations" "$archive/deletion-ledger" "$home/Library/Application Support/ClipboardArchive/settings.json")"
 check "the update installs" install_update "$name" "CLIPBOARD_ARCHIVE_ARCHIVE_ROOT=$archive" "CLIPBOARD_ARCHIVE_INDEX_PATH=$index"
 check "the old location's files are left alone" test -f "$old_archive/raw/2027/01/2027-01-15_clipboard-events.ndjson"
-check_carried_over "$name" "$archive" "$before" "$archive/raw" "$home/Library/Application Support/ClipboardArchive/settings.json"
+check_carried_over "$name" "$archive" "$before" "$archive/raw" "$archive/annotations" "$archive/deletion-ledger" "$home/Library/Application Support/ClipboardArchive/settings.json"
 
 echo "## from 0.3.0 or later, location remembered by the app itself"
 name=from-pointer; home="$T/$name/home"; /bin/mkdir -p "$home" "$T/$name/system-applications"
@@ -244,10 +261,20 @@ json.dump({"schema": 1, "archiveRoot": sys.argv[1], "archiveOrigin": "env", "ind
            "indexOrigin": "env", "updatedAt": "2026-11-01T00:00:00.000Z", "writtenBy": "ClipboardArchive 0.4.1 (11)"},
           open(sys.argv[3], "w"))
 ' "$archive" "$index" "$home/Library/Application Support/ClipboardArchive/stores.json"
-before="$(digest "$archive/raw" "$home/Library/Application Support/ClipboardArchive/settings.json" "$home/Library/Application Support/ClipboardArchive/stores.json")"
+before="$(digest "$archive/raw" "$archive/annotations" "$archive/deletion-ledger" "$home/Library/Application Support/ClipboardArchive/settings.json" "$home/Library/Application Support/ClipboardArchive/stores.json")"
 check "the update installs" install_update "$name"
 refute "the installer pins nothing it was not given" test -n "$(pin "$name" CLIPBOARD_ARCHIVE_ARCHIVE_ROOT)"
-check_carried_over "$name" "$archive" "$before" "$archive/raw" "$home/Library/Application Support/ClipboardArchive/settings.json" "$home/Library/Application Support/ClipboardArchive/stores.json"
+check_carried_over "$name" "$archive" "$before" "$archive/raw" "$archive/annotations" "$archive/deletion-ledger" "$home/Library/Application Support/ClipboardArchive/settings.json" "$home/Library/Application Support/ClipboardArchive/stores.json"
+
+echo "## from 0.4.4, with every later setting changed from its default"
+name=from-0.4.4; home="$T/$name/home"; /bin/mkdir -p "$home" "$T/$name/system-applications"
+archive="$home/Documents/Remembered/Archive"
+index="$home/Documents/Remembered/clipboard-search.sqlite"
+write_modern_settings "$home"; write_archive "$archive"; write_old_install "$home" "$archive" "$index"
+/bin/rm -rf "$home/Applications"; /bin/mkdir -p "$T/$name/system-applications/Clipboard Archive.app/Contents/MacOS"
+before="$(digest "$archive/raw" "$archive/annotations" "$archive/deletion-ledger" "$home/Library/Application Support/ClipboardArchive/settings.json")"
+check "the update installs" install_update "$name"
+check_carried_over "$name" "$archive" "$before" "$archive/raw" "$archive/annotations" "$archive/deletion-ledger" "$home/Library/Application Support/ClipboardArchive/settings.json"
 
 if [ "$failures" -gt 0 ]; then
   echo "upgrade test failed: $failures check(s)" >&2
